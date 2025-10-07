@@ -1,77 +1,231 @@
-using System.Collections;
+using System;
 using System.Collections.Generic;
-using UnityEngine;
+using System.Linq;
 using Unity.Mathematics;
-using Unity.Collections;
-using Unity.Burst;
-using static UnityEditor.Experimental.GraphView.GraphView;
+using UnityEngine;
 
-public static class HNSW
+public class HNSW
 {
-	public class Params
+	public Meshless mesh;
+	public List<int> instability;
+	public int totalInstability = 0;
+	private int M; // max connections per node per layer
+	private int efConstruction;
+
+	public HNSW(Meshless mesh, int maxConnections = 8, int efConstruction = 3)
 	{
-		public int layers = 3;
-		public int neighbors = 3;
-		public int neighbors0 = 5;
-		public float probaBase = 8;
-		
-		public Params(int layers = 3, int neighbors = 3, int neighbors0 = 5, float probaBase = 8)
-		{
-			this.layers = layers;
-			this.neighbors = neighbors;
-			this.neighbors0 = neighbors0;
-			this.probaBase = probaBase;
+		instability = new List<int>();
+		M = maxConnections;
+		this.efConstruction = efConstruction;
+		this.mesh = mesh;
+
+		// init node 0
+		instability.Add(0);
+		mesh.nodes[0].HNSWNeighbors = new List<HashSet<int>>(mesh.maxLayer + 1);
+		for (int j = 0; j <= mesh.maxLayer; j++)
+			mesh.nodes[0].HNSWNeighbors.Add(new HashSet<int>());
+
+		for (int i = 1; i < mesh.nodes.Count; i++) {
+			BuildNode(i);
+		}
+		Debug.Log("HNSW Instability: " + totalInstability.ToString());
+	}
+
+	// Greedy search at single layer to find closest node to query starting from entry point
+	private int SearchLayerSingle(float2 query, int enterNode, int layer)
+	{
+		int currentNode = enterNode;
+		float currentDist = math.distancesq(mesh.nodes[currentNode].pos, query);
+		bool improved;
+		do {
+			improved = false;
+			foreach (var n in mesh.nodes[currentNode].HNSWNeighbors[layer]) {
+				float dist = math.distancesq(mesh.nodes[n].pos, query);
+				if (dist < currentDist) {
+					currentDist = dist;
+					currentNode = n;
+					improved = true;
+				}
+			}
+		} while (improved);
+
+		return currentNode;
+	}
+
+	// Search for ef neighbors at a layer using a best-first search with candidate set
+	private List<int> SearchLayer(float2 query, List<int> entryPoints, int layer, int ef)
+	{
+		var visited = new HashSet<int>();
+		var candidates = new SortedSet<(float dist, int i)>(Comparer<(float, int)>.Create((a, b) => {
+			int c = a.Item1.CompareTo(b.Item1);
+			if (c == 0) return a.Item2.CompareTo(b.Item2);
+			return c;
+		}));
+		var closest = new SortedSet<(float dist, int i)>(Comparer<(float, int)>.Create((a, b) => {
+			int c = a.Item1.CompareTo(b.Item1);
+			if (c == 0) return a.Item2.CompareTo(b.Item2);
+			return c;
+		}));
+
+		// Initialize candidate and closest sets with entry points (distinct)
+		foreach (var e in entryPoints.Distinct()) {
+			float d = math.distancesq(mesh.nodes[e].pos, query);
+			candidates.Add((d, e));
+			closest.Add((d, e));
+			visited.Add(e);
+		}
+
+		while (candidates.Count > 0) {
+			var current = candidates.Min; // candidate with smallest distance
+			candidates.Remove(current);
+
+
+			var worstClosest = closest.Max; // element with largest distance in closest set
+			if (current.dist > worstClosest.dist && closest.Count >= ef)
+				break; // stop search according to heuristic
+
+			foreach (var neighbor in mesh.nodes[current.i].HNSWNeighbors[layer]) {
+				if (visited.Contains(neighbor))
+					continue;
+				visited.Add(neighbor);
+				float dist = math.distancesq(mesh.nodes[neighbor].pos, query);
+
+				var worst = closest.Max;
+
+				if (closest.Count < ef || dist < worst.dist) {
+					candidates.Add((dist, neighbor));
+					closest.Add((dist, neighbor));
+					if (closest.Count > ef) {
+						closest.Remove(closest.Max);
+					}
+				}
+			}
+		}
+		return closest.Select(x => x.i).ToList();
+	}
+
+	// Prune neighbors keeping closest M neighbors to the node at given layer, disconnect others
+	private void PruneNeighbors(int node, int layer)
+	{
+		var neighbors = mesh.nodes[node].HNSWNeighbors[layer];
+
+		if (neighbors.Count <= M) {
+			return;
+		}
+
+		var sortedByDist = neighbors
+			.OrderBy(i => math.distancesq(mesh.nodes[node].pos, mesh.nodes[i].pos))
+			.Take(M)
+			.ToHashSet();
+
+		var toRemove = neighbors.Except(sortedByDist).ToList();
+
+		foreach (var r in toRemove) {
+			neighbors.Remove(r);
+			mesh.nodes[r].HNSWNeighbors[layer].Remove(node);
+			destabilize(r);
 		}
 	}
-	public class Instance
+
+	void destabilize(int node)
 	{
-		public Params param;
-		// ordered by layer, starting from top
-		public NativeList<int> neighbors;//TODO:
-		public NativeList<float2> points;
-		public NativeList<int> neighborsFrom;
-		public NativeList<int> pointLayers;
-		public NativeList<int> topLayer;
-		public Instance(NativeArray<float2> points, Params param = null)
-		{
-			if (param == null) {
-				this.param = new Params();
-			} else {
-				this.param = param;
+		instability[node]++;
+		totalInstability++;
+
+		if (instability[node] >= mesh.nodes[node].HNSWNeighbors[0].Count) {
+			//TODO: rebuild node
+			totalInstability -= instability[node];
+			instability[node] = 0;
+		}
+		//TODO: if totalInstability is too big, rebuild the whole graph
+	}
+
+	// Add a point to the HNSW graph
+	public void BuildNode(int i)
+	{
+		instability.Add(0);
+		var nodeLayer = mesh.nodes[i].maxLayer;
+		mesh.nodes[i].HNSWNeighbors = new List<HashSet<int>>(nodeLayer + 1);
+		for (int j = 0; j <= nodeLayer; j++)
+			mesh.nodes[i].HNSWNeighbors.Add(new HashSet<int>());
+
+		int depth = mesh.maxLayer;
+		int layerEntry = 0;
+		while (layerEntry == i && mesh.layeredNodes[depth].Count == 1) {
+			depth--;
+			layerEntry = mesh.layeredNodes[depth][0].id;
+		}
+		if (i == 0) {
+			layerEntry = mesh.layeredNodes[depth][1].id;
+		}
+
+		// Start from top layer, search for closest node to new point on each layer, descending layers until nodeLayer+1
+		for (int layer = depth; layer > nodeLayer; layer--) {
+			layerEntry = SearchLayerSingle(mesh.nodes[i].pos, layerEntry, layer);
+		}
+
+		// For all layers from min(nodeLayer, maxLayer) down to 0:
+		// Use the neighbors found from previous layer as the entry points for layer search
+		var prevLayerNeighbors = new List<int> { layerEntry };
+
+		for (int layer = Math.Min(nodeLayer, depth); layer >= 0; layer--) {
+			// search efConstruction neighbors on this layer starting from prevLayerNeighbors
+			var neighbors = SearchLayer(mesh.nodes[i].pos, prevLayerNeighbors, layer, efConstruction);
+			// connect new node with neighbors on this layer
+			foreach (var neighbor in neighbors) {
+				mesh.nodes[i].HNSWNeighbors[layer].Add(neighbor);
+				mesh.nodes[neighbor].HNSWNeighbors[layer].Add(i);
+
+				// If neighbor exceeds M connections, prune
+				if (mesh.nodes[neighbor].HNSWNeighbors[layer].Count > M) {
+					PruneNeighbors(neighbor, layer);
+				}
 			}
-			foreach(float2 p in points) {
-				Insert(this, p);
-			}
+			// new node's neighbors become entry points for next lower layer
+			prevLayerNeighbors = neighbors;
 		}
 	}
-	public static void Insert(Instance inst, float2 point)
+
+	// Move a Node into a new position. The further it moves, the greater the instability.
+	public void Shift(int node, float2 newPos, bool rebuild = false)
 	{
-		int layer = (int)(math.floor(math.log(1.0 / (new Unity.Mathematics.Random().NextDouble(1))) / math.log(inst.param.probaBase))+0.01);
-		inst.pointLayers.Add(layer);
-		inst.points.Add(point);
-		
+		mesh.nodes[node].pos = newPos;
+		for (int layer = mesh.nodes[node].maxLayer; layer >= 0; layer--) {
+			var neighbors = SearchLayer(newPos, mesh.nodes[node].HNSWNeighbors[layer].ToList(), layer, efConstruction + 1);
+
+			foreach (var neighbor in neighbors) {
+				if (node == neighbor || mesh.nodes[node].HNSWNeighbors[layer].Contains(neighbor)) {
+					continue;
+				}
+				mesh.nodes[node].HNSWNeighbors[layer].Add(neighbor);
+				mesh.nodes[neighbor].HNSWNeighbors[layer].Add(node);
+
+				// If neighbor exceeds M connections, prune
+				if (mesh.nodes[neighbor].HNSWNeighbors[layer].Count > M) {
+					PruneNeighbors(neighbor, layer);
+				}
+			}
+			PruneNeighbors(node, layer);
+		}
+		Debug.Log("HNSW Instability: " + totalInstability.ToString());
 	}
-	public static int Find(Instance inst, float2 point)
+
+	// Approximate nearest neighbors search querying k closest neighbors
+	public List<int> SearchKnn(float2 queryPoint, int k, int minLayer = 0, int efSearch = 16)
 	{
-		int curPoint = inst.topLayer[new Unity.Mathematics.Random().NextInt(inst.topLayer.Length)];
-		for (int layer = inst.param.layers; layer>=0; layer--) {
-			curPoint = greedyNeighbor(inst, point, curPoint, layer);
+		int currentNode = mesh.layeredNodes[mesh.maxLayer][0].id;
+		// Search top-down greedy to get close entry point
+		for (int layer = mesh.maxLayer; layer >= minLayer + 1; layer--) {
+			currentNode = SearchLayerSingle(queryPoint, currentNode, layer);
 		}
-		return curPoint;
-	}
-	static int greedyNeighbor(Instance inst, float2 point, int origin, int layer) {
-		int best = origin;
-		int start = inst.neighborsFrom[origin] + (inst.pointLayers[origin] - layer) * inst.param.neighbors;
-		int end = start + ((layer == 0) ? inst.param.neighbors0 : inst.param.neighbors);
-		for (int i = start; i < end; i++) {
-			int neighbor = inst.neighbors[i];
-			if(neighbor==-1) {
-				break;
-			}
-			if (math.lengthsq(inst.points[neighbor] - point) < math.lengthsq(inst.points[best] - point)) {
-				best = neighbor;
-			}
-		}
-		return best;
+		// At base layer use full search with efSearch neighbors
+		var candidateList = SearchLayer(queryPoint, new List<int> { currentNode }, minLayer, efSearch);
+		// Take top k closest
+		var sortedTopK = candidateList
+			.OrderBy(i => math.distancesq(mesh.nodes[i].pos, queryPoint))
+			.Take(k)
+			.ToList();
+
+		return sortedTopK;
 	}
 }
