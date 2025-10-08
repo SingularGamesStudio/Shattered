@@ -108,6 +108,8 @@ public class HNSW
 	private void PruneNeighbors(int node, int layer)
 	{
 		var neighbors = mesh.nodes[node].HNSWNeighbors[layer];
+		Debug.Log(node.ToString()+" "+layer.ToString());
+		Debug.Log(neighbors.Count);
 
 		if (neighbors.Count <= M) {
 			return;
@@ -149,18 +151,13 @@ public class HNSW
 		for (int j = 0; j <= nodeLayer; j++)
 			mesh.nodes[i].HNSWNeighbors.Add(new HashSet<int>());
 
-		int depth = mesh.maxLayer;
 		int layerEntry = 0;
-		while (layerEntry == i && mesh.layeredNodes[depth].Count == 1) {
-			depth--;
-			layerEntry = mesh.layeredNodes[depth][0].id;
-		}
 		if (i == 0) {
-			layerEntry = mesh.layeredNodes[depth][1].id;
+			layerEntry = 1;
 		}
 
 		// Start from top layer, search for closest node to new point on each layer, descending layers until nodeLayer+1
-		for (int layer = depth; layer > nodeLayer; layer--) {
+		for (int layer = mesh.nodes[layerEntry].maxLayer; layer > nodeLayer; layer--) {
 			layerEntry = SearchLayerSingle(mesh.nodes[i].pos, layerEntry, layer);
 		}
 
@@ -168,7 +165,7 @@ public class HNSW
 		// Use the neighbors found from previous layer as the entry points for layer search
 		var prevLayerNeighbors = new List<int> { layerEntry };
 
-		for (int layer = Math.Min(nodeLayer, depth); layer >= 0; layer--) {
+		for (int layer = Math.Min(nodeLayer, mesh.nodes[layerEntry].maxLayer); layer >= 0; layer--) {
 			// search efConstruction neighbors on this layer starting from prevLayerNeighbors
 			var neighbors = SearchLayer(mesh.nodes[i].pos, prevLayerNeighbors, layer, efConstruction);
 			// connect new node with neighbors on this layer
@@ -213,7 +210,7 @@ public class HNSW
 	// Approximate nearest neighbors search querying k closest neighbors
 	public List<int> SearchKnn(float2 queryPoint, int k, int minLayer = 0, int efSearch = 16)
 	{
-		int currentNode = mesh.layeredNodes[mesh.maxLayer][0].id;
+		int currentNode = 0;
 		// Search top-down greedy to get close entry point
 		for (int layer = mesh.maxLayer; layer >= minLayer + 1; layer--) {
 			currentNode = SearchLayerSingle(queryPoint, currentNode, layer);
