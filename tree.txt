@@ -1,5 +1,5 @@
 Структура папок
-Серийный номер тома: 0000002C EABD:31DB
+Серийный номер тома: 000000C5 EABD:31DB
 C:\PROJECTS\SHATTERED\ASSETS\SCRIPTS
 │   Box.cs
 │   Box.cs.meta
@@ -21,3 +21,8 @@ C:\PROJECTS\SHATTERED\ASSETS\SCRIPTS
     │   Constraints.meta
     │   
     └───Constraints
+            NeighborDistanceConstraint.cs
+            NeighborDistanceConstraint.cs.meta
+            TensionConstraint.cs
+            TensionConstraint.cs.meta
+            

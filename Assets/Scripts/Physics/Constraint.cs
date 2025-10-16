@@ -7,7 +7,7 @@ namespace Physics {
         void Initialise(List<Node> nodes) { }
         // Relax evaluates the constraint, and relaxes the positions to satisfy it.
         // It returns the updated total Lagrange Multiplier.
-        float Relax(List<Node> nodes, float stiffness, float lagrangeMult) {
+        float Relax(List<Node> nodes, float stiffness, float lagrangeMult, float timeStep) {
             return lagrangeMult;
         }
     }
@@ -15,5 +15,6 @@ namespace Physics {
     public class ConstraintCache {
         public List<int> neighbors;
         public List<float> neighborDistances;
+        public List<float> neighborLambdas;
     }
 }

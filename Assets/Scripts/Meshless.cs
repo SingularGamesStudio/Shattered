@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
+using Physics;
 using Unity.Mathematics;
 using Unity.VisualScripting.Antlr3.Runtime.Misc;
 using UnityEditor;
@@ -19,8 +21,7 @@ public class Meshless : MonoBehaviour {
 
     const float fixedTimeStep = 0.05f;
     const float gravity = -9.81f;
-    const int constraintIters = 8;
-    const int neighborCount = 6;
+    const int constraintIters = 1;
 
     public void Add(float2 pos) {
         Node newNode = new Node(pos, this);
@@ -65,6 +66,14 @@ public class Meshless : MonoBehaviour {
 
     // Manual simulation step triggered by button
     public void StepSimulation(float timeStep) {
+        Physics.Constraint neighbor = new NeighborDistanceConstraint();
+        neighbor.Initialise(nodes);
+        float lagrangeMultNeighbor = 0;
+
+        Physics.Constraint tension = new TensionConstraint();
+        tension.Initialise(nodes);
+        float lagrangeMultTension = 0;
+
         // 1. Apply external forces and predict positions
         foreach (var node in nodes) {
             if (node.isFixed) {
@@ -72,54 +81,34 @@ public class Meshless : MonoBehaviour {
                 continue;
             }
             node.vel.y += gravity * timeStep;
+            node.vel.x += (UnityEngine.Random.value - 0.5f) * 1f;
             node.predPos = node.pos + node.vel * timeStep;
-        }
-
-        // Cache neighbors and their rest distances for this step
-        List<int>[] cachedNeighbors = new List<int>[nodes.Count];
-        List<float>[] cachedRestDistances = new List<float>[nodes.Count];
-
-        for (int i = 0; i < nodes.Count; ++i) {
-            var node = nodes[i];
-            cachedNeighbors[i] = new List<int>();
-            cachedRestDistances[i] = new List<float>();
-
-            var neighbors = hnsw.SearchKnn(node.predPos, neighborCount);
-            foreach (int nIdx in neighbors) {
-                if (nIdx == i) continue;
-                cachedNeighbors[i].Add(nIdx);
-
-                float dist = math.distance(node.pos, nodes[nIdx].pos);
-                cachedRestDistances[i].Add(dist);
-            }
         }
 
         // 2. Constraint Solver Iterations
         for (int iter = 0; iter < constraintIters; ++iter) {
-            for (int i = 0; i < nodes.Count; ++i) {
-                Node nodeA = nodes[i];
-                for (int n = 0; n < cachedNeighbors[i].Count; ++n) {
-                    int j = cachedNeighbors[i][n];
-                    Node nodeB = nodes[j];
+            lagrangeMultNeighbor = neighbor.Relax(nodes, 0.01f, lagrangeMultNeighbor, timeStep);
+            lagrangeMultTension = neighbor.Relax(nodes, 0f, lagrangeMultTension, timeStep);
+        }
 
-                    float2 delta = nodeA.predPos - nodeB.predPos;
-                    float dist = math.length(delta);
-                    if (dist < 1e-5f) continue;
+        float contractionSmoothing = 0.5f; // 0=no update, 1=instant set
 
-                    float restDistance = cachedRestDistances[i][n];
-                    float constraint = dist - restDistance;
-                    float wA = nodeA.invMass;
-                    float wB = nodeB.invMass;
-                    float wSum = wA + wB;
-                    if (wSum == 0) continue;
-
-                    float2 correction = (constraint / dist) * delta;
-                    if (!nodeA.isFixed)
-                        nodeA.predPos -= (wA / wSum) * correction;
-                    if (!nodeB.isFixed)
-                        nodeB.predPos += (wB / wSum) * correction;
-                }
+        for (int i = 0; i < nodes.Count; ++i) {
+            var neigh = nodes[i].constraintCache.neighbors;
+            if (neigh.Count == 0) {
+                nodes[i].contraction = nodes[i].contraction; // keep prior memory if no neighbors
+                continue;
             }
+            float accum = 0f;
+            for (int n = 0; n < neigh.Count; ++n) {
+                int j = neigh[n];
+                float strain = (math.distance(nodes[i].pos, nodes[j].pos) - math.distance(nodes[i].predPos, nodes[j].predPos)) / math.distance(nodes[i].pos, nodes[j].pos);
+
+                // Clamp to avoid outliers from near-coincident points
+                accum += math.clamp(strain, -1f, 1f);
+            }
+            float avgStrain = accum / neigh.Count;
+            nodes[i].contraction = math.clamp(math.lerp(nodes[i].contraction, avgStrain, math.clamp(contractionSmoothing, 0f, 1f)), -1f, 1f);
         }
 
 
