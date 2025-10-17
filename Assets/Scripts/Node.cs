@@ -9,7 +9,7 @@ public class Node {
 
     public float2 vel = float2.zero;
     public float2 predPos;
-    public float contraction = 0;
+    public float contraction = 1.0f;
 
     public List<HashSet<int>> HNSWNeighbors;
     public Meshless parent;

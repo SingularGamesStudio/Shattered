@@ -1,78 +1,94 @@
-// Assets/Scripts/Physics/Constraints/TensionConstraint.cs
 using System.Collections.Generic;
+using UnityEngine;
 using Unity.Mathematics;
 
 namespace Physics {
-    // Per-node tension constraint:
-    // - Uses only predicted positions for solving to avoid mid-iteration physics commits.
-    // - Never updates Node.contraction inside Relax; instead records pending strain and
-    //   commits it once in the next Initialise call (once per physics step).
-    // - Reuses Node.constraintCache.neighbors and neighborDistances (already initialized elsewhere).
+    // XPBD distance-like constraint with tension bias using previous-frame average strain.
+    // Requires per-node caches: neighbors + neighborDistances prepared by another constraint.
     public class TensionConstraint : Constraint {
-        // Tuning parameters
-        public float TensionGain = 0.5f;           // scales how strongly contraction biases target length
-        public float MaxTensionBias = 0.2f;        // clamps |bias| around 1 (e.g., ±20%)
-        public float ContractionSmoothing = 0.5f;  // [0..1], how quickly contraction memory adapts per step
+        private readonly float beta = 1.0f;
 
-        // Runs many times per step:
-        // - Applies mass-weighted PBD distance corrections toward a tension-biased target.
-        // - Records pending average signed strain from the final iteration’s predicted positions,
-        //   but does NOT update Node.contraction here.
-        public float Relax(List<Node> nodes, float stiffness, float lagrangeMult, float timeStep) {
+        const float eps = 1e-6f;
+
+        // Prepare per-edge lambdas for this step using current neighbor caches
+        public void Initialise(List<Node> nodes) {
             for (int i = 0; i < nodes.Count; i++) {
                 var ni = nodes[i];
-                var cache = ni.constraintCache;
-                if (cache == null || cache.neighbors == null || cache.neighborDistances == null) continue;
+                ni.constraintCache.tensionLambda = 0f;
+                ni.constraintCache.avgEdgeLen = 0f;
+                int count = 0;
+                foreach (float f in ni.constraintCache.neighborDistances) {
+                    if (f < eps) { continue; }
+                    ni.constraintCache.avgEdgeLen += f;
+                    count++;
 
-                // Compute bias from the node’s stored contraction memory
-                float bias = math.clamp(1f + TensionGain * ni.contraction,
-                                        1f - MaxTensionBias, 1f + MaxTensionBias);
+                }
+                ni.constraintCache.avgEdgeLen /= count;
+            }
+        }
 
-                float strainAccum = 0f;
-                int strainCount = 0;
+        public void Relax(List<Node> nodes, float stiffness, float timeStep) {
+            float aHat = stiffness / (timeStep * timeStep);
 
-                // Directed edges i -> j exactly as cached; no symmetry assumed
-                int count = cache.neighbors.Count;
-                for (int k = 0; k < count; k++) {
-                    int j = cache.neighbors[k];
-                    if (j < 0 || j >= nodes.Count || j == i) continue;
+            int count = nodes.Count;
+            for (int i = 0; i < count; ++i) {
+                var A = nodes[i];
+                var cache = A.constraintCache;
+                if (cache == null || cache.neighbors == null || cache.neighbors.Count == 0) continue;
 
-                    var nj = nodes[j];
+                // Compute current average length and gradient parts
+                float avgLen = 0f;
+                int samples = 0;
+                float2 grad_i = float2.zero;
 
-                    // Always operate on predicted positions
-                    float2 xi = ni.predPos;
-                    float2 xj = nj.predPos;
+                for (int n = 0; n < cache.neighbors.Count; ++n) {
+                    int j = cache.neighbors[n];
+                    float2 d = A.predPos - nodes[j].predPos;
+                    float dist = math.length(d);
+                    if (dist < eps) { continue; }
 
-                    float2 r = xi - xj;
-                    float dist = math.length(r);
+                    float2 nij = d / dist;
+                    avgLen += dist;
+                    grad_i += nij;
+                    samples++;
+                }
+                avgLen /= samples;
 
-                    float rest = cache.neighborDistances[k]; // original per-step distance
-                    float effectiveRest = rest * bias;
 
-                    // Classic PBD correction along the edge
-                    float constraint = dist - effectiveRest;
-                    float wA = ni.isFixed ? 0f : ni.invMass;
-                    float wB = nj.isFixed ? 0f : nj.invMass;
-                    float wSum = wA + wB;
-                    if (wSum <= 0f) continue;
+                float rHist = math.max(nodes[i].contraction, 1e-6f);
+                float rStar = math.pow(rHist, -beta); // multiplicative target from history
+                float C = (avgLen / cache.avgEdgeLen) - rStar;
 
-                    float2 n = r / dist;
-                    float2 corr = constraint * n;
+                // Gradients scaled by 1/(N * avg0)
+                grad_i /= cache.avgEdgeLen * samples;
 
-                    if (!ni.isFixed) ni.predPos -= (wA / wSum) * corr;
-                    if (!nj.isFixed) nj.predPos += (wB / wSum) * corr;
+                float sumGradSq = A.invMass * math.lengthsq(grad_i);
 
-                    // Record signed strain relative to the original rest (not the biased target)
-                    // Positive if contracted (shorter than rest), negative if expanded
-                    float signedStrain = (rest - dist) / rest;
-                    strainAccum += math.clamp(signedStrain, -1f, 1f);
-                    strainCount++;
+                // accumulate neighbor contributions to denominator and apply later
+                List<(int j, float2 grad_j, float wj)> neigh = new List<(int, float2, float)>(samples);
+                for (int n = 0; n < cache.neighbors.Count; ++n) {
+                    int j = cache.neighbors[n];
+                    float2 d = A.predPos - nodes[j].predPos;
+                    float dist = math.length(d);
+                    if (dist < eps) { continue; }
 
-                    // Optional convergence tracker
-                    lagrangeMult += math.abs(constraint);
+                    float2 nij = d / dist;
+                    float2 grad_j = -nij / cache.avgEdgeLen / samples;
+                    float wj = nodes[j].invMass;
+                    sumGradSq += wj * math.lengthsq(grad_j);
+                    neigh.Add((j, grad_j, wj));
+                }
+
+                float denom = sumGradSq + aHat;
+
+                float dLambda = -(C + aHat * cache.tensionLambda) / denom;
+                cache.tensionLambda += dLambda;
+
+                if (!A.isFixed) A.predPos -= (-A.invMass * dLambda) * grad_i;
+                foreach (var t in neigh) {
+                    if (!nodes[t.j].isFixed) nodes[t.j].predPos -= (-t.wj * dLambda) * t.grad_j;
                 }
             }
-            return lagrangeMult;
         }
     }
 }

@@ -244,14 +244,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9d14631452deebe4aabf97a144ad34fe, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  maxLayer: 2
+  maxLayer: 3
   center:
     x: 0
-    y: 0
+    y: 2
   size:
-    x: 5
-    y: 5
-  pointCount: 20
+    x: 3
+    y: 3
+  pointCount: 10
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
@@ -279,8 +279,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e7841c22fd250394e8f7317ea069a333, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  showNodes: 1
   show: 1
+  showNodes: 1
+  showEdges: 1
+  colorEdgesByContraction: 1
+  showVelocities: 0
   meshless: {fileID: 961765556}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

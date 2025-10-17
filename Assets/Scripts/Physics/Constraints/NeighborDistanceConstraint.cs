@@ -35,7 +35,7 @@ namespace Physics {
             }
         }
 
-        public float Relax(List<Node> nodes, float stiffness, float lagrangeMult, float timeStep) {
+        public void Relax(List<Node> nodes, float stiffness, float timeStep) {
             float alphaTilde = stiffness / math.max(1e-6f, timeStep * timeStep);
             float gammaDt = Damping * timeStep;
 
@@ -74,11 +74,8 @@ namespace Physics {
                     nj.predPos += corrJ;
 
                     cache.neighborLambdas[k] = lam + dLambda;
-                    lagrangeMult += math.abs(dLambda);
                 }
             }
-
-            return lagrangeMult;
         }
     }
 }

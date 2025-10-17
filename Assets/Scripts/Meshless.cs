@@ -21,7 +21,7 @@ public class Meshless : MonoBehaviour {
 
     const float fixedTimeStep = 0.05f;
     const float gravity = -9.81f;
-    const int constraintIters = 1;
+    const int constraintIters = 8;
 
     public void Add(float2 pos) {
         Node newNode = new Node(pos, this);
@@ -68,11 +68,9 @@ public class Meshless : MonoBehaviour {
     public void StepSimulation(float timeStep) {
         Physics.Constraint neighbor = new NeighborDistanceConstraint();
         neighbor.Initialise(nodes);
-        float lagrangeMultNeighbor = 0;
 
         Physics.Constraint tension = new TensionConstraint();
         tension.Initialise(nodes);
-        float lagrangeMultTension = 0;
 
         // 1. Apply external forces and predict positions
         foreach (var node in nodes) {
@@ -81,36 +79,17 @@ public class Meshless : MonoBehaviour {
                 continue;
             }
             node.vel.y += gravity * timeStep;
-            node.vel.x += (UnityEngine.Random.value - 0.5f) * 1f;
+            //node.vel.x += (UnityEngine.Random.value - 0.5f) * 1f;
             node.predPos = node.pos + node.vel * timeStep;
         }
 
         // 2. Constraint Solver Iterations
         for (int iter = 0; iter < constraintIters; ++iter) {
-            lagrangeMultNeighbor = neighbor.Relax(nodes, 0.01f, lagrangeMultNeighbor, timeStep);
-            lagrangeMultTension = neighbor.Relax(nodes, 0f, lagrangeMultTension, timeStep);
+            neighbor.Relax(nodes, 0.01f, timeStep);
+            tension.Relax(nodes, 0.01f, timeStep);
         }
 
-        float contractionSmoothing = 0.5f; // 0=no update, 1=instant set
-
-        for (int i = 0; i < nodes.Count; ++i) {
-            var neigh = nodes[i].constraintCache.neighbors;
-            if (neigh.Count == 0) {
-                nodes[i].contraction = nodes[i].contraction; // keep prior memory if no neighbors
-                continue;
-            }
-            float accum = 0f;
-            for (int n = 0; n < neigh.Count; ++n) {
-                int j = neigh[n];
-                float strain = (math.distance(nodes[i].pos, nodes[j].pos) - math.distance(nodes[i].predPos, nodes[j].predPos)) / math.distance(nodes[i].pos, nodes[j].pos);
-
-                // Clamp to avoid outliers from near-coincident points
-                accum += math.clamp(strain, -1f, 1f);
-            }
-            float avgStrain = accum / neigh.Count;
-            nodes[i].contraction = math.clamp(math.lerp(nodes[i].contraction, avgStrain, math.clamp(contractionSmoothing, 0f, 1f)), -1f, 1f);
-        }
-
+        UpdateNodeTensions();
 
         // 3. Update velocities and positions
         for (int i = 0; i < nodes.Count; ++i) {
@@ -122,6 +101,40 @@ public class Meshless : MonoBehaviour {
             float2 dampedPosition = math.lerp(nodes[i].pos, nodes[i].predPos, 0.9f);
             nodes[i].vel = (dampedPosition - nodes[i].pos) / timeStep * 0.9f;
             hnsw.Shift(i, dampedPosition);
+        }
+    }
+
+    public void UpdateNodeTensions(float gain = 1f, float decay = 1f, float minRatio = 0.2f, float maxRatio = 5f) {
+        int count = nodes.Count;
+        for (int i = 0; i < count; ++i) {
+            var A = nodes[i];
+            var cache = A.constraintCache;
+            if (cache == null || cache.neighbors == null || cache.neighborDistances == null) continue;
+
+            // Geometric mean of per-edge length ratios for this frame
+            float sumLog = 0f;
+            int samples = 0;
+            for (int n = 0; n < cache.neighbors.Count; ++n) {
+                int j = cache.neighbors[n];
+                if (j < 0 || j >= count || j == i) continue;
+
+                float rest = cache.neighborDistances[n];
+                if (rest <= 1e-6f) continue;
+
+                float d = math.distance(A.predPos, nodes[j].predPos);
+                float ratio = math.max(d / rest, 1e-6f);
+                sumLog += math.log(ratio);
+                samples++;
+            }
+            if (samples == 0) continue;
+
+            float rho = math.exp(sumLog / samples); // geometric mean ratio
+            float rOld = math.clamp(A.contraction, 1e-6f, 1e6f);
+
+            // Multiplicative accumulation with multiplicative decay toward 1
+            float rNew = math.pow(rOld, math.saturate(decay)) * math.pow(rho, gain);
+
+            A.contraction = math.clamp(rNew, minRatio, maxRatio);
         }
     }
 }

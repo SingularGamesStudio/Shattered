@@ -21,6 +21,7 @@ public class Box : Meshless {
             Add(rnd.NextFloat2(center - size / 2, center + size / 2));
         }
         FixNode(0);
+        FixNode(3);
         Build();
     }
 }
