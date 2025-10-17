@@ -18,10 +18,12 @@ public class Meshless : MonoBehaviour {
     public List<Node> nodes = new List<Node>();
     [HideInInspector]
     public int maxLayer = -1;
+    public float velocityCap = 10f;
 
     const float fixedTimeStep = 0.05f;
+    const float timeScale = 3f;
     const float gravity = -9.81f;
-    const int constraintIters = 8;
+    const int constraintIters = 16;
 
     public void Add(float2 pos) {
         Node newNode = new Node(pos, this);
@@ -49,7 +51,7 @@ public class Meshless : MonoBehaviour {
 
             if (keyHoldTime >= holdThreshold) {
                 // Held long enough: continuous stepping
-                float delta = Time.deltaTime * 2;
+                float delta = Time.deltaTime * timeScale;
                 StepSimulation(delta);
             }
         }
@@ -79,7 +81,6 @@ public class Meshless : MonoBehaviour {
                 continue;
             }
             node.vel.y += gravity * timeStep;
-            //node.vel.x += (UnityEngine.Random.value - 0.5f) * 1f;
             node.predPos = node.pos + node.vel * timeStep;
         }
 
@@ -89,7 +90,18 @@ public class Meshless : MonoBehaviour {
             tension.Relax(nodes, 0.01f, timeStep);
         }
 
-        UpdateNodeTensions();
+        for (int i = 0; i < nodes.Count; ++i) {
+            float2 c = nodes[i].predPos - nodes[i].pos;
+            float m = velocityCap * timeStep; // max correction per step from constraints
+            if (math.lengthsq(c) > m * m) nodes[i].predPos = nodes[i].pos + math.normalize(c) * m;
+            if (float.IsNaN(nodes[i].predPos.x) || float.IsInfinity(nodes[i].predPos.x)) {
+                nodes[i].predPos.x = nodes[i].pos.x;
+                Debug.LogWarning("inf");
+            }
+            if (float.IsNaN(nodes[i].predPos.y) || float.IsInfinity(nodes[i].predPos.y)) {
+                nodes[i].predPos.y = nodes[i].pos.y;
+            }
+        }
 
         // 3. Update velocities and positions
         for (int i = 0; i < nodes.Count; ++i) {
@@ -102,6 +114,7 @@ public class Meshless : MonoBehaviour {
             nodes[i].vel = (dampedPosition - nodes[i].pos) / timeStep * 0.9f;
             hnsw.Shift(i, dampedPosition);
         }
+        UpdateNodeTensions();
     }
 
     public void UpdateNodeTensions(float gain = 1f, float decay = 1f, float minRatio = 0.2f, float maxRatio = 5f) {
@@ -119,9 +132,11 @@ public class Meshless : MonoBehaviour {
                 if (j < 0 || j >= count || j == i) continue;
 
                 float rest = cache.neighborDistances[n];
+                if (float.IsNaN(rest) || float.IsInfinity(rest))
+                    continue;
                 if (rest <= 1e-6f) continue;
 
-                float d = math.distance(A.predPos, nodes[j].predPos);
+                float d = math.distance(A.pos, nodes[j].pos);
                 float ratio = math.max(d / rest, 1e-6f);
                 sumLog += math.log(ratio);
                 samples++;

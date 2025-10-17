@@ -75,7 +75,7 @@ public class MeshlessVisualiser : MonoBehaviour {
 
                 Color edgeColor;
                 if (colorEdgesByContraction) {
-                    float cEdge = (node.contraction * other.contraction); // signed
+                    float cEdge = math.pow(node.contraction * other.contraction, 2f); // signed
                     edgeColor = ColorFromContraction(cEdge, alpha);
                 } else {
                     edgeColor = new Color(0f, 0.5f, 1f, alpha);

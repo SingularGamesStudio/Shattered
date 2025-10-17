@@ -60,7 +60,9 @@ namespace Physics {
 
                     float2 r = xi - xj;
 
-                    float2 n = r / math.length(r);
+                    float len = math.length(r);
+                    if (len < Eps) continue;
+                    float2 n = r / len;
                     float C = math.length(r) - cache.neighborDistances[k];
 
                     float denom = wsum + alphaTilde + gammaDt;

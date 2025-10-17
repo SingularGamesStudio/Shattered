@@ -6,7 +6,7 @@ namespace Physics {
     // XPBD distance-like constraint with tension bias using previous-frame average strain.
     // Requires per-node caches: neighbors + neighborDistances prepared by another constraint.
     public class TensionConstraint : Constraint {
-        private readonly float beta = 1.0f;
+        private readonly float beta = 5.0f;
 
         const float eps = 1e-6f;
 
@@ -57,10 +57,10 @@ namespace Physics {
 
                 float rHist = math.max(nodes[i].contraction, 1e-6f);
                 float rStar = math.pow(rHist, -beta); // multiplicative target from history
+                if (cache.avgEdgeLen < eps) continue;
                 float C = (avgLen / cache.avgEdgeLen) - rStar;
-
                 // Gradients scaled by 1/(N * avg0)
-                grad_i /= cache.avgEdgeLen * samples;
+                grad_i /= cache.avgEdgeLen;
 
                 float sumGradSq = A.invMass * math.lengthsq(grad_i);
 
@@ -73,7 +73,7 @@ namespace Physics {
                     if (dist < eps) { continue; }
 
                     float2 nij = d / dist;
-                    float2 grad_j = -nij / cache.avgEdgeLen / samples;
+                    float2 grad_j = -nij / cache.avgEdgeLen;
                     float wj = nodes[j].invMass;
                     sumGradSq += wj * math.lengthsq(grad_j);
                     neigh.Add((j, grad_j, wj));
