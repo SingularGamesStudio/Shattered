@@ -14,8 +14,6 @@ public class Node {
     public List<HashSet<int>> HNSWNeighbors;
     public Meshless parent;
 
-    public Physics.ConstraintCache constraintCache;
-
     public Node(float2 point, Meshless parent) {
         pos = point;
         maxLayer = GetRandomLayer();

@@ -23,7 +23,7 @@ public class Meshless : MonoBehaviour {
     const float fixedTimeStep = 0.05f;
     const float timeScale = 3f;
     const float gravity = -9.81f;
-    const int constraintIters = 16;
+    const int constraintIters = 10;
 
     public void Add(float2 pos) {
         Node newNode = new Node(pos, this);
@@ -68,11 +68,14 @@ public class Meshless : MonoBehaviour {
 
     // Manual simulation step triggered by button
     public void StepSimulation(float timeStep) {
+        NodeBatch prepared = new NodeBatch(nodes);
         Physics.Constraint neighbor = new NeighborDistanceConstraint();
-        neighbor.Initialise(nodes);
-
+        neighbor.Initialise(prepared);
         Physics.Constraint tension = new TensionConstraint();
-        tension.Initialise(nodes);
+        tension.Initialise(prepared);
+        Physics.Constraint volume = new VolumeConstraint();
+        volume.Initialise(prepared);
+        prepared.CacheLambdas();
 
         // 1. Apply external forces and predict positions
         foreach (var node in nodes) {
@@ -86,8 +89,9 @@ public class Meshless : MonoBehaviour {
 
         // 2. Constraint Solver Iterations
         for (int iter = 0; iter < constraintIters; ++iter) {
-            neighbor.Relax(nodes, 0.01f, timeStep);
-            tension.Relax(nodes, 0.01f, timeStep);
+            neighbor.Relax(prepared, 0.01f, timeStep);
+            tension.Relax(prepared, 0.01f, timeStep);
+            volume.Relax(prepared, 10000f, timeStep);
         }
 
         for (int i = 0; i < nodes.Count; ++i) {
@@ -114,14 +118,13 @@ public class Meshless : MonoBehaviour {
             nodes[i].vel = (dampedPosition - nodes[i].pos) / timeStep * 0.9f;
             hnsw.Shift(i, dampedPosition);
         }
-        UpdateNodeTensions();
+        UpdateNodeTensions(prepared);
     }
 
-    public void UpdateNodeTensions(float gain = 1f, float decay = 1f, float minRatio = 0.2f, float maxRatio = 5f) {
-        int count = nodes.Count;
-        for (int i = 0; i < count; ++i) {
-            var A = nodes[i];
-            var cache = A.constraintCache;
+    public void UpdateNodeTensions(NodeBatch data, float gain = 1f, float decay = 1f, float minRatio = 0.2f, float maxRatio = 5f) {
+        for (int i = 0; i < data.Count; ++i) {
+            var node = data.nodes[i];
+            var cache = data.caches[i];
             if (cache == null || cache.neighbors == null || cache.neighborDistances == null) continue;
 
             // Geometric mean of per-edge length ratios for this frame
@@ -129,14 +132,14 @@ public class Meshless : MonoBehaviour {
             int samples = 0;
             for (int n = 0; n < cache.neighbors.Count; ++n) {
                 int j = cache.neighbors[n];
-                if (j < 0 || j >= count || j == i) continue;
+                if (j == i) continue;
 
                 float rest = cache.neighborDistances[n];
                 if (float.IsNaN(rest) || float.IsInfinity(rest))
                     continue;
                 if (rest <= 1e-6f) continue;
 
-                float d = math.distance(A.pos, nodes[j].pos);
+                float d = math.distance(node.pos, nodes[j].pos);
                 float ratio = math.max(d / rest, 1e-6f);
                 sumLog += math.log(ratio);
                 samples++;
@@ -144,12 +147,12 @@ public class Meshless : MonoBehaviour {
             if (samples == 0) continue;
 
             float rho = math.exp(sumLog / samples); // geometric mean ratio
-            float rOld = math.clamp(A.contraction, 1e-6f, 1e6f);
+            float rOld = math.clamp(node.contraction, 1e-6f, 1e6f);
 
             // Multiplicative accumulation with multiplicative decay toward 1
             float rNew = math.pow(rOld, math.saturate(decay)) * math.pow(rho, gain);
 
-            A.contraction = math.clamp(rNew, minRatio, maxRatio);
+            node.contraction = math.clamp(rNew, minRatio, maxRatio);
         }
     }
 }

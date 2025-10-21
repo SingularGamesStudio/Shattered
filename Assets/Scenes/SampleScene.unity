@@ -250,9 +250,9 @@ MonoBehaviour:
     x: 0
     y: 2
   size:
-    x: 2
-    y: 2
-  pointCount: 20
+    x: 5
+    y: 5
+  pointCount: 5
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
