@@ -5,15 +5,10 @@ using UnityEngine;
 using UnityEngine.Animations;
 namespace Physics {
     public interface Constraint {
-        // Initialise stores needed cached data before making an iteration step.
-        // For example, it can calculate the non-deformed neighbor distances before the position shifts.
         void Initialise(NodeBatch nodes) { }
-        // Relax evaluates the constraint, and relaxes the positions to satisfy it.
-        // It returns the updated total Lagrange Multiplier.
         void Relax(NodeBatch nodes, float stiffness, float timeStep) { }
+        string GetConstraintType() { return GetType().Name; }
     }
-
-
 
     public class ConstraintCache {
         public Lambdas lambdas = new Lambdas { };
@@ -21,6 +16,7 @@ namespace Physics {
         public List<float> neighborDistances;
         public List<float> leafVolumes;
         public float avgEdgeLen;
+        public Dictionary<string, ConstraintDebugData> debugDataPerConstraint = new Dictionary<string, ConstraintDebugData>();
     }
 
     public class Lambdas {
@@ -28,6 +24,47 @@ namespace Physics {
         public List<float> neighborDistance;
         public List<float> volume;
     }
+
+    public class ConstraintDebugData {
+        public string constraintType;
+        public float maxPositionDelta = 0f;
+        public float avgPositionDelta = 0f;
+        public float sumPositionDelta = 0f;
+        public int positionUpdateCount = 0;
+
+        public int degenerateCount = 0;
+        public int nanInfCount = 0;
+        public int skippedIterations = 0;
+
+        public float preConstraintEnergy = 0f;
+        public float postConstraintEnergy = 0f;
+
+        public void RecordPositionUpdate(float2 delta) {
+            float magnitude = math.length(delta);
+            maxPositionDelta = math.max(maxPositionDelta, magnitude);
+            sumPositionDelta += magnitude;
+            positionUpdateCount++;
+        }
+
+        public void FinalizeAverages() {
+            if (positionUpdateCount > 0) {
+                avgPositionDelta = sumPositionDelta / positionUpdateCount;
+            }
+        }
+
+        public void Reset() {
+            maxPositionDelta = 0f;
+            avgPositionDelta = 0f;
+            sumPositionDelta = 0f;
+            positionUpdateCount = 0;
+            degenerateCount = 0;
+            nanInfCount = 0;
+            skippedIterations = 0;
+            preConstraintEnergy = 0f;
+            postConstraintEnergy = 0f;
+        }
+    }
+
     public class NodeBatch {
         private const int NeighborsCached = 0b1;
         private const int AvgRestLenCached = 0b10;
@@ -37,6 +74,7 @@ namespace Physics {
         public List<ConstraintCache> caches;
         public int Count;
         private int cachedCategories = 0;
+
         public NodeBatch(List<Node> nodes) {
             this.nodes = nodes;
             Count = nodes.Count;
@@ -44,6 +82,41 @@ namespace Physics {
             for (int i = 0; i < Count; i++) {
                 caches.Add(new ConstraintCache { });
             }
+        }
+
+        public ConstraintDebugData GetOrCreateDebugData(int nodeIndex, string constraintType) {
+            if (!caches[nodeIndex].debugDataPerConstraint.ContainsKey(constraintType)) {
+                caches[nodeIndex].debugDataPerConstraint[constraintType] = new ConstraintDebugData {
+                    constraintType = constraintType
+                };
+            }
+            return caches[nodeIndex].debugDataPerConstraint[constraintType];
+        }
+
+        public void ResetDebugData(string constraintType) {
+            for (int i = 0; i < Count; i++) {
+                if (caches[i].debugDataPerConstraint.ContainsKey(constraintType)) {
+                    caches[i].debugDataPerConstraint[constraintType].Reset();
+                }
+            }
+        }
+
+        public void FinalizeDebugData(string constraintType) {
+            for (int i = 0; i < Count; i++) {
+                if (caches[i].debugDataPerConstraint.ContainsKey(constraintType)) {
+                    caches[i].debugDataPerConstraint[constraintType].FinalizeAverages();
+                }
+            }
+        }
+
+        public float CalculateKineticEnergy() {
+            float energy = 0f;
+            for (int i = 0; i < Count; i++) {
+                if (nodes[i].invMass > 0f) {
+                    energy += 0.5f * (1f / nodes[i].invMass) * math.lengthsq(nodes[i].predPos - nodes[i].pos);
+                }
+            }
+            return energy;
         }
 
         public void CacheNeighbors() {
@@ -68,6 +141,7 @@ namespace Physics {
                 }
             }
         }
+
         public void CacheAvgRestLength() {
             if ((cachedCategories & AvgRestLenCached) > 0) {
                 return;
@@ -86,6 +160,7 @@ namespace Physics {
                 caches[i].avgEdgeLen /= cnt;
             }
         }
+
         public void CacheVolume() {
             if ((cachedCategories & VolumeCached) > 0) {
                 return;
@@ -104,6 +179,7 @@ namespace Physics {
                 }
             }
         }
+
         public void CacheLambdas() {
             for (int i = 0; i < nodes.Count; i++) {
                 caches[i].lambdas.tension = 0f;
@@ -115,6 +191,7 @@ namespace Physics {
                 }
             }
         }
+
         static float Cross(in float2 a, in float2 b) => a.x * b.y - a.y * b.x;
     }
 }

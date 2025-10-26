@@ -1,63 +1,68 @@
-// Assets/Scripts/Physics/Constraints/NeighborDistanceConstraint.cs
-using System.Collections.Generic;
-using System.Diagnostics;
+
 using Unity.Mathematics;
+using UnityEngine;
 
 namespace Physics {
-    // Directed XPBD neighbor-distance constraint without global edge caching.
     public class NeighborDistanceConstraint : Constraint {
-        public float Compliance = 0f;              // α (0 => rigid)
-        public float Damping = 0f;                 // γ ≥ 0 (optional)
-
-        private const float Eps = 1e-6f;
-
+        public float Compliance = 0f;
+        public float Damping = 0f;
+        public string GetConstraintType() => "NeighborDistanceConstraint";
 
         public void Initialise(NodeBatch nodes) {
             nodes.CacheNeighbors();
+            nodes.ResetDebugData(GetConstraintType());
         }
 
         public void Relax(NodeBatch data, float stiffness, float timeStep) {
             float alphaTilde = stiffness / math.max(1e-6f, timeStep * timeStep);
             float gammaDt = Damping * timeStep;
+            string constraintType = GetConstraintType();
 
             for (int i = 0; i < data.Count; i++) {
                 var node = data.nodes[i];
                 var cache = data.caches[i];
-                if (cache == null || cache.neighbors == null) continue;
+                var debug = data.GetOrCreateDebugData(i, constraintType);
+                if (cache?.neighbors == null) continue;
 
-                float wi = node.isFixed ? 0f : node.invMass;
+                float wi = node.invMass;
 
                 for (int k = 0; k < cache.neighbors.Count; k++) {
                     int j = cache.neighbors[k];
                     if (j < 0 || j >= data.Count || j == i) continue;
 
-                    var neigh = data.nodes[j];
-                    float wj = neigh.isFixed ? 0f : neigh.invMass;
-                    float wsum = wi + wj;
-                    if (wsum <= 0f) continue;
+                    float wj = data.nodes[j].invMass;
 
-                    float2 xi = node.predPos;
-                    float2 xj = neigh.predPos;
+                    if (wi + wj <= 0f) {
+                        continue;
+                    }
 
-                    float2 r = xi - xj;
-
+                    float2 oldPosI = node.predPos;
+                    float2 r = node.predPos - data.nodes[j].predPos;
                     float len = math.length(r);
-                    if (len < Eps) continue;
-                    float2 n = r / len;
-                    float C = math.length(r) - cache.neighborDistances[k];
 
-                    float denom = wsum + alphaTilde + gammaDt;
-                    float dLambda = -(C + alphaTilde * cache.lambdas.neighborDistance[k]) / math.max(denom, 1e-8f);
+                    if (len < Const.Eps) {
+                        debug.degenerateCount++;
+                        continue;
+                    }
 
-                    float2 corrI = -wi * dLambda * n;
-                    float2 corrJ = +wj * dLambda * n;
+                    float dLambda = -(len - cache.neighborDistances[k] + alphaTilde * cache.lambdas.neighborDistance[k]) /
+                                    math.max(wi + wj + alphaTilde + gammaDt, 1e-8f);
 
-                    node.predPos += corrI;
-                    neigh.predPos += corrJ;
+                    if (float.IsNaN(dLambda) || float.IsInfinity(dLambda)) {
+                        debug.nanInfCount++;
+                        continue;
+                    }
+
+                    float2 correction = (-dLambda / len) * r;
+                    node.predPos += wi * correction;
+                    data.nodes[j].predPos -= wj * correction;
 
                     cache.lambdas.neighborDistance[k] += dLambda;
+                    debug.RecordPositionUpdate(node.predPos - oldPosI);
                 }
             }
+
+            data.FinalizeDebugData(constraintType);
         }
     }
 }

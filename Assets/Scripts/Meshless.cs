@@ -20,10 +20,9 @@ public class Meshless : MonoBehaviour {
     public int maxLayer = -1;
     public float velocityCap = 10f;
 
-    const float fixedTimeStep = 0.05f;
+    const float fixedTimeStep = 0.01f;
     const float timeScale = 3f;
     const float gravity = -9.81f;
-    const int constraintIters = 10;
 
     public void Add(float2 pos) {
         Node newNode = new Node(pos, this);
@@ -50,9 +49,7 @@ public class Meshless : MonoBehaviour {
             keyHoldTime += Time.deltaTime;
 
             if (keyHoldTime >= holdThreshold) {
-                // Held long enough: continuous stepping
-                float delta = Time.deltaTime * timeScale;
-                StepSimulation(delta);
+                StepSimulation(Time.deltaTime * timeScale);
             }
         }
 
@@ -65,6 +62,8 @@ public class Meshless : MonoBehaviour {
             keyHoldTime = 0.0f; // Reset timer on release
         }
     }
+
+    public NodeBatch lastBatchDebug;
 
     // Manual simulation step triggered by button
     public void StepSimulation(float timeStep) {
@@ -88,10 +87,10 @@ public class Meshless : MonoBehaviour {
         }
 
         // 2. Constraint Solver Iterations
-        for (int iter = 0; iter < constraintIters; ++iter) {
+        for (int iter = 0; iter < Const.SolverIterations; ++iter) {
             neighbor.Relax(prepared, 0.01f, timeStep);
             tension.Relax(prepared, 0.01f, timeStep);
-            volume.Relax(prepared, 10000f, timeStep);
+            volume.Relax(prepared, 0.001f, timeStep);
         }
 
         for (int i = 0; i < nodes.Count; ++i) {
@@ -119,6 +118,7 @@ public class Meshless : MonoBehaviour {
             hnsw.Shift(i, dampedPosition);
         }
         UpdateNodeTensions(prepared);
+        lastBatchDebug = prepared;
     }
 
     public void UpdateNodeTensions(NodeBatch data, float gain = 1f, float decay = 1f, float minRatio = 0.2f, float maxRatio = 5f) {

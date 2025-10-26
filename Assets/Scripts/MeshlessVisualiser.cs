@@ -1,6 +1,4 @@
-// Assets/Scripts/MeshlessVisualiser.cs
 using Unity.Mathematics;
-using Unity.VisualScripting.FullSerializer;
 using UnityEngine;
 
 [ExecuteInEditMode]

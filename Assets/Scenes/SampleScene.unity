@@ -252,7 +252,7 @@ MonoBehaviour:
   size:
     x: 5
     y: 5
-  pointCount: 5
+  pointCount: 2
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0

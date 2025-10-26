@@ -1,10 +1,11 @@
 Структура папок
-Серийный номер тома: 000000AC EABD:31DB
+Серийный номер тома: 000000A9 EABD:31DB
 C:\PROJECTS\SHATTERED\ASSETS\SCRIPTS
 │   Box.cs
 │   Box.cs.meta
 │   BoxGenerator.cs
 │   BoxGenerator.cs.meta
+│   Editor.meta
 │   HNSW.cs
 │   HNSW.cs.meta
 │   Meshless.cs
@@ -15,7 +16,13 @@ C:\PROJECTS\SHATTERED\ASSETS\SCRIPTS
 │   Node.cs.meta
 │   Physics.meta
 │   
+├───Editor
+│       ConstraintDebugWindow.cs
+│       ConstraintDebugWindow.cs.meta
+│       
 └───Physics
+    │   Const.cs
+    │   Const.cs.meta
     │   Constraint.cs
     │   Constraint.cs.meta
     │   Constraints.meta
