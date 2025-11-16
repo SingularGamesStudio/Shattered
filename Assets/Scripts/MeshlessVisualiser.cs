@@ -1,24 +1,32 @@
 using Unity.Mathematics;
 using UnityEngine;
 
+/// <summary>
+/// XPBI visualizer: can show node positions, plastic reference positions, plastic deformation arrows,
+/// and optionally color edges by magnitude of plastic shift.
+/// </summary>
 [ExecuteInEditMode]
 public class MeshlessVisualiser : MonoBehaviour {
     // Visibility toggles
-    public bool show = true;                // Master toggle
-    public bool showNodes = true;           // Draw node spheres
-    public bool showEdges = true;           // Draw edges
-    public bool colorEdgesByContraction = true; // Color edges using node-wise contraction
-    public bool showVelocities = false;     // Draw velocity vectors
+    public bool show = true;                  // Master toggle
+    public bool showNodes = true;             // Draw node spheres
+    public bool showEdges = true;             // Draw edges
+    public bool colorEdgesByPlasticity = true;// If true, edges colored by plastic shift magnitude
+    public bool showPlasticRefs = true;       // Show plastic reference positions
+    public bool showPlasticArrows = true;     // Show plastic deformation arrows
+    public bool showVelocities = false;       // Draw velocity vectors
+    public bool showRestLengthSegment = true;
 
-    // Internal constants (fixed as requested)
-    const float levelAlphaFalloff = 0.15f;  // Per-level alpha fade
-    const float nodeSphereRadius = 0.1f;    // Node gizmo size
-    const float maxAbsContraction = 0.3f;   // Saturation point for color mapping
-    const float velocityScale = 0.25f;      // World units per velocity unit
-    static readonly Color contractColor = new Color(0.2f, 0.45f, 1f, 1f); // contracted (negative)
-    static readonly Color neutralColor = new Color(0.85f, 0.85f, 0.85f, 1f); // near zero
-    static readonly Color expandColor = new Color(1f, 0.35f, 0.25f, 1f); // expanded (positive)
+    const float levelAlphaFalloff = 0.15f;
+    const float nodeSphereRadius = 0.1f;
+    const float plasticRefRadius = 0.09f;
+    const float plasticArrowScale = 0.8f;
+    const float velocityScale = 0.25f;
+    static readonly Color contractColor = new Color(0.2f, 0.45f, 1f, 1f);
+    static readonly Color neutralColor = new Color(0.85f, 0.85f, 0.85f, 1f);
+    static readonly Color expandColor = new Color(1f, 0.35f, 0.25f, 1f);
     static readonly Color velocityColor = Color.yellow;
+    static readonly Color plasticRefColor = Color.magenta;
 
     private int draggedNodeIndex = -1;
     private Camera mainCamera;
@@ -50,6 +58,18 @@ public class MeshlessVisualiser : MonoBehaviour {
             }
         }
 
+        if (showPlasticRefs) {
+            foreach (var node in meshless.nodes) {
+                Vector3 refPos = ToVector3(node.plasticReferencePos);
+                Gizmos.color = plasticRefColor;
+                Gizmos.DrawSphere(refPos, plasticRefRadius);
+            }
+        }
+
+        if (showPlasticArrows) {
+            DrawPlasticDeformationArrows();
+        }
+
         if (showVelocities) {
             DrawVelocities();
         }
@@ -64,23 +84,63 @@ public class MeshlessVisualiser : MonoBehaviour {
             if (node.HNSWNeighbors == null || level >= node.HNSWNeighbors.Count || node.HNSWNeighbors[level] == null)
                 continue;
 
-            Vector3 posA = ToVector3(node.pos);
+            float2 posA2 = node.pos;
+            Vector3 posA = ToVector3(posA2);
 
             foreach (var neighbor in node.HNSWNeighbors[level]) {
                 if (neighbor <= i) continue; // avoid duplicates
                 var other = meshless.nodes[neighbor];
-                Vector3 posB = ToVector3(other.pos);
+                float2 posB2 = other.pos;
+                Vector3 posB = ToVector3(posB2);
 
-                Color edgeColor;
-                if (colorEdgesByContraction) {
-                    float cEdge = math.pow(node.contraction * other.contraction, 2f); // signed
-                    edgeColor = ColorFromContraction(cEdge, alpha);
-                } else {
-                    edgeColor = new Color(0f, 0.5f, 1f, alpha);
-                }
+                // Compute signed expansion (positive), contraction (negative)
+                float2 edgeDir = math.normalize(posB2 - posA2);
+
+                float2 refA = node.plasticReferencePos;
+                float2 refB = other.plasticReferencePos;
+                float restLen = math.distance(refA, refB); // computed from plastic ref
+                float currLen = math.distance(posA2, posB2);
+                float contractionVal = (currLen - restLen) / restLen; // negative = contracted, positive = expanded
+
+                // Compute color gradient between contractColor (blue) and expandColor (red)
+                float blend = math.clamp(0.5f + 0.5f * contractionVal / 0.3f, 0.0f, 1.0f);
+                // When contractionVal ==  0 -> blend = 0.5 (neutral)
+                // When contractionVal == -0.3 -> blend ≈ 0.0 (full blue)
+                // When contractionVal == +0.3 -> blend ≈ 1.0 (full red)
+                Color edgeColor = Color.Lerp(contractColor, expandColor, blend);
+                edgeColor = Color.Lerp(neutralColor, edgeColor, 0.85f);
+                edgeColor.a = alpha;
 
                 Gizmos.color = edgeColor;
                 Gizmos.DrawLine(posA, posB);
+
+                // Optionally draw rest length as a highlighted segment along the edge from posA
+                if (showRestLengthSegment && restLen > 1e-6f) {
+                    float t = math.saturate(restLen / math.distance(posA2, posB2));
+                    Vector3 restEdgeEnd = Vector3.Lerp(posA, posB, math.clamp(restLen / (currLen + 1e-7f), 0f, 1f));
+                    Gizmos.color = Color.yellow;
+                    Gizmos.DrawLine(posA, restEdgeEnd);
+                }
+            }
+        }
+    }
+
+    void DrawPlasticDeformationArrows() {
+        Gizmos.color = plasticRefColor;
+        foreach (var node in meshless.nodes) {
+            Vector3 p = ToVector3(node.pos);
+            Vector3 pRef = ToVector3(node.plasticReferencePos);
+            Vector3 arrow = (pRef - p) * plasticArrowScale;
+
+            if (arrow.sqrMagnitude > 1e-8f) {
+                Gizmos.DrawLine(p, p + arrow);
+                Vector3 dir = arrow.normalized;
+                Vector3 left = Quaternion.AngleAxis(25f, Vector3.forward) * (-dir);
+                Vector3 right = Quaternion.AngleAxis(-25f, Vector3.forward) * (-dir);
+                float ah = 0.08f;
+                Vector3 tip = p + arrow;
+                Gizmos.DrawLine(tip, tip + left * ah);
+                Gizmos.DrawLine(tip, tip + right * ah);
             }
         }
     }
@@ -98,20 +158,12 @@ public class MeshlessVisualiser : MonoBehaviour {
                 Vector3 dir = v.normalized;
                 Vector3 left = Quaternion.AngleAxis(25f, Vector3.forward) * (-dir);
                 Vector3 right = Quaternion.AngleAxis(-25f, Vector3.forward) * (-dir);
-                float ah = 0.12f; // fixed arrowhead size
+                float ah = 0.12f;
                 Vector3 tip = p + v;
                 Gizmos.DrawLine(tip, tip + left * ah);
                 Gizmos.DrawLine(tip, tip + right * ah);
             }
         }
-    }
-
-    static Color ColorFromContraction(float c, float alpha) {
-        float t = Mathf.Max(c, 1f / c) - 1f;
-        Color to = c >= 1f ? expandColor : contractColor;
-        Color cOut = Color.Lerp(neutralColor, to, t);
-        cOut.a = alpha;
-        return cOut;
     }
 
     static Vector3 ToVector3(float2 point) {
@@ -127,7 +179,7 @@ public class MeshlessVisualiser : MonoBehaviour {
 
         if (Input.GetMouseButtonDown(0)) {
             Vector3 mousePos = Input.mousePosition;
-            float minDist = 0.2f; // world units
+            float minDist = 0.2f;
             draggedNodeIndex = -1;
 
             for (int nodeIdx = 0; nodeIdx < meshless.nodes.Count; nodeIdx++) {

@@ -9,13 +9,18 @@ public class Node {
 
     public float2 vel = float2.zero;
     public float2 predPos;
-    public float contraction = 1.0f;
+
+    // XPBI additions
+    public float2 plasticReferencePos; // Position in current plastic config
+    public float yieldStress = 1000f;
+    public float hardeningModulus = 0f;
 
     public List<HashSet<int>> HNSWNeighbors;
     public Meshless parent;
 
     public Node(float2 point, Meshless parent) {
         pos = point;
+        plasticReferencePos = point; // initialize plastic reference position
         maxLayer = GetRandomLayer();
         this.parent = parent;
     }
