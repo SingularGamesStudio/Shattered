@@ -69,21 +69,17 @@ namespace Physics {
     }
 
     public class NodeBatch {
-        private const int NeighborsCached = 0b1;
-        private const int AvgRestLenCached = 0b10;
-        private const int VolumeCached = 0b100;
         const int neighborCount = 6;
         public List<Node> nodes;
         public List<ConstraintCache> caches;
         public int Count;
-        private int cachedCategories = 0;
 
         public NodeBatch(List<Node> nodes) {
             this.nodes = nodes;
             Count = nodes.Count;
-            caches = new List<ConstraintCache>(Count + 1);
+            caches = new List<ConstraintCache>(Count);
             for (int i = 0; i < Count; i++) {
-                caches.Add(new ConstraintCache { });
+                caches.Add(new ConstraintCache());
             }
         }
 
@@ -123,81 +119,21 @@ namespace Physics {
         }
 
         public void CacheNeighbors() {
-            if ((cachedCategories & NeighborsCached) > 0) {
-                return;
-            }
-            cachedCategories += NeighborsCached;
-
             for (int i = 0; i < nodes.Count; i++) {
                 caches[i].neighbors = nodes[i].parent.hnsw.SearchKnn(nodes[i].pos, neighborCount + 1);
-                if (caches[i].neighbors.Contains(i)) {
-                    caches[i].neighbors.Remove(i);
-                } else {
-                    caches[i].neighbors.RemoveAt(neighborCount);
-                }
+                if (caches[i].neighbors.Contains(i)) caches[i].neighbors.Remove(i);
+                else if (caches[i].neighbors.Count > neighborCount) caches[i].neighbors.RemoveAt(6);
                 caches[i].neighbors.Sort((a, b) => Cross(nodes[a].pos - nodes[i].pos, nodes[b].pos - nodes[i].pos).CompareTo(0));
-
-                caches[i].neighborDistances = new List<float>(caches[i].neighbors.Count + 1);
-
-                // ** Use plastic reference positions for "rest" lengths **
-                for (int j = 0; j < caches[i].neighbors.Count; j++) {
-                    int nId = caches[i].neighbors[j];
-                    var pi = nodes[i].plasticReferencePos;
-                    var pj = nodes[nId].plasticReferencePos;
-                    float restLength = math.distance(pi, pj);
-                    caches[i].neighborDistances.Add(restLength);
-                }
-            }
-        }
-
-        public void CacheAvgRestLength() {
-            if ((cachedCategories & AvgRestLenCached) > 0) {
-                return;
-            }
-            cachedCategories += AvgRestLenCached;
-            CacheNeighbors();
-
-            for (int i = 0; i < nodes.Count; i++) {
-                caches[i].avgEdgeLen = 0f;
-                int cnt = 0;
-                foreach (float f in caches[i].neighborDistances) {
-                    if (f < 1e-6f) { continue; }
-                    caches[i].avgEdgeLen += f;
-                    cnt++;
-                }
-                caches[i].avgEdgeLen /= cnt;
-            }
-        }
-
-        public void CacheVolume() {
-            if ((cachedCategories & VolumeCached) > 0) {
-                return;
-            }
-            cachedCategories += VolumeCached;
-            CacheNeighbors();
-
-            for (int i = 0; i < nodes.Count; i++) {
-                caches[i].leafVolumes = new List<float>(caches[i].neighborDistances.Count + 1);
-                var pi = nodes[i].plasticReferencePos;
-                for (int k = 0; k < caches[i].neighbors.Count; k++) {
-                    int j0 = caches[i].neighbors[k];
-                    int j1 = caches[i].neighbors[(k + 1) % caches[i].neighbors.Count];
-                    var pj0 = nodes[j0].plasticReferencePos;
-                    var pj1 = nodes[j1].plasticReferencePos;
-                    float area = 0.5f * Cross(pj0 - pi, pj1 - pi);
-                    caches[i].leafVolumes.Add(area);
-                }
             }
         }
 
         public void CacheLambdas() {
             for (int i = 0; i < nodes.Count; i++) {
-                // REMOVE tension lambdas
-                caches[i].lambdas.neighborDistance = new List<float>(caches[i].neighborDistances.Count + 1);
-                caches[i].lambdas.volume = new List<float>(caches[i].neighborDistances.Count + 1);
-                for (int j = 0; j < caches[i].neighborDistances.Count; j++) {
+                caches[i].lambdas.neighborDistance = new List<float>(caches[i].neighbors.Count);
+                caches[i].lambdas.volume = new List<float>(caches[i].neighbors.Count);
+                for (int j = 0; j < caches[i].neighbors.Count; j++) {
                     caches[i].lambdas.neighborDistance.Add(0f);
-                    caches[i].lambdas.volume.Add(0);
+                    caches[i].lambdas.volume.Add(0f);
                 }
             }
         }

@@ -9,23 +9,29 @@ public class Node {
 
     public float2 vel = float2.zero;
     public float2 predPos;
+    public float2x2 Fp = float2x2.identity; // Plastic deformation gradient
+    public float2 originalPos;
 
-    // XPBI additions
-    public float2 plasticReferencePos; // Position in current plastic config
-    public float yieldStress = 1000f;
-    public float hardeningModulus = 0f;
+    public float yieldStress = 1000f; // Not used here, preserved for later
+    public float hardeningModulus = 0f; // Not used here, preserved for later
 
     public List<HashSet<int>> HNSWNeighbors;
     public Meshless parent;
 
     public Node(float2 point, Meshless parent) {
         pos = point;
-        plasticReferencePos = point; // initialize plastic reference position
+        originalPos = point;
         maxLayer = GetRandomLayer();
         this.parent = parent;
     }
 
     private static int GetRandomLayer(float ml = 0.6f) {
         return (int)(math.floor(math.log(1.0 / UnityEngine.Random.value) * ml) + 0.01);
+    }
+
+    // New: Build the plastic-rest edge vector to a neighbor from Fp
+    public float2 RestEdge(int neighborIdx) {
+        var neighbor = parent.nodes[neighborIdx];
+        return math.mul(Fp, neighbor.originalPos - this.originalPos);
     }
 }
