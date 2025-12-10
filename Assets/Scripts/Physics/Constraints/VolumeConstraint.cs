@@ -1,130 +1,209 @@
 using Unity.Mathematics;
+using UnityEngine;
 
 namespace Physics {
     public class VolumeConstraint : Constraint {
-        public float Compliance = 0f;
-        public float Damping = 0f;
         public string GetConstraintType() => "VolumeConstraint";
 
-        public void Initialise(NodeBatch data) {
-            //data.CacheVolume();
-            data.ResetDebugData(GetConstraintType());
+        private int currentIteration = 0;
+
+        public void Initialise(NodeBatch nodes) {
+            nodes.CacheNeighbors();
+            nodes.ComputeCorrectionMatrices();
+            nodes.ResetDebugData(GetConstraintType());
+
+            // Initialize Fp (plastic deformation gradient) to identity
+            for (int i = 0; i < nodes.Count; i++) {
+                nodes.nodes[i].Fp = float2x2.identity;
+            }
+
+            currentIteration = 0;
         }
 
-        public void Relax(NodeBatch data, float stiffness, float timeStep) {
-            float alphaTilde = stiffness / (timeStep * timeStep);
-            float gammaDt = Damping * timeStep;
-            string constraintType = GetConstraintType();
+        // XPBI Eq. 11: Velocity gradient estimation with kernel gradient correction
+        private float2x2 EstimateVelocityGradient(NodeBatch batch, int particleIdx) {
+            var node = batch.nodes[particleIdx];
+            var cache = batch.caches[particleIdx];
+            float2x2 velocitySum = float2x2.zero;
+
+            for (int k = 0; k < cache.neighbors.Count; k++) {
+                int j = cache.neighbors[k];
+                if (j < 0 || j >= batch.Count) continue;
+
+                float2 xij = batch.nodes[j].pos - node.pos;
+                float dist = math.length(xij);
+                if (dist < Const.Eps) continue;
+
+                // Corrected gradient: L_p * (w * ∇W)
+                float2 correctedGrad = math.mul(cache.L, (1.0f / dist) * math.normalize(xij));
+                float2 velDiff = batch.nodes[j].vel - node.vel;
+
+                velocitySum.c0 += velDiff * correctedGrad.x;
+                velocitySum.c1 += velDiff * correctedGrad.y;
+            }
+
+            return velocitySum;
+        }
+
+        public void Relax(NodeBatch data, float compliance, float timeStep) {
+            float alphaTilde = compliance / (timeStep * timeStep);
 
             for (int i = 0; i < data.Count; i++) {
-                var ni = data.nodes[i];
+                var node = data.nodes[i];
                 var cache = data.caches[i];
-                var debug = data.GetOrCreateDebugData(i, constraintType);
-                float wi = ni.isFixed ? 0f : ni.invMass;
+                var debug = data.GetOrCreateDebugData(i, GetConstraintType());
+                if (cache?.neighbors == null || cache.neighbors.Count < 2) continue;
 
+                float wi = node.invMass;
+                if (wi <= 0f && node.isFixed) continue;
+
+                // XPBI Eq. 9: Update elastic deformation from velocity gradient
+                float2x2 F_elastic_projected = ApplyPlasticityReturnVolume(
+                    float2x2.identity + EstimateVelocityGradient(data, i) * timeStep,
+                    i,
+                    ref debug
+                );
+
+                // Process each triangular area constraint (node i and two consecutive neighbors)
                 for (int k = 0; k < cache.neighbors.Count; k++) {
-                    float2 oldPos = ni.predPos;
+                    int j = cache.neighbors[k];
+                    int l = cache.neighbors[(k + 1) % cache.neighbors.Count];
+                    if (j < 0 || j >= data.Count || l < 0 || l >= data.Count) continue;
 
-                    var nb = data.nodes[cache.neighbors[k]];
-                    var nc = data.nodes[cache.neighbors[(k + 1) % cache.neighbors.Count]];
+                    var nb = data.nodes[j];
+                    var nc = data.nodes[l];
                     float wj = nb.isFixed ? 0f : nb.invMass;
                     float wk = nc.isFixed ? 0f : nc.invMass;
 
-                    float2 gA = 0.5f * Perp(nb.predPos - nc.predPos);
-                    float2 gB = 0.5f * Perp(nc.predPos - ni.predPos);
-                    float2 gC = 0.5f * Perp(ni.predPos - nb.predPos);
+                    // Current area (signed)
+                    float currentArea = 0.5f * Cross(nb.pos - node.pos, nc.pos - node.pos);
 
-                    float denom = wi * math.lengthsq(gA) + wj * math.lengthsq(gB) + wk * math.lengthsq(gC) + alphaTilde + gammaDt;
-                    if (denom <= Const.Eps) {
+                    // Target area: F_elastic * Fp * (original edges)
+                    float2 targetEdge_j = math.mul(F_elastic_projected,
+                                                   math.mul(node.Fp, nb.originalPos - node.originalPos));
+                    float2 targetEdge_k = math.mul(F_elastic_projected,
+                                                   math.mul(node.Fp, nc.originalPos - node.originalPos));
+                    float targetArea = 0.5f * Cross(targetEdge_j, targetEdge_k);
+
+                    if (math.abs(targetArea) < Const.Eps) continue;
+
+                    // Constraint: C = currentArea - targetArea
+                    float C = currentArea - targetArea;
+
+                    // Constraint gradients (perpendicular to edges)
+                    float2 gradC_i = 0.5f * Perp(nb.pos - nc.pos);
+                    float2 gradC_j = 0.5f * Perp(nc.pos - node.pos);
+                    float2 gradC_k = 0.5f * Perp(node.pos - nb.pos);
+
+                    float denominator = wi * math.lengthsq(gradC_i) +
+                                       wj * math.lengthsq(gradC_j) +
+                                       wk * math.lengthsq(gradC_k);
+
+                    if (denominator < Const.Eps) {
                         debug.degenerateCount++;
                         continue;
                     }
 
-                    // On-the-fly rest area from Fp
-                    float2 xi0 = ni.originalPos;
-                    float2 xj0 = nb.originalPos;
-                    float2 xk0 = nc.originalPos;
-                    float2 restEdge_j = math.mul(ni.Fp, xj0 - xi0);
-                    float2 restEdge_k = math.mul(ni.Fp, xk0 - xi0);
-                    float restVol = 0.5f * Cross(restEdge_j, restEdge_k);
+                    // XPBD with compliance: Δλ = -(C + α̃λ) / (∇C·M⁻¹·∇C + α̃)
+                    float lambdaAccum = k < cache.lambdas.volume.Count ? cache.lambdas.volume[k] : 0f;
+                    float deltaLambda = -(C + alphaTilde * lambdaAccum) / (denominator + alphaTilde);
 
-                    float dLambda = -(0.5f * Cross(nb.predPos - ni.predPos, nc.predPos - ni.predPos) - restVol + alphaTilde * cache.lambdas.volume[k]) / denom;
-                    if (float.IsNaN(dLambda) || float.IsInfinity(dLambda)) {
+                    if (float.IsNaN(deltaLambda) || float.IsInfinity(deltaLambda)) {
                         debug.nanInfCount++;
                         continue;
                     }
 
-                    ni.predPos -= wi * dLambda * gA;
-                    nb.predPos -= wj * dLambda * gB;
-                    nc.predPos -= wk * dLambda * gC;
+                    // Update velocities: Δv = (1/m) * Δλ * ∇C / Δt
+                    float velScale = deltaLambda / timeStep;
+                    node.vel += wi * velScale * gradC_i;
+                    nb.vel += wj * velScale * gradC_j;
+                    nc.vel += wk * velScale * gradC_k;
 
-                    cache.lambdas.volume[k] += dLambda;
-                    debug.RecordPositionUpdate(ni.predPos - oldPos);
+                    // Accumulate lambda
+                    while (cache.lambdas.volume.Count <= k) {
+                        cache.lambdas.volume.Add(0f);
+                    }
+                    cache.lambdas.volume[k] += deltaLambda;
+
+                    debug.RecordPositionUpdate(wi * velScale * gradC_i * timeStep);
+                    debug.constraintEnergy += math.abs(C);
                 }
+
+                debug.iterationsToConverge = currentIteration + 1;
             }
 
-            data.FinalizeDebugData(constraintType);
+            data.FinalizeDebugData(GetConstraintType());
+            currentIteration++;
         }
 
-        // XPBI plastic flow for area/volume constraint
-        public void PlasticFlow(NodeBatch data, float dt) {
-            const float yieldAreaFrac = 1.05f; // stretch threshold for area
+        // XPBI Eq. 14: Plasticity return mapping for area/volume preservation
+        private float2x2 ApplyPlasticityReturnVolume(float2x2 F_elastic, int nodeIdx, ref ConstraintDebugData debug) {
+            const float yieldAreaFrac = 1.05f;
 
-            for (int i = 0; i < data.Count; ++i) {
-                var node = data.nodes[i];
-                var cache = data.caches[i];
-                if (cache?.neighbors == null || cache.neighbors.Count < 2) continue;
+            // Polar decomposition: F = R * S
+            DeformationUtils.PolarDecompose2D(F_elastic, out float2x2 R, out float2x2 S,
+                                              out float s1, out float s2, nodeIdx);
 
-                int n = cache.neighbors.Count;
-                float2 xi0 = node.originalPos;
-                float2 xi = node.predPos;
+            // Area stretch = det(F) = s1 * s2
+            float areaStretch = s1 * s2;
 
-                // Build local rest/cur edges: from node to neighbors
-                float2[] restEdges = new float2[n];
-                float2[] curEdges = new float2[n];
-                for (int k = 0; k < n; ++k) {
-                    int j = cache.neighbors[k];
-                    float2 xj0 = data.nodes[j].originalPos;
-                    float2 xj = data.nodes[j].predPos;
-                    restEdges[k] = math.mul(node.Fp, xj0 - xi0);
-                    curEdges[k] = xj - xi;
-                }
-
-                // Fit deformation gradient F mapping restEdges to curEdges
-                float2x2 F = DeformationUtils.FitDeformationGradient(restEdges, curEdges);
-                float2x2 R, S;
-                float s1, s2;
-                DeformationUtils.PolarDecompose2D(F, out R, out S, out s1, out s2);
-
-                // Area stretch: product of principal stretches
-                float areaStretch = s1 * s2;
-
-                bool yielded = (areaStretch > yieldAreaFrac) || (areaStretch < 1f / yieldAreaFrac);
-                if (yielded) {
-                    // Return-mapping: clamp area stretch (isotropic projection)
-                    float clampedAreaStretch = math.clamp(areaStretch, 1f / yieldAreaFrac, yieldAreaFrac);
-                    float proj_s = math.sqrt(clampedAreaStretch);
-
-                    // For anisotropy: adaptively clamp s1 and s2 (optional: you may want isotropic area flow only)
-                    float clamped_s1 = math.clamp(s1, 1f / yieldAreaFrac, yieldAreaFrac);
-                    float clamped_s2 = math.clamp(s2, 1f / yieldAreaFrac, yieldAreaFrac);
-
-                    // Build projected S_p with same eigenvectors
-                    float2x2 V;
-                    float a = S.c0.x, b = S.c0.y, c = S.c1.x, d = S.c1.y;
-                    if (math.abs(b) > 1e-5f) {
-                        float2 v1 = math.normalize(new float2(s1 * s1 - d * d, b));
-                        float2 v2 = math.normalize(new float2(s2 * s2 - d * d, b));
-                        V = new float2x2(v1, v2);
-                    } else {
-                        V = float2x2.identity;
-                    }
-                    float2x2 Dcl = new float2x2(new float2(clamped_s1, 0f), new float2(0f, clamped_s2));
-                    float2x2 Sp = math.mul(math.mul(V, Dcl), math.transpose(V));
-
-                    node.Fp = math.mul(Sp, node.Fp); // update plastic gradient
-                }
+            if (!(areaStretch > yieldAreaFrac || areaStretch < 1f / yieldAreaFrac)) {
+                return F_elastic;
             }
+
+            debug.plasticFlowCount++;
+
+            // Clamp area stretch while preserving aspect ratio
+            float scaleFactor = math.sqrt(
+                math.clamp(areaStretch, 1f / yieldAreaFrac, yieldAreaFrac) / areaStretch
+            );
+            float clamped_s1 = s1 * scaleFactor;
+            float clamped_s2 = s2 * scaleFactor;
+
+            // Reconstruct S with clamped stretches
+            float2x2 V;
+            if (math.abs(S.c0.y) > 1e-5f) {
+                // Compute eigenvectors from symmetric S
+                V = new float2x2(
+                    math.normalize(new float2(clamped_s1 * clamped_s1 - S.c1.y, S.c0.y)),
+                    math.normalize(new float2(clamped_s2 * clamped_s2 - S.c1.y, S.c0.y))
+                );
+            } else {
+                V = float2x2.identity;
+            }
+
+            float2x2 S_clamped = math.mul(
+                math.mul(V, new float2x2(new float2(clamped_s1, 0f), new float2(0f, clamped_s2))),
+                math.transpose(V)
+            );
+
+            return math.mul(R, S_clamped);
+        }
+
+        // XPBI Eq. 22: Update plastic deformation after convergence
+        public void UpdatePlasticDeformation(NodeBatch data, float timeStep) {
+            const float yieldAreaFrac = 1.05f;
+
+            for (int i = 0; i < data.Count; i++) {
+                var node = data.nodes[i];
+                if (data.caches[i]?.neighbors == null || data.caches[i].neighbors.Count < 2) continue;
+
+                float2x2 F_elastic = float2x2.identity + EstimateVelocityGradient(data, i) * timeStep;
+
+                DeformationUtils.PolarDecompose2D(F_elastic, out float2x2 R, out float2x2 S,
+                                                  out float s1, out float s2, i);
+
+                float areaStretch = s1 * s2;
+                if (!(areaStretch > yieldAreaFrac || areaStretch < 1f / yieldAreaFrac)) {
+                    continue;
+                }
+
+                // Update Fp: accumulate plastic deformation
+                // Note: Simplified multiplicative update, see XPBI paper for full derivation
+                node.Fp = math.mul(F_elastic, node.Fp);
+            }
+
+            currentIteration = 0;
         }
 
         static float Cross(in float2 a, in float2 b) => a.x * b.y - a.y * b.x;

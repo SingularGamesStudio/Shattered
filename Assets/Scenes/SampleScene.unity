@@ -245,14 +245,17 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   maxLayer: 3
-  velocityCap: 0.2
+  enableEdgeConstraints: 1
+  enableVolumeConstraints: 1
+  edgeCompliance: 0.01
+  volumeCompliance: 0.0001
   center:
     x: 0
     y: 2
   size:
     x: 5
     y: 5
-  pointCount: 1
+  pointCount: 3
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
@@ -283,10 +286,15 @@ MonoBehaviour:
   show: 1
   showNodes: 1
   showEdges: 1
-  colorEdgesByPlasticity: 1
-  showPlasticRefs: 1
-  showPlasticArrows: 1
-  showVelocities: 0
+  showPrincipalStretch: 1
+  showDeformationGradient: 0
+  showVelocity: 0
+  showFixedNodes: 1
+  edgeMode: 0
+  yieldStretch: 1.05
+  yieldAreaFrac: 1.05
+  velocityScale: 0.5
+  deformationScale: 0.4
   meshless: {fileID: 961765556}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
