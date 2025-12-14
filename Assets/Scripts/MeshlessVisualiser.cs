@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -12,16 +13,19 @@ public class MeshlessVisualiser : MonoBehaviour {
     public bool showVelocity = false;
     public bool showFixedNodes = true;
 
+    [Header("Rest State (estimated)")]
+    public bool showRestArrow = true;
+    public float restArrowScale = 1.0f;
+
     [Header("Edge Display Mode")]
     public EdgeDisplayMode edgeMode = EdgeDisplayMode.HNSW;
     public enum EdgeDisplayMode {
-        HNSW,           // Show HNSW level 0 connections (always available)
-        CachedNeighbors // Show actual constraint neighbors (only after first physics step)
+        HNSW,
+        CachedNeighbors
     }
 
     [Header("Yield Threshold")]
     public float yieldStretch = 1.05f;
-    public float yieldAreaFrac = 1.05f;
 
     [Header("Scale Factors")]
     public float velocityScale = 0.5f;
@@ -29,124 +33,56 @@ public class MeshlessVisualiser : MonoBehaviour {
 
     const float nodeSphereRadius = 0.09f;
     const float fixedNodeRadius = 0.12f;
+    const float eps = 1e-6f;
 
-    // Colors
     static readonly Color contractColor = new Color(0.2f, 0.45f, 1f, 1f);
     static readonly Color neutralColor = new Color(0.85f, 0.85f, 0.85f, 1f);
     static readonly Color expandColor = new Color(1f, 0.35f, 0.25f, 1f);
     static readonly Color fixedColor = new Color(0.3f, 0.3f, 0.3f, 1f);
     static readonly Color velocityColor = new Color(0f, 1f, 0.5f, 1f);
     static readonly Color fpColor = new Color(1f, 0.8f, 0f, 1f);
+    static readonly Color restColor = new Color(0.75f, 0.2f, 1f, 1f);
 
-    private Camera mainCamera;
-    public Meshless meshless;
+    Meshless meshless;
 
     void Awake() {
-        mainCamera = Camera.main;
-        meshless = gameObject.GetComponent<Meshless>();
-    }
-
-    void Update() {
-        if (Input.GetKeyDown(KeyCode.V)) showVelocity = !showVelocity;
-        if (Input.GetKeyDown(KeyCode.D)) showDeformationGradient = !showDeformationGradient;
-        if (Input.GetKeyDown(KeyCode.S)) showPrincipalStretch = !showPrincipalStretch;
-        if (Input.GetKeyDown(KeyCode.E)) {
-            edgeMode = edgeMode == EdgeDisplayMode.HNSW ?
-                       EdgeDisplayMode.CachedNeighbors :
-                       EdgeDisplayMode.HNSW;
-        }
+        meshless = GetComponent<Meshless>();
     }
 
     void OnDrawGizmos() {
-        if (meshless == null || meshless.nodes == null || meshless.nodes.Count == 0 || !show)
-            return;
+        if (!show) return;
 
-        DrawEdgesAndStretch();
-        DrawNodes();
-        DrawDeformationGradients();
-        DrawVelocities();
+        meshless ??= GetComponent<Meshless>();
+        if (meshless == null || meshless.nodes == null || meshless.nodes.Count == 0) return;
+
+        if (showEdges) DrawEdges();
+        if (showNodes || showPrincipalStretch) DrawNodes();
+        if (showDeformationGradient) DrawDeformationGradients();
+        if (showVelocity) DrawVelocities();
+        if (showRestArrow) DrawRestArrows();
     }
 
-    void DrawEdgesAndStretch() {
-        if (!showEdges) return;
-
-        if (edgeMode == EdgeDisplayMode.CachedNeighbors) {
-            DrawCachedNeighborEdges();
-        } else {
-            DrawHNSWEdges();
-        }
+    void DrawEdges() {
+        if (edgeMode == EdgeDisplayMode.CachedNeighbors && meshless.lastBatchDebug != null) DrawCachedNeighborEdges();
+        else DrawHNSWEdges();
     }
 
     void DrawCachedNeighborEdges() {
-        if (meshless.lastBatchDebug == null) {
-            // No simulation data yet, fall back to HNSW
-            DrawHNSWEdges();
-            return;
-        }
+        var batch = meshless.lastBatchDebug;
 
         for (int i = 0; i < meshless.nodes.Count; i++) {
-            var node = meshless.nodes[i];
-            var cache = meshless.lastBatchDebug.caches[i];
-            if (cache?.neighbors == null) continue;
+            var cache = batch.caches[i];
+            var N = cache?.neighbors;
+            if (N == null) continue;
 
-            foreach (var neighborIdx in cache.neighbors) {
-                if (neighborIdx <= i) continue; // Draw each edge once
-                if (neighborIdx < 0 || neighborIdx >= meshless.nodes.Count) continue;
+            for (int k = 0; k < N.Count; k++) {
+                int j = N[k];
+                if (j <= i || (uint)j >= (uint)meshless.nodes.Count) continue;
 
-                var neighbor = meshless.nodes[neighborIdx];
-
-                // Calculate stretch
-                float2 restEdge = math.mul(node.Fp, neighbor.originalPos - node.originalPos);
-                float restLen = math.length(restEdge);
-                float curLen = math.length(neighbor.pos - node.pos);
-                float stretch = curLen / (restLen + 1e-8f);
-
-                Color edgeColor = GetStretchColor(stretch);
-
-                Gizmos.color = edgeColor;
-                Gizmos.DrawLine(ToVector3(node.pos), ToVector3(neighbor.pos));
+                float stretch = EdgeStretch(i, j);
+                Gizmos.color = GetStretchColor(stretch);
+                Gizmos.DrawLine(ToVector3(meshless.nodes[i].pos), ToVector3(meshless.nodes[j].pos));
             }
-        }
-    }
-
-    Color GetStretchColor(float stretch) {
-        float compressYield = 1f / yieldStretch;
-
-        if (stretch < compressYield) {
-            return contractColor;
-        } else if (stretch < 1f) {
-            float t = (1f - stretch) / (1f - compressYield);
-            return Color.Lerp(neutralColor, contractColor, t);
-        } else if (stretch <= yieldStretch) {
-            float t = (stretch - 1f) / (yieldStretch - 1f);
-            return Color.Lerp(neutralColor, expandColor, t);
-        } else {
-            return expandColor;
-        }
-    }
-
-    void DrawNodes() {
-        if (!showNodes && !showPrincipalStretch) return;
-
-        for (int i = 0; i < meshless.nodes.Count; i++) {
-            var node = meshless.nodes[i];
-            Color sphereColor = neutralColor;
-
-            // Fixed nodes get special color and size
-            if (node.isFixed) {
-                if (!showFixedNodes) continue;
-                Gizmos.color = fixedColor;
-                Gizmos.DrawSphere(ToVector3(node.pos), fixedNodeRadius);
-                continue;
-            }
-
-            // Color based on principal stretch
-            if (showPrincipalStretch) {
-                sphereColor = GetNodeStretchColor(i);
-            }
-
-            Gizmos.color = sphereColor;
-            Gizmos.DrawSphere(ToVector3(node.pos), nodeSphereRadius);
         }
     }
 
@@ -155,125 +91,164 @@ public class MeshlessVisualiser : MonoBehaviour {
             var node = meshless.nodes[i];
             if (node.HNSWNeighbors == null || node.HNSWNeighbors.Count == 0) continue;
 
-            // HNSW level 0 neighbors
-            foreach (var neighborIdx in node.HNSWNeighbors[0]) {
-                if (neighborIdx <= i) continue; // Draw each edge once
-                if (neighborIdx < 0 || neighborIdx >= meshless.nodes.Count) continue;
+            foreach (int j in node.HNSWNeighbors[0]) {
+                if (j <= i || (uint)j >= (uint)meshless.nodes.Count) continue;
 
-                var neighbor = meshless.nodes[neighborIdx];
-
-                // Calculate stretch
-                float2 restEdge = math.mul(node.Fp, neighbor.originalPos - node.originalPos);
-                float restLen = math.length(restEdge);
-                float curLen = math.length(neighbor.pos - node.pos);
-                float stretch = curLen / (restLen + 1e-8f);
-
-                Color edgeColor = GetStretchColor(stretch);
-
-                Gizmos.color = edgeColor;
-                Gizmos.DrawLine(ToVector3(node.pos), ToVector3(neighbor.pos));
+                float stretch = EdgeStretch(i, j);
+                Gizmos.color = GetStretchColor(stretch);
+                Gizmos.DrawLine(ToVector3(node.pos), ToVector3(meshless.nodes[j].pos));
             }
         }
     }
 
-    Color GetNodeStretchColor(int nodeIdx) {
-        var node = meshless.nodes[nodeIdx];
+    float EdgeStretch(int i, int j) {
+        var ni = meshless.nodes[i];
+        var nj = meshless.nodes[j];
 
-        // Try cached neighbors first (more accurate) - this is a List<int>
-        var cache = meshless.lastBatchDebug?.caches[nodeIdx];
-        System.Collections.Generic.IEnumerable<int> neighbors = cache?.neighbors;
+        float2 restEdge = math.mul(ni.Fp, nj.originalPos - ni.originalPos);
+        float restLen = math.length(restEdge);
+        float curLen = math.length(nj.pos - ni.pos);
+        return curLen / math.max(restLen, eps);
+    }
 
-        // Fall back to HNSW if no cache available - this is a HashSet<int>
-        if (neighbors == null && node.HNSWNeighbors != null && node.HNSWNeighbors.Count > 0) {
-            neighbors = node.HNSWNeighbors[0];
-        }
+    Color GetStretchColor(float stretch) {
+        float compressYield = 1f / math.max(yieldStretch, eps);
 
-        if (neighbors == null) return neutralColor;
+        if (stretch < compressYield) return contractColor;
+        if (stretch < 1f) return Color.Lerp(neutralColor, contractColor, (1f - stretch) / math.max(1f - compressYield, eps));
+        if (stretch <= yieldStretch) return Color.Lerp(neutralColor, expandColor, (stretch - 1f) / math.max(yieldStretch - 1f, eps));
+        return expandColor;
+    }
 
-        float maxStretch = 1f;
-        int validNeighbors = 0;
+    void DrawNodes() {
+        for (int i = 0; i < meshless.nodes.Count; i++) {
+            var node = meshless.nodes[i];
 
-        foreach (var neighborIdx in neighbors) {
-            if (neighborIdx == nodeIdx || neighborIdx < 0 || neighborIdx >= meshless.nodes.Count) continue;
+            if (node.isFixed) {
+                if (!showFixedNodes) continue;
+                Gizmos.color = fixedColor;
+                Gizmos.DrawSphere(ToVector3(node.pos), fixedNodeRadius);
+                continue;
+            }
 
-            var neighbor = meshless.nodes[neighborIdx];
-            float2 restEdge = math.mul(node.Fp, neighbor.originalPos - node.originalPos);
-            float restLen = math.length(restEdge);
-            if (restLen < 1e-6f) continue;
-
-            float curLen = math.length(neighbor.pos - node.pos);
-            float stretch = curLen / restLen;
-            maxStretch = math.max(maxStretch, stretch);
-            validNeighbors++;
-        }
-
-        if (validNeighbors == 0) return neutralColor;
-
-        if (maxStretch < 1f) {
-            float t = math.saturate((1f - maxStretch) / 0.15f);
-            return Color.Lerp(neutralColor, contractColor, t);
-        } else {
-            float t = math.saturate((maxStretch - 1f) / 0.15f);
-            return Color.Lerp(neutralColor, expandColor, t);
+            Gizmos.color = showPrincipalStretch ? GetNodeStretchColor(i) : neutralColor;
+            if (showNodes || showPrincipalStretch) Gizmos.DrawSphere(ToVector3(node.pos), nodeSphereRadius);
         }
     }
 
-    void DrawDeformationGradients() {
-        if (!showDeformationGradient) return;
+    Color GetNodeStretchColor(int i) {
+        IEnumerable<int> N = meshless.lastBatchDebug?.caches[i]?.neighbors;
 
+        // Fallback to HNSW level-0 graph if the simulation hasn't produced cached neighbors yet.
+        if (N == null) {
+            var node = meshless.nodes[i];
+            if (node.HNSWNeighbors != null && node.HNSWNeighbors.Count > 0) N = node.HNSWNeighbors[0];
+        }
+        if (N == null) return neutralColor;
+
+        float maxStretch = 1f;
+        int valid = 0;
+
+        foreach (int j in N) {
+            if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+
+            float2 restEdge = math.mul(meshless.nodes[i].Fp, meshless.nodes[j].originalPos - meshless.nodes[i].originalPos);
+            float restLen = math.length(restEdge);
+            if (restLen < eps) continue;
+
+            float stretch = math.length(meshless.nodes[j].pos - meshless.nodes[i].pos) / restLen;
+            maxStretch = math.max(maxStretch, stretch);
+            valid++;
+        }
+
+        if (valid == 0) return neutralColor;
+
+        float t = math.saturate(math.abs(maxStretch - 1f) / 0.15f);
+        return maxStretch < 1f ? Color.Lerp(neutralColor, contractColor, t)
+                               : Color.Lerp(neutralColor, expandColor, t);
+    }
+
+    void DrawDeformationGradients() {
         for (int i = 0; i < meshless.nodes.Count; i++) {
             var node = meshless.nodes[i];
             if (node.isFixed) continue;
 
-            Vector3 pos = ToVector3(node.pos);
-            float2x2 Fp = node.Fp;
+            Vector3 p = ToVector3(node.pos);
+            float2 e1 = node.Fp.c0 * deformationScale;
+            float2 e2 = node.Fp.c1 * deformationScale;
 
-            // Draw Fp basis vectors
-            Gizmos.color = fpColor;
-            float2 e1 = Fp.c0 * deformationScale;
-            float2 e2 = Fp.c1 * deformationScale;
+            DrawArrow(p, p + ToVector3(e1), fpColor);
+            DrawArrow(p, p + ToVector3(e2), fpColor);
 
-            DrawArrow(pos, pos + ToVector3(e1), fpColor);
-            DrawArrow(pos, pos + ToVector3(e2), fpColor);
-
-            // Highlight non-identity deformation with wire sphere
-            float det = Fp.c0.x * Fp.c1.y - Fp.c0.y * Fp.c1.x;
-            if (math.abs(det - 1.0f) > 0.1f) {
+            float det = node.Fp.c0.x * node.Fp.c1.y - node.Fp.c0.y * node.Fp.c1.x;
+            if (math.abs(det - 1f) > 0.1f) {
                 Gizmos.color = Color.red;
-                Gizmos.DrawWireSphere(pos, nodeSphereRadius * 1.5f);
+                Gizmos.DrawWireSphere(p, nodeSphereRadius * 1.5f);
             }
         }
     }
 
     void DrawVelocities() {
-        if (!showVelocity) return;
-
         for (int i = 0; i < meshless.nodes.Count; i++) {
             var node = meshless.nodes[i];
             if (node.isFixed) continue;
 
-            float velMag = math.length(node.vel);
-            if (velMag < 1e-6f) continue;
-
-            Vector3 pos = ToVector3(node.pos);
-            Vector3 velEnd = pos + ToVector3(node.vel * velocityScale);
-
-            DrawArrow(pos, velEnd, velocityColor);
+            if (math.lengthsq(node.vel) < 1e-10f) continue;
+            Vector3 p = ToVector3(node.pos);
+            DrawArrow(p, p + ToVector3(node.vel * velocityScale), velocityColor);
         }
     }
 
-    void DrawArrow(Vector3 start, Vector3 end, Color color) {
+    void DrawRestArrows() {
+        for (int i = 0; i < meshless.nodes.Count; i++) {
+            var node = meshless.nodes[i];
+            if (node.isFixed) continue;
+
+            IEnumerable<int> N = meshless.lastBatchDebug?.caches[i]?.neighbors;
+            if (N == null) {
+                if (node.HNSWNeighbors == null || node.HNSWNeighbors.Count == 0) continue;
+                N = node.HNSWNeighbors[0];
+            }
+
+            float2x2 Ftot = math.mul(node.F, node.Fp);
+
+            float2 sum = float2.zero;
+            int count = 0;
+
+            foreach (int j in N) {
+                if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+
+                float2 rij = math.mul(Ftot, meshless.nodes[j].originalPos - node.originalPos);
+                sum += (meshless.nodes[j].pos - rij);
+                count++;
+            }
+
+            if (count == 0) continue;
+
+            float2 xRest = sum / count;
+            Vector3 p = ToVector3(node.pos);
+            Vector3 q = ToVector3(node.pos + (xRest - node.pos) * restArrowScale);
+
+            DrawArrow(p, q, restColor);
+        }
+    }
+
+
+    static void DrawArrow(Vector3 start, Vector3 end, Color color) {
         Gizmos.color = color;
         Gizmos.DrawLine(start, end);
 
-        // Arrow head
-        Vector3 dir = (end - start).normalized;
-        Vector3 perpendicular = new Vector3(-dir.y, dir.x, 0) * 0.1f;
-        float headSize = 0.15f;
+        Vector3 d = end - start;
+        float len = d.magnitude;
+        if (len < 1e-6f) return;
 
-        Gizmos.DrawLine(end, end - dir * headSize + perpendicular);
-        Gizmos.DrawLine(end, end - dir * headSize - perpendicular);
+        Vector3 dir = d / len;
+        Vector3 perp = new Vector3(-dir.y, dir.x, 0f);
+
+        float head = math.min(0.15f, 0.35f * len);
+        Gizmos.DrawLine(end, end - dir * head + perp * (0.1f * head));
+        Gizmos.DrawLine(end, end - dir * head - perp * (0.1f * head));
     }
 
-    static Vector3 ToVector3(float2 pt) => new Vector3(pt.x, pt.y, 0f);
+    static Vector3 ToVector3(float2 p) => new Vector3(p.x, p.y, 0f);
 }

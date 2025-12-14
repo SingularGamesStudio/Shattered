@@ -8,33 +8,42 @@ using Unity.Mathematics;
 public class ConstraintDebugWindow : EditorWindow {
     private Vector2 scrollPos;
     private int selectedNode = -1;
+
     private bool showHealthyNodes = false;
+
+    // Thresholds
     private float positionDeltaThreshold = 0.01f;
+    private float absCThreshold = 0.01f;
+    private float absDeltaLambdaThreshold = 0.001f;
+
     private bool debugMode = false;
 
     // View options
     private bool showNodeInfo = true;
     private bool showDeformationInfo = true;
     private bool showNeighborInfo = false;
-    private bool showLambdaInfo = false;
+    private bool showLambdaInfo = true;
 
     private enum SortMode {
         NodeIndex,
-        MaxDelta,
-        AvgDelta,
+        MaxDeltaX,
+        AvgDeltaX,
+        MaxAbsC,
+        AvgAbsC,
+        MaxAbsDeltaLambda,
+        MaxAbsLambda,
+        MinDenominator,
         DegenerateCount,
         NaNCount,
         PlasticFlowCount
     }
-    private SortMode sortMode = SortMode.MaxDelta;
+
+    private SortMode sortMode = SortMode.MaxAbsC;
     private bool sortDescending = true;
 
-    private string selectedConstraintType = "All";
-    private List<string> availableConstraintTypes = new List<string>();
-
-    [MenuItem("Window/Constraint Debugger")]
+    [MenuItem("Window/Constraint Debugger (XPBI)")]
     public static void ShowWindow() {
-        GetWindow<ConstraintDebugWindow>("Constraint Debug");
+        GetWindow<ConstraintDebugWindow>("XPBI Debug");
     }
 
     void OnEnable() {
@@ -50,10 +59,10 @@ public class ConstraintDebugWindow : EditorWindow {
     }
 
     void OnGUI() {
-        EditorGUILayout.LabelField("Constraint Debugger", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("XPBI Constraint Debugger", EditorStyles.boldLabel);
 
         scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
-        // Simulation controls
+
         DrawSimulationControls();
         EditorGUILayout.Space();
 
@@ -67,40 +76,35 @@ public class ConstraintDebugWindow : EditorWindow {
             return;
         }
 
-        var nodeBatch = targetMeshless.lastBatchDebug;
-        if (nodeBatch == null) {
+        var batch = targetMeshless.lastBatchDebug;
+        if (batch == null) {
             EditorGUILayout.EndScrollView();
             EditorGUILayout.HelpBox("Node batch not available", MessageType.Warning);
             return;
         }
 
-        UpdateAvailableConstraints(nodeBatch);
-
-        // Filter and view options
         DrawControlPanel();
-
         EditorGUILayout.Space();
 
-        // Global statistics
-        DrawGlobalStats(nodeBatch);
-
+        DrawGlobalStats(batch);
         EditorGUILayout.Space();
 
-        // Node list
+        DrawNodeList(batch);
 
-        DrawNodeList(nodeBatch);
         EditorGUILayout.EndScrollView();
     }
-
 
     void DrawSimulationControls() {
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
         EditorGUILayout.LabelField("Simulation Controls", EditorStyles.boldLabel);
 
-        EditorGUI.BeginChangeCheck();
         debugMode = EditorGUILayout.Toggle("Debug Mode (1 Iter/Frame)", debugMode);
-        if (EditorGUI.EndChangeCheck()) {
-            Const.SolverIterations = debugMode ? 1 : Const._defaultSolverIterations;
+        Const.SolverIterations = debugMode ? 1 : Const._defaultSolverIterations;
+
+        var controller = Object.FindFirstObjectByType<MeshlessSimulationController>();
+        if (controller != null) {
+            controller.forceTPSToFPS =
+                EditorGUILayout.Toggle("Debug: FPS=TPS", controller.forceTPSToFPS);
         }
 
         EditorGUILayout.LabelField($"Current Iterations: {Const.SolverIterations}");
@@ -111,30 +115,21 @@ public class ConstraintDebugWindow : EditorWindow {
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
         EditorGUILayout.LabelField("Filters & View Options", EditorStyles.boldLabel);
 
-        // Constraint type filter
-        EditorGUILayout.BeginHorizontal();
-        EditorGUILayout.LabelField("Constraint Type:", GUILayout.Width(120));
-        int selectedIndex = availableConstraintTypes.IndexOf(selectedConstraintType);
-        selectedIndex = EditorGUILayout.Popup(selectedIndex, availableConstraintTypes.ToArray());
-        if (selectedIndex >= 0 && selectedIndex < availableConstraintTypes.Count) {
-            selectedConstraintType = availableConstraintTypes[selectedIndex];
-        }
-        EditorGUILayout.EndHorizontal();
-
-        // Visibility toggles
         showHealthyNodes = EditorGUILayout.Toggle("Show Healthy Nodes", showHealthyNodes);
-        positionDeltaThreshold = EditorGUILayout.Slider("Position Δ Threshold", positionDeltaThreshold, 0.0001f, 1f);
+
+        positionDeltaThreshold = EditorGUILayout.Slider("Δx Threshold", positionDeltaThreshold, 0.0001f, 1f);
+        absCThreshold = EditorGUILayout.Slider("|C| Threshold", absCThreshold, 0.0001f, 10f);
+        absDeltaLambdaThreshold = EditorGUILayout.Slider("|Δλ| Threshold", absDeltaLambdaThreshold, 0.000001f, 1f);
 
         EditorGUILayout.Space(5);
         EditorGUILayout.LabelField("Detail View Options", EditorStyles.boldLabel);
         showNodeInfo = EditorGUILayout.Toggle("Show Node Info", showNodeInfo);
         showDeformationInfo = EditorGUILayout.Toggle("Show Deformation Info", showDeformationInfo);
         showNeighborInfo = EditorGUILayout.Toggle("Show Neighbor Info", showNeighborInfo);
-        showLambdaInfo = EditorGUILayout.Toggle("Show Lambda Info", showLambdaInfo);
+        showLambdaInfo = EditorGUILayout.Toggle("Show XPBI (C/λ) Info", showLambdaInfo);
 
         EditorGUILayout.Space(5);
 
-        // Sort controls
         EditorGUILayout.BeginHorizontal();
         EditorGUILayout.LabelField("Sort By:", GUILayout.Width(60));
         sortMode = (SortMode)EditorGUILayout.EnumPopup(sortMode);
@@ -144,162 +139,141 @@ public class ConstraintDebugWindow : EditorWindow {
         EditorGUILayout.EndVertical();
     }
 
-    void UpdateAvailableConstraints(NodeBatch batch) {
-        HashSet<string> types = new HashSet<string> { "All" };
-
-        foreach (var cache in batch.caches) {
-            foreach (var key in cache.debugDataPerConstraint.Keys) {
-                types.Add(key);
-            }
-        }
-
-        availableConstraintTypes = types.OrderBy(t => t == "All" ? "" : t).ToList();
-
-        if (!availableConstraintTypes.Contains(selectedConstraintType)) {
-            selectedConstraintType = "All";
-        }
-    }
-
     void DrawGlobalStats(NodeBatch batch) {
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-        EditorGUILayout.LabelField("Global Statistics", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("Global Statistics (XPBI)", EditorStyles.boldLabel);
 
-        var constraintsToShow = selectedConstraintType == "All"
-            ? availableConstraintTypes.Where(t => t != "All").ToList()
-            : new List<string> { selectedConstraintType };
+        int nodesAffected = 0;
+        int totalDegenerate = 0;
+        int totalNaN = 0;
+        int totalPlastic = 0;
 
-        foreach (var constraintType in constraintsToShow) {
-            EditorGUILayout.LabelField($"--- {constraintType} ---", EditorStyles.boldLabel);
+        float maxDeltaX = 0f;
+        float avgDeltaX = 0f;
 
-            int totalDegenerate = 0;
-            int totalNaN = 0;
-            int totalPlasticFlow = 0;
-            float maxDelta = 0f;
-            float avgDelta = 0f;
-            float totalEnergy = 0f;
-            int nodesAffected = 0;
-            float avgIterations = 0f;
-            int iterationCount = 0;
+        float maxAbsC = 0f;
+        float avgAbsC = 0f;
 
-            foreach (var cache in batch.caches) {
-                if (!cache.debugDataPerConstraint.ContainsKey(constraintType)) continue;
+        float maxAbsDeltaLambda = 0f;
+        float maxAbsLambda = 0f;
 
-                var debug = cache.debugDataPerConstraint[constraintType];
-                totalDegenerate += debug.degenerateCount;
-                totalNaN += debug.nanInfCount;
-                totalPlasticFlow += debug.plasticFlowCount;
-                maxDelta = Mathf.Max(maxDelta, debug.maxPositionDelta);
-                avgDelta += debug.avgPositionDelta;
-                totalEnergy += debug.constraintEnergy;
+        float totalEnergy = 0f;
+        float avgIterations = 0f;
+        int iterCount = 0;
 
-                if (debug.positionUpdateCount > 0) {
-                    nodesAffected++;
-                    avgIterations += debug.iterationsToConverge;
-                    iterationCount++;
-                }
+        for (int i = 0; i < batch.Count; i++) {
+            var d = batch.debug[i];
+            totalDegenerate += d.degenerateCount;
+            totalNaN += d.nanInfCount;
+            totalPlastic += d.plasticFlowCount;
+
+            maxDeltaX = Mathf.Max(maxDeltaX, d.maxPositionDelta);
+            avgDeltaX += d.avgPositionDelta;
+
+            maxAbsC = Mathf.Max(maxAbsC, d.maxAbsC);
+            avgAbsC += d.avgAbsC;
+
+            maxAbsDeltaLambda = Mathf.Max(maxAbsDeltaLambda, d.maxAbsDeltaLambda);
+            maxAbsLambda = Mathf.Max(maxAbsLambda, d.maxAbsLambda);
+
+            totalEnergy += d.constraintEnergy;
+
+            if (d.positionUpdateCount > 0 || d.constraintEvalCount > 0) {
+                nodesAffected++;
+                avgIterations += d.iterationsToConverge;
+                iterCount++;
             }
-
-            if (nodesAffected > 0) {
-                avgDelta /= nodesAffected;
-                avgIterations /= iterationCount;
-            }
-
-            EditorGUILayout.LabelField($"  Nodes Affected: {nodesAffected} / {batch.Count}");
-            EditorGUILayout.LabelField($"  Max Position Δ: {maxDelta:F6}",
-                maxDelta > positionDeltaThreshold ? GetErrorStyle() : EditorStyles.label);
-            EditorGUILayout.LabelField($"  Avg Position Δ: {avgDelta:F6}");
-            EditorGUILayout.LabelField($"  Avg Iterations to Converge: {avgIterations:F2}");
-            EditorGUILayout.LabelField($"  Total Constraint Energy: {totalEnergy:F6}");
-            EditorGUILayout.LabelField($"  Degenerate Cases: {totalDegenerate}",
-                totalDegenerate > 0 ? GetWarningStyle() : EditorStyles.label);
-            EditorGUILayout.LabelField($"  NaN/Inf Cases: {totalNaN}",
-                totalNaN > 0 ? GetErrorStyle() : EditorStyles.label);
-            EditorGUILayout.LabelField($"  Plastic Flow Events: {totalPlasticFlow}",
-                totalPlasticFlow > 0 ? GetInfoStyle() : EditorStyles.label);
-
-            EditorGUILayout.Space(5);
         }
 
-        // System-wide stats
+        if (nodesAffected > 0) {
+            avgDeltaX /= nodesAffected;
+            avgAbsC /= nodesAffected;
+            if (iterCount > 0) avgIterations /= iterCount;
+        }
+
+        EditorGUILayout.LabelField($"Nodes Affected: {nodesAffected} / {batch.Count}");
+
+        EditorGUILayout.LabelField($"Max Δx: {maxDeltaX:F6}",
+            maxDeltaX > positionDeltaThreshold ? GetErrorStyle() : EditorStyles.label);
+        EditorGUILayout.LabelField($"Avg Δx: {avgDeltaX:F6}");
+
+        EditorGUILayout.LabelField($"Max |C|: {maxAbsC:F6}",
+            maxAbsC > absCThreshold ? GetErrorStyle() : EditorStyles.label);
+        EditorGUILayout.LabelField($"Avg |C|: {avgAbsC:F6}");
+
+        EditorGUILayout.LabelField($"Max |Δλ|: {maxAbsDeltaLambda:F6}",
+            maxAbsDeltaLambda > absDeltaLambdaThreshold ? GetWarningStyle() : EditorStyles.label);
+        EditorGUILayout.LabelField($"Max |λ|: {maxAbsLambda:F6}");
+
+        EditorGUILayout.LabelField($"Avg Iterations (last update): {avgIterations:F2}");
+        EditorGUILayout.LabelField($"Total |C| Energy (accum): {totalEnergy:F6}");
+
+        EditorGUILayout.LabelField($"Degenerate Cases: {totalDegenerate}",
+            totalDegenerate > 0 ? GetWarningStyle() : EditorStyles.label);
+        EditorGUILayout.LabelField($"NaN/Inf Cases: {totalNaN}",
+            totalNaN > 0 ? GetErrorStyle() : EditorStyles.label);
+        EditorGUILayout.LabelField($"Plastic Flow Events: {totalPlastic}",
+            totalPlastic > 0 ? GetInfoStyle() : EditorStyles.label);
+
         EditorGUILayout.Space(5);
         EditorGUILayout.LabelField("System Stats", EditorStyles.boldLabel);
-        float kineticEnergy = batch.CalculateKineticEnergy();
-        EditorGUILayout.LabelField($"  Total Kinetic Energy: {kineticEnergy:F6}");
-        EditorGUILayout.LabelField($"  Total Nodes: {batch.Count}");
+        EditorGUILayout.LabelField($"Total Kinetic Energy: {batch.CalculateKineticEnergy():F6}");
+        EditorGUILayout.LabelField($"Total Nodes: {batch.Count}");
 
         EditorGUILayout.EndVertical();
     }
 
     void DrawNodeList(NodeBatch batch) {
-        var sortedIndices = Enumerable.Range(0, batch.Count).ToList();
+        var indices = Enumerable.Range(0, batch.Count).ToList();
 
-        sortedIndices.Sort((a, b) => {
-            float metricA = GetSortMetric(batch.caches[a], selectedConstraintType);
-            float metricB = GetSortMetric(batch.caches[b], selectedConstraintType);
-            int comparison = metricA.CompareTo(metricB);
-            return sortDescending ? -comparison : comparison;
+        indices.Sort((a, b) => {
+            float metricA = GetSortMetric(batch.debug[a], a);
+            float metricB = GetSortMetric(batch.debug[b], b);
+            int cmp = metricA.CompareTo(metricB);
+            return sortDescending ? -cmp : cmp;
         });
 
-        foreach (int i in sortedIndices) {
-            var node = batch.nodes[i];
-            var cache = batch.caches[i];
+        for (int i = 0; i < indices.Count; i++) {
+            int idx = indices[i];
+            var node = batch.nodes[idx];
+            var cache = batch.caches[idx];
+            var debug = batch.debug[idx];
 
-            bool hasIssues = CheckNodeHasIssues(cache, selectedConstraintType);
-
+            bool hasIssues = CheckNodeHasIssues(debug);
             if (!hasIssues && !showHealthyNodes) continue;
 
-            DrawNodeEntry(i, node, cache, hasIssues);
+            DrawNodeEntry(idx, node, cache, debug, hasIssues);
         }
     }
 
-    float GetSortMetric(ConstraintCache cache, string constraintType) {
-        var debugData = GetAggregatedDebugData(cache, constraintType);
-
+    float GetSortMetric(DebugData d, int index) {
         switch (sortMode) {
-            case SortMode.NodeIndex: return 0;
-            case SortMode.MaxDelta: return debugData.maxPositionDelta;
-            case SortMode.AvgDelta: return debugData.avgPositionDelta;
-            case SortMode.DegenerateCount: return debugData.degenerateCount;
-            case SortMode.NaNCount: return debugData.nanInfCount;
-            case SortMode.PlasticFlowCount: return debugData.plasticFlowCount;
-            default: return 0;
+            case SortMode.NodeIndex: return index;
+            case SortMode.MaxDeltaX: return d.maxPositionDelta;
+            case SortMode.AvgDeltaX: return d.avgPositionDelta;
+            case SortMode.MaxAbsC: return d.maxAbsC;
+            case SortMode.AvgAbsC: return d.avgAbsC;
+            case SortMode.MaxAbsDeltaLambda: return d.maxAbsDeltaLambda;
+            case SortMode.MaxAbsLambda: return d.maxAbsLambda;
+            case SortMode.MinDenominator:
+                return float.IsInfinity(d.minDenominator) ? 0f : d.minDenominator;
+            case SortMode.DegenerateCount: return d.degenerateCount;
+            case SortMode.NaNCount: return d.nanInfCount;
+            case SortMode.PlasticFlowCount: return d.plasticFlowCount;
+            default: return 0f;
         }
     }
 
-    ConstraintDebugData GetAggregatedDebugData(ConstraintCache cache, string constraintType) {
-        var aggregated = new ConstraintDebugData();
-
-        var dataList = constraintType == "All"
-            ? cache.debugDataPerConstraint.Values.ToList()
-            : cache.debugDataPerConstraint.ContainsKey(constraintType)
-                ? new List<ConstraintDebugData> { cache.debugDataPerConstraint[constraintType] }
-                : new List<ConstraintDebugData>();
-
-        foreach (var data in dataList) {
-            aggregated.maxPositionDelta = Mathf.Max(aggregated.maxPositionDelta, data.maxPositionDelta);
-            aggregated.avgPositionDelta += data.avgPositionDelta;
-            aggregated.degenerateCount += data.degenerateCount;
-            aggregated.nanInfCount += data.nanInfCount;
-            aggregated.plasticFlowCount += data.plasticFlowCount;
-            aggregated.positionUpdateCount += data.positionUpdateCount;
-            aggregated.constraintEnergy += data.constraintEnergy;
-            aggregated.iterationsToConverge = Mathf.Max(aggregated.iterationsToConverge, data.iterationsToConverge);
-        }
-
-        if (dataList.Count > 0) aggregated.avgPositionDelta /= dataList.Count;
-
-        return aggregated;
+    bool CheckNodeHasIssues(DebugData d) {
+        return d.maxPositionDelta > positionDeltaThreshold ||
+               d.maxAbsC > absCThreshold ||
+               d.maxAbsDeltaLambda > absDeltaLambdaThreshold ||
+               d.degenerateCount > 0 ||
+               d.nanInfCount > 0;
     }
 
-    bool CheckNodeHasIssues(ConstraintCache cache, string constraintType) {
-        var data = GetAggregatedDebugData(cache, constraintType);
-        return data.maxPositionDelta > positionDeltaThreshold ||
-               data.degenerateCount > 0 ||
-               data.nanInfCount > 0;
-    }
-
-    void DrawNodeEntry(int index, Node node, ConstraintCache cache, bool hasIssues) {
-        var bgColor = hasIssues ? new Color(1f, 0.8f, 0.8f) : new Color(0.8f, 1f, 0.8f);
+    void DrawNodeEntry(int index, Node node, NodeCache cache, DebugData d, bool hasIssues) {
+        var bgColor = hasIssues ? new Color(1f, 0.85f, 0.85f) : new Color(0.85f, 1f, 0.85f);
         var oldColor = GUI.backgroundColor;
         GUI.backgroundColor = bgColor;
 
@@ -308,11 +282,12 @@ public class ConstraintDebugWindow : EditorWindow {
 
         bool expanded = selectedNode == index;
 
-        var aggregated = GetAggregatedDebugData(cache, selectedConstraintType);
-        string header = $"Node {index} | Max Δ: {aggregated.maxPositionDelta:F4} | Avg Δ: {aggregated.avgPositionDelta:F4}";
-        if (aggregated.degenerateCount > 0) header += $" | Degen: {aggregated.degenerateCount}";
-        if (aggregated.nanInfCount > 0) header += $" | NaN: {aggregated.nanInfCount}";
-        if (aggregated.plasticFlowCount > 0) header += $" | Plastic: {aggregated.plasticFlowCount}";
+        string header =
+            $"Node {index} | MaxΔx {d.maxPositionDelta:F4} | Max|C| {d.maxAbsC:F4} | Max|Δλ| {d.maxAbsDeltaLambda:F4}";
+
+        if (d.degenerateCount > 0) header += $" | Degen {d.degenerateCount}";
+        if (d.nanInfCount > 0) header += $" | NaN {d.nanInfCount}";
+        if (d.plasticFlowCount > 0) header += $" | Plastic {d.plasticFlowCount}";
 
         if (GUILayout.Button(header, expanded ? EditorStyles.boldLabel : EditorStyles.label)) {
             selectedNode = expanded ? -1 : index;
@@ -321,35 +296,40 @@ public class ConstraintDebugWindow : EditorWindow {
         if (expanded) {
             EditorGUI.indentLevel++;
 
-            // Basic node info
-            if (showNodeInfo) {
-                DrawNodeInfo(node, index);
-            }
-
-            // Deformation gradient info
-            if (showDeformationInfo) {
-                DrawDeformationInfo(node, cache);
-            }
-
-            // Neighbor info
-            if (showNeighborInfo && cache.neighbors != null) {
-                DrawNeighborInfo(index, cache);
-            }
-
-            // Lambda info
-            if (showLambdaInfo) {
-                DrawLambdaInfo(cache);
-            }
-
-            EditorGUILayout.Space();
-
-            // Per-constraint breakdown
-            DrawConstraintBreakdown(cache);
+            if (showNodeInfo) DrawNodeInfo(node, index);
+            if (showDeformationInfo) DrawDeformationInfo(node, cache);
+            if (showNeighborInfo && cache.neighbors != null) DrawNeighborInfo(index, cache);
+            if (showLambdaInfo) DrawXPBIInfo(d);
 
             EditorGUI.indentLevel--;
         }
 
         EditorGUILayout.EndVertical();
+    }
+
+    void DrawXPBIInfo(DebugData d) {
+        EditorGUILayout.LabelField("XPBI Debug", EditorStyles.boldLabel);
+
+        EditorGUILayout.LabelField($"  Last C: {d.lastC:F6}");
+        EditorGUILayout.LabelField($"  Avg |C|: {d.avgAbsC:F6} | Max |C|: {d.maxAbsC:F6}",
+            d.maxAbsC > absCThreshold ? GetErrorStyle() : EditorStyles.label);
+
+        EditorGUILayout.LabelField($"  Last λ: {d.lastLambda:F6} | Last Δλ: {d.lastDeltaLambda:F6}",
+            Mathf.Abs(d.lastDeltaLambda) > absDeltaLambdaThreshold ? GetWarningStyle() : EditorStyles.label);
+
+        float minDen = float.IsInfinity(d.minDenominator) ? 0f : d.minDenominator;
+        EditorGUILayout.LabelField($"  Denom: last {d.lastDenominator:F6} | min {minDen:F6} | max {d.maxDenominator:F6}",
+            minDen < Const.Eps ? GetWarningStyle() : EditorStyles.label);
+
+        EditorGUILayout.LabelField($"  |∇C_vi|² proxy: last {d.lastGradCViLenSq:F6} | max {d.maxGradCViLenSq:F6}");
+        EditorGUILayout.LabelField($"  Iterations to converge (last update): {d.iterationsToConverge}");
+        EditorGUILayout.LabelField($"  Constraint Energy (accum |C|): {d.constraintEnergy:F6}");
+
+        if (d.degenerateCount > 0) EditorGUILayout.LabelField($"  Degenerate: {d.degenerateCount}", GetWarningStyle());
+        if (d.nanInfCount > 0) EditorGUILayout.LabelField($"  NaN/Inf: {d.nanInfCount}", GetErrorStyle());
+        if (d.plasticFlowCount > 0) EditorGUILayout.LabelField($"  Plastic events: {d.plasticFlowCount}", GetInfoStyle());
+
+        EditorGUILayout.Space(5);
     }
 
     void DrawNodeInfo(Node node, int index) {
@@ -363,7 +343,7 @@ public class ConstraintDebugWindow : EditorWindow {
         EditorGUILayout.Space(5);
     }
 
-    void DrawDeformationInfo(Node node, ConstraintCache cache) {
+    void DrawDeformationInfo(Node node, NodeCache cache) {
         EditorGUILayout.LabelField("Deformation Gradient (Fp)", EditorStyles.boldLabel);
 
         float det = node.Fp.c0.x * node.Fp.c1.y - node.Fp.c0.y * node.Fp.c1.x;
@@ -384,76 +364,12 @@ public class ConstraintDebugWindow : EditorWindow {
         EditorGUILayout.Space(5);
     }
 
-    void DrawNeighborInfo(int nodeIndex, ConstraintCache cache) {
+    void DrawNeighborInfo(int nodeIndex, NodeCache cache) {
         EditorGUILayout.LabelField($"Neighbors ({cache.neighbors.Count})", EditorStyles.boldLabel);
-
         for (int i = 0; i < cache.neighbors.Count; i++) {
-            int neighborIdx = cache.neighbors[i];
-            EditorGUILayout.LabelField($"  [{i}] Node {neighborIdx}");
+            EditorGUILayout.LabelField($"  [{i}] Node {cache.neighbors[i]}");
         }
-
         EditorGUILayout.Space(5);
-    }
-
-    void DrawLambdaInfo(ConstraintCache cache) {
-        EditorGUILayout.LabelField("Lambda Accumulators", EditorStyles.boldLabel);
-
-        if (cache.lambdas.neighborDistance != null && cache.lambdas.neighborDistance.Count > 0) {
-            EditorGUILayout.LabelField("  Distance Constraint Lambdas:");
-            for (int i = 0; i < Mathf.Min(cache.lambdas.neighborDistance.Count, 10); i++) {
-                EditorGUILayout.LabelField($"    [{i}]: {cache.lambdas.neighborDistance[i]:F6}");
-            }
-            if (cache.lambdas.neighborDistance.Count > 10) {
-                EditorGUILayout.LabelField($"    ... and {cache.lambdas.neighborDistance.Count - 10} more");
-            }
-        }
-
-        if (cache.lambdas.volume != null && cache.lambdas.volume.Count > 0) {
-            EditorGUILayout.LabelField("  Volume Constraint Lambdas:");
-            for (int i = 0; i < Mathf.Min(cache.lambdas.volume.Count, 10); i++) {
-                EditorGUILayout.LabelField($"    [{i}]: {cache.lambdas.volume[i]:F6}");
-            }
-            if (cache.lambdas.volume.Count > 10) {
-                EditorGUILayout.LabelField($"    ... and {cache.lambdas.volume.Count - 10} more");
-            }
-        }
-
-        EditorGUILayout.Space(5);
-    }
-
-    void DrawConstraintBreakdown(ConstraintCache cache) {
-        var constraintsToShow = selectedConstraintType == "All"
-            ? cache.debugDataPerConstraint.Keys.ToList()
-            : cache.debugDataPerConstraint.ContainsKey(selectedConstraintType)
-                ? new List<string> { selectedConstraintType }
-                : new List<string>();
-
-        EditorGUILayout.LabelField("Constraint Breakdown", EditorStyles.boldLabel);
-
-        foreach (var constraintType in constraintsToShow) {
-            var debug = cache.debugDataPerConstraint[constraintType];
-
-            EditorGUILayout.LabelField($"--- {constraintType} ---", EditorStyles.boldLabel);
-
-            EditorGUILayout.LabelField($"  Position Updates: {debug.positionUpdateCount}");
-            EditorGUILayout.LabelField($"  Max Position Δ: {debug.maxPositionDelta:F6}",
-                debug.maxPositionDelta > positionDeltaThreshold ? GetErrorStyle() : EditorStyles.label);
-            EditorGUILayout.LabelField($"  Avg Position Δ: {debug.avgPositionDelta:F6}");
-            EditorGUILayout.LabelField($"  Iterations to Converge: {debug.iterationsToConverge}");
-            EditorGUILayout.LabelField($"  Constraint Energy: {debug.constraintEnergy:F6}");
-
-            if (debug.degenerateCount > 0) {
-                EditorGUILayout.LabelField($"  Degenerate: {debug.degenerateCount}", GetWarningStyle());
-            }
-            if (debug.nanInfCount > 0) {
-                EditorGUILayout.LabelField($"  NaN/Inf: {debug.nanInfCount}", GetErrorStyle());
-            }
-            if (debug.plasticFlowCount > 0) {
-                EditorGUILayout.LabelField($"  Plastic Flow Events: {debug.plasticFlowCount}", GetInfoStyle());
-            }
-
-            EditorGUILayout.Space(5);
-        }
     }
 
     GUIStyle GetErrorStyle() {

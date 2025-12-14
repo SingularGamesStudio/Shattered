@@ -11,37 +11,15 @@ public class Meshless : MonoBehaviour {
     public int maxLayer = -1;
 
     // Simulation parameters
-    const float fixedTimeStep = 0.001f;
-    const float timeScale = 0.1f;
     const float gravity = -9.81f;
 
-    // Constraints
-    public bool enableEdgeConstraints = true;
-    public bool enableVolumeConstraints = true;
+    [Header("XPBI compliance")]
+    public float compliance = 0f;
 
-    [Header("Constraint Compliances")]
-    public float edgeCompliance = 0.01f;
-    public float volumeCompliance = 0.01f;
-
-    private List<Constraint> activeConstraints = new List<Constraint>();
-    private NeighborDistanceConstraint edgeConstraint;
-    private VolumeConstraint volumeConstraint;
+    private XPBIConstraint XPBI = new XPBIConstraint();
 
     // Debug
     public NodeBatch lastBatchDebug;
-
-    void Start() {
-        edgeConstraint = new NeighborDistanceConstraint();
-        volumeConstraint = new VolumeConstraint();
-
-        UpdateActiveConstraints();
-    }
-
-    private void UpdateActiveConstraints() {
-        activeConstraints.Clear();
-        if (enableEdgeConstraints) activeConstraints.Add(edgeConstraint);
-        if (enableVolumeConstraints) activeConstraints.Add(volumeConstraint);
-    }
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
@@ -60,43 +38,67 @@ public class Meshless : MonoBehaviour {
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
         hnsw = new HNSW(this);
+
+        const int volumeNeighborCount = 6;
+
+        for (int i = 0; i < nodes.Count; i++) {
+            Node node = nodes[i];
+
+            // Query k+1 neighbors (includes self)
+            List<int> neighbors = hnsw.SearchKnn(node.pos, volumeNeighborCount + 1);
+
+            // Remove self from neighbors
+            if (neighbors.Contains(i)) {
+                neighbors.Remove(i);
+            } else if (neighbors.Count > volumeNeighborCount) {
+                neighbors.RemoveAt(volumeNeighborCount);
+            }
+
+            if (neighbors.Count < 2) {
+                node.restVolume = 0.0f;
+                continue;
+            }
+
+            int nCount = neighbors.Count;
+            float2[] rel = new float2[nCount];
+            float[] ang = new float[nCount];
+
+            for (int k = 0; k < nCount; k++) {
+                float2 v = nodes[neighbors[k]].pos - node.pos;
+                rel[k] = v;
+                ang[k] = math.atan2(v.y, v.x);
+            }
+
+            System.Array.Sort(ang, rel);
+
+            float area = 0.0f;
+            for (int k = 0; k < nCount; k++) {
+                int next = (k + 1) % nCount;
+
+                float dTheta = ang[next] - ang[k];
+                if (dTheta < 0.0f) dTheta += 2.0f * math.PI;
+
+                if (dTheta > math.PI) continue;
+
+                float2 a = rel[k];
+                float2 b = rel[next];
+
+                float wedgeArea = 0.5f * math.abs(a.x * b.y - a.y * b.x);
+                area += wedgeArea;
+            }
+
+            node.restVolume = area / 3.0f;
+        }
     }
 
-    private float keyHoldTime = 0.0f;
-    const float holdThreshold = 0.2f;
-
-    void Update() {
-        if (Input.GetKeyDown(KeyCode.T)) {
-            keyHoldTime = 0.0f;
-        }
-
-        if (Input.GetKey(KeyCode.T)) {
-            keyHoldTime += Time.deltaTime;
-            if (keyHoldTime >= holdThreshold) {
-                StepSimulation(Time.deltaTime * timeScale);
-            }
-        }
-
-        if (Input.GetKeyUp(KeyCode.T)) {
-            if (keyHoldTime < holdThreshold) {
-                StepSimulation(fixedTimeStep);
-            }
-            keyHoldTime = 0.0f;
-        }
-    }
+    void OnEnable() => MeshlessSimulationController.Instance?.Register(this);
+    void OnDisable() => MeshlessSimulationController.Instance?.Unregister(this);
 
     public void StepSimulation(float timeStep) {
-        UpdateActiveConstraints();
-
         NodeBatch batch = new NodeBatch(nodes);
 
-        // Initialize all active constraints (safe to call multiple times for shared cache)
-        foreach (var constraint in activeConstraints) {
-            constraint.Initialise(batch);
-        }
-
-        // Initialize lambdas once from main loop
-        batch.InitializeLambdas();
+        // Initialize XPBI constitutive constraint (neighbors, correction matrices, F/Fp, lambdas)
+        XPBI.Initialise(batch);
 
         // Apply external forces
         for (int i = 0; i < nodes.Count; i++) {
@@ -104,24 +106,16 @@ public class Meshless : MonoBehaviour {
             nodes[i].vel.y += gravity * timeStep;
         }
 
-        // XPBD constraint solver iterations
+        // XPBI/XPBD iterations with single constitutive constraint per particle
         for (int iter = 0; iter < Const.SolverIterations; iter++) {
-            foreach (var constraint in activeConstraints) {
-                float compliance = GetCompliance(constraint);
-                constraint.Relax(batch, compliance, timeStep);
-            }
+            XPBI.Relax(batch, compliance, timeStep);
         }
-
-        // Update plastic deformation after convergence (XPBI Eq. 22)
-        foreach (var constraint in activeConstraints) {
-            constraint.UpdatePlasticDeformation(batch, timeStep);
-        }
+        XPBI.CommitDeformation(batch, timeStep);
 
         // Integrate positions
         for (int i = 0; i < nodes.Count; i++) {
             if (nodes[i].isFixed) continue;
 
-            // Safety check for NaN/Inf
             if (float.IsNaN(nodes[i].vel.x) || float.IsInfinity(nodes[i].vel.x)) nodes[i].vel.x = 0f;
             if (float.IsNaN(nodes[i].vel.y) || float.IsInfinity(nodes[i].vel.y)) nodes[i].vel.y = 0f;
 
@@ -130,11 +124,5 @@ public class Meshless : MonoBehaviour {
         }
 
         lastBatchDebug = batch;
-    }
-
-    private float GetCompliance(Constraint constraint) {
-        if (constraint is NeighborDistanceConstraint) return edgeCompliance;
-        if (constraint is VolumeConstraint) return volumeCompliance;
-        return 0.01f;
     }
 }

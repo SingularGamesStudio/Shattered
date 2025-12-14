@@ -7,6 +7,12 @@ public class Box : Meshless {
 
     [Header("Generator")]
     public int pointCount;
+    public bool generateOnStart = false;
+
+    void Start() {
+        if (generateOnStart) Generate(pointCount, 0);
+    }
+
 
     public void Generate(int count, short material) {
         if (nodes.Count == 0) {
@@ -16,7 +22,9 @@ public class Box : Meshless {
             Add(center + size1 / 2);
             Add(center - size1 / 2);
         }
-        Unity.Mathematics.Random rnd = new Unity.Mathematics.Random((uint)(Time.time * 1000000));
+        uint seed = (uint)System.Guid.NewGuid().GetHashCode();
+        if (seed == 0) seed = 1;
+        var rnd = new Unity.Mathematics.Random(seed);
         for (int i = 0; i < count; i++) {
             Add(rnd.NextFloat2(center - size / 2, center + size / 2));
         }

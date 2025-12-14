@@ -122,6 +122,56 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &86236644
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 86236646}
+  - component: {fileID: 86236645}
+  m_Layer: 0
+  m_Name: Simulation
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &86236645
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 86236644}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  targetTPS: 10000
+  simulationSpeed: 10
+  manual: 1
+  maxTicksPerFrame: 1000000
+  useUnscaledTime: 0
+  forceTPSToFPS: 1
+--- !u!4 &86236646
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 86236644}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 2.4259853, y: 0.4411074, z: -0.0034461352}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -245,17 +295,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   maxLayer: 3
-  enableEdgeConstraints: 1
-  enableVolumeConstraints: 1
-  edgeCompliance: 0.01
-  volumeCompliance: 0.0001
+  compliance: 1
   center:
-    x: 0
+    x: -1
     y: 2
   size:
-    x: 5
-    y: 5
+    x: 3
+    y: 3
   pointCount: 3
+  generateOnStart: 1
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
@@ -290,15 +338,16 @@ MonoBehaviour:
   showDeformationGradient: 0
   showVelocity: 0
   showFixedNodes: 1
+  showRestArrow: 1
+  restArrowScale: 1
   edgeMode: 0
   yieldStretch: 1.05
-  yieldAreaFrac: 1.05
   velocityScale: 0.5
   deformationScale: 0.4
-  meshless: {fileID: 961765556}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 519420032}
   - {fileID: 961765557}
+  - {fileID: 86236646}
