@@ -31,8 +31,7 @@ namespace Physics {
             return gradV;
         }
 
-
-        public static void Relax(NodeBatch batch, float stiffness, float dt, int currentIteration) {
+        public static void Relax(NodeBatch batch, float compliance, float dt, int currentIteration) {
             float invDt = 1.0f / math.max(dt, Const.Eps);
 
             for (int i = 0; i < batch.Count; i++) {
@@ -40,10 +39,10 @@ namespace Physics {
                 var cache = batch.caches[i];
                 var dbg = batch.debug[i];
 
-                var N = cache?.neighbors;
+                var N = cache.neighbors;
                 if (N == null || N.Count == 0) continue;
 
-                if (node.invMass <= 0f && node.isFixed) continue;
+                if (node.isFixed || node.invMass <= 0f) continue;
                 if (node.restVolume <= Const.Eps) continue;
 
                 float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
@@ -57,12 +56,14 @@ namespace Physics {
                 }
                 dbg.constraintEnergy += math.abs(C);
 
-                float alphaTilde = ((1.0f / node.restVolume) * stiffness) * (invDt * invDt);
+                float alphaTilde = (compliance / math.max(node.restVolume, Const.Eps)) * (invDt * invDt);
 
                 float2x2 dCdF = DeformationUtils.ComputeGradient(Fel, i);
 
                 float2 gradC_vi = float2.zero;
-                var gradC_vj = new float2[N.Count];
+                float2[] gradC_vj = cache.gradC_vj;
+                for (int k = 0; k < N.Count; k++) gradC_vj[k] = float2.zero;
+
                 float2x2 FT = math.transpose(Fel);
 
                 for (int k = 0; k < N.Count; k++) {
@@ -80,7 +81,7 @@ namespace Physics {
 
                     float2 g = q;
                     gradC_vi -= g;
-                    gradC_vj[k] += g;
+                    gradC_vj[k] = g;
                 }
 
                 float gradCViLenSq = math.lengthsq(gradC_vi);
@@ -90,7 +91,7 @@ namespace Physics {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
 
-                    if (batch.nodes[j].invMass <= 0f && batch.nodes[j].isFixed) continue;
+                    if (batch.nodes[j].isFixed || batch.nodes[j].invMass <= 0f) continue;
                     denom += batch.nodes[j].invMass * math.lengthsq(gradC_vj[k]);
                 }
 
@@ -121,7 +122,7 @@ namespace Physics {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
 
-                    if (batch.nodes[j].invMass <= 0f && batch.nodes[j].isFixed) continue;
+                    if (batch.nodes[j].isFixed || batch.nodes[j].invMass <= 0f) continue;
 
                     float2 dVj = batch.nodes[j].invMass * velScale * gradC_vj[k];
                     batch.nodes[j].vel += dVj;
@@ -135,8 +136,6 @@ namespace Physics {
 
                 dbg.RecordConstraintEval(C, denom, cache.lambda, dLambda, gradCViLenSq, currentIteration);
             }
-
-            batch.FinalizeDebugData();
         }
 
         public static void CommitDeformation(NodeBatch batch, float dt) {
@@ -145,10 +144,10 @@ namespace Physics {
                 var cache = batch.caches[i];
                 var dbg = batch.debug[i];
 
-                var N = cache?.neighbors;
+                var N = cache.neighbors;
                 if (N == null || N.Count == 0) continue;
 
-                if (node.invMass <= 0f && node.isFixed) continue;
+                if (node.isFixed || node.invMass <= 0f) continue;
 
                 float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
                 float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);

@@ -30,7 +30,8 @@ public sealed class SimulationController : MonoBehaviour {
 
     readonly List<Meshless> meshless = new List<Meshless>(64);
     readonly Dictionary<Meshless, int> frameCounters = new Dictionary<Meshless, int>();
-    readonly Dictionary<Meshless, float2[]> savedPositionsCache = new Dictionary<Meshless, float2[]>();
+    readonly Dictionary<Meshless, float2[]> savedVelocitiesCache = new Dictionary<Meshless, float2[]>();
+    readonly Dictionary<Meshless, NodeBatch> batchCache = new Dictionary<Meshless, NodeBatch>();
 
     float accumulator;
     float keyHeldTime;
@@ -48,7 +49,8 @@ public sealed class SimulationController : MonoBehaviour {
         if (m != null && !meshless.Contains(m)) {
             meshless.Add(m);
             frameCounters[m] = 0;
-            savedPositionsCache[m] = new float2[m.nodes.Count];
+            savedVelocitiesCache[m] = new float2[m.nodes.Count];
+            batchCache[m] = new NodeBatch(m.nodes, m.nodes.Count);
         }
     }
 
@@ -56,7 +58,8 @@ public sealed class SimulationController : MonoBehaviour {
         if (m != null) {
             meshless.Remove(m);
             frameCounters.Remove(m);
-            savedPositionsCache.Remove(m);
+            savedVelocitiesCache.Remove(m);
+            batchCache.Remove(m);
         }
     }
 
@@ -106,7 +109,8 @@ public sealed class SimulationController : MonoBehaviour {
             if (m == null || !m.isActiveAndEnabled) {
                 meshless.RemoveAt(i);
                 frameCounters.Remove(m);
-                savedPositionsCache.Remove(m);
+                savedVelocitiesCache.Remove(m);
+                batchCache.Remove(m);
                 continue;
             }
 
@@ -137,18 +141,23 @@ public sealed class SimulationController : MonoBehaviour {
     private void Solve(Meshless meshless, float dt) {
         int maxLevel = useHierarchicalSolver && meshless.levelEndIndex != null ? meshless.maxLayer : 0;
 
-        if (!savedPositionsCache.TryGetValue(meshless, out float2[] saved) || saved.Length < meshless.nodes.Count) {
-            saved = new float2[meshless.nodes.Count];
-            savedPositionsCache[meshless] = saved;
+        if (!savedVelocitiesCache.TryGetValue(meshless, out float2[] savedVel) || savedVel.Length < meshless.nodes.Count) {
+            savedVel = new float2[meshless.nodes.Count];
+            savedVelocitiesCache[meshless] = savedVel;
         }
 
-        NodeBatch batch = new NodeBatch(meshless.nodes, meshless.nodes.Count);
+        if (!batchCache.TryGetValue(meshless, out NodeBatch batch) || batch == null || batch.nodes != meshless.nodes) {
+            batch = new NodeBatch(meshless.nodes, meshless.nodes.Count);
+            batchCache[meshless] = batch;
+        }
+
+        batch.BeginStep();
 
         for (int level = maxLevel; level >= 0; level--) {
             int nodeCount = level > 0 ? meshless.NodeCount(level) : meshless.nodes.Count;
 
             for (int i = 0; i < nodeCount; i++) {
-                saved[i] = meshless.nodes[i].pos;
+                savedVel[i] = meshless.nodes[i].vel;
             }
 
             batch.ExpandTo(nodeCount);
@@ -160,8 +169,9 @@ public sealed class SimulationController : MonoBehaviour {
             }
 
             if (level > 0) {
-                ProlongateCorrections(meshless, level, nodeCount, saved);
+                ProlongateVelocityCorrections(meshless, level, nodeCount, savedVel);
             } else {
+                batch.FinalizeDebugData();
                 meshless.lastBatchDebug = batch;
             }
         }
@@ -169,15 +179,15 @@ public sealed class SimulationController : MonoBehaviour {
         XPBIConstraint.CommitDeformation(batch, dt);
     }
 
-    private void ProlongateCorrections(Meshless meshless, int currentLevel, int currentLevelEnd, float2[] saved) {
+    private void ProlongateVelocityCorrections(Meshless meshless, int currentLevel, int currentLevelEnd, float2[] savedVel) {
         int fineLevelEnd = currentLevel > 1 ? meshless.NodeCount(currentLevel - 1) : meshless.nodes.Count;
 
         for (int i = currentLevelEnd; i < fineLevelEnd; i++) {
             Node node = meshless.nodes[i];
             if (node.parentIndex < 0 || node.parentIndex >= currentLevelEnd) continue;
 
-            float2 parentCorrection = meshless.nodes[node.parentIndex].pos - saved[node.parentIndex];
-            node.pos += parentCorrection;
+            float2 parentDeltaV = meshless.nodes[node.parentIndex].vel - savedVel[node.parentIndex];
+            node.vel += parentDeltaV;
         }
     }
 

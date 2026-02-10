@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using Unity.Mathematics;
-using UnityEngine;
 
 namespace Physics {
 
@@ -10,6 +9,11 @@ namespace Physics {
         public float2x2 F0 = float2x2.identity;
         public float lambda = 0;
         public float currentVolume;
+        public readonly float2[] gradC_vj;
+
+        public NodeCache() {
+            gradC_vj = new float2[Const.NeighborCount];
+        }
     }
 
     public class NodeBatch {
@@ -19,33 +23,23 @@ namespace Physics {
         public int Count;
 
         private int lastInitializedCount = 0;
-
-        public void Initialise() {
-            // Volumes: compute only for newly added nodes (indices >= lastInitializedCount)
-            CacheVolumes();
-            // Neighbors: must recompute for ALL nodes since new nodes can be neighbors
-            CacheNeighbors();
-            // Correction matrices: depend on neighbors, so recompute for ALL
-            ComputeCorrectionMatrices();
-            // Debug data: reset for all active nodes
-            ResetDebugData();
-            // F0 cache: needs initialization only for newly added nodes
-            for (int i = 0; i < Count; i++) {
-                var cache = caches[i];
-                cache.F0 = nodes[i].F;
-                cache.lambda = 0;
-            }
-        }
+        private bool fullRefreshPending = true;
 
         public NodeBatch(List<Node> nodes, int maxCount) {
             this.nodes = nodes;
             Count = 0;
+
             caches = new List<NodeCache>(maxCount);
             debug = new List<DebugData>(maxCount);
             for (int i = 0; i < maxCount; i++) {
                 caches.Add(new NodeCache());
                 debug.Add(new DebugData());
             }
+        }
+
+        public void BeginStep() {
+            lastInitializedCount = 0;
+            fullRefreshPending = true;
         }
 
         public void ExpandTo(int newCount) {
@@ -57,6 +51,22 @@ namespace Physics {
                 }
             }
             Count = newCount;
+        }
+
+        public void Initialise() {
+            CacheVolumes();
+            CacheNeighbors();
+            ComputeCorrectionMatrices();
+            ResetDebugData();
+
+            for (int i = 0; i < Count; i++) {
+                caches[i].lambda = 0;
+            }
+
+            CacheF0();
+
+            lastInitializedCount = Count;
+            fullRefreshPending = false;
         }
 
         public void ResetDebugData() {
@@ -82,10 +92,22 @@ namespace Physics {
         }
 
         public void CacheVolumes() {
-            for (int i = lastInitializedCount; i < Count; i++) {
+            int start = fullRefreshPending ? 0 : lastInitializedCount;
+            if (start >= Count) return;
+
+            for (int i = start; i < Count; i++) {
                 Node node = nodes[i];
                 float det = node.F.c0.x * node.F.c1.y - node.F.c0.y * node.F.c1.x;
                 caches[i].currentVolume = node.restVolume * math.abs(det);
+            }
+        }
+
+        public void CacheF0() {
+            int start = fullRefreshPending ? 0 : lastInitializedCount;
+            if (start >= Count) return;
+
+            for (int i = start; i < Count; i++) {
+                caches[i].F0 = nodes[i].F;
             }
         }
 
@@ -111,7 +133,7 @@ namespace Physics {
             for (int i = 0; i < Count; i++) {
                 var node = nodes[i];
                 var cache = caches[i];
-                if (cache?.neighbors == null) continue;
+                if (cache.neighbors == null) continue;
 
                 float2x2 sum = float2x2.zero;
 
@@ -132,6 +154,5 @@ namespace Physics {
                 cache.L = DeformationUtils.PseudoInverse(sum);
             }
         }
-
     }
 }
