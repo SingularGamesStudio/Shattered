@@ -157,6 +157,7 @@ MonoBehaviour:
   maxTicksPerFrame: 1000000
   useUnscaledTime: 0
   forceTPSToFPS: 1
+  useHierarchicalSolver: 1
 --- !u!4 &86236646
 Transform:
   m_ObjectHideFlags: 0
@@ -295,14 +296,16 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   maxLayer: 3
+  gravity: -9.81
   compliance: 1
+  levelEndIndex: 
   center:
     x: -1
     y: 2
   size:
     x: 3
     y: 3
-  pointCount: 3
+  pointCount: 6
   generateOnStart: 1
 --- !u!4 &961765557
 Transform:

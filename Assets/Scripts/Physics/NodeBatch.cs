@@ -6,10 +6,10 @@ namespace Physics {
 
     public class NodeCache {
         public List<int> neighbors;
-        // Kernel gradient correction matrix for velocity gradient estimation (XPBI Eq. 10)
         public float2x2 L;
         public float2x2 F0 = float2x2.identity;
         public float lambda = 0;
+        public float currentVolume;
     }
 
     public class NodeBatch {
@@ -18,19 +18,45 @@ namespace Physics {
         public List<DebugData> debug;
         public int Count;
 
-        // Initialization state flags
-        private bool neighborsInitialized = false;
-        private bool correctionMatricesInitialized = false;
+        private int lastInitializedCount = 0;
 
-        public NodeBatch(List<Node> nodes) {
-            this.nodes = nodes;
-            Count = nodes.Count;
-            caches = new List<NodeCache>(Count);
-            debug = new List<DebugData>(Count);
+        public void Initialise() {
+            // Volumes: compute only for newly added nodes (indices >= lastInitializedCount)
+            CacheVolumes();
+            // Neighbors: must recompute for ALL nodes since new nodes can be neighbors
+            CacheNeighbors();
+            // Correction matrices: depend on neighbors, so recompute for ALL
+            ComputeCorrectionMatrices();
+            // Debug data: reset for all active nodes
+            ResetDebugData();
+            // F0 cache: needs initialization only for newly added nodes
             for (int i = 0; i < Count; i++) {
+                var cache = caches[i];
+                cache.F0 = nodes[i].F;
+                cache.lambda = 0;
+            }
+        }
+
+        public NodeBatch(List<Node> nodes, int maxCount) {
+            this.nodes = nodes;
+            Count = 0;
+            caches = new List<NodeCache>(maxCount);
+            debug = new List<DebugData>(maxCount);
+            for (int i = 0; i < maxCount; i++) {
                 caches.Add(new NodeCache());
                 debug.Add(new DebugData());
             }
+        }
+
+        public void ExpandTo(int newCount) {
+            if (newCount > caches.Count) {
+                int toAdd = newCount - caches.Count;
+                for (int i = 0; i < toAdd; i++) {
+                    caches.Add(new NodeCache());
+                    debug.Add(new DebugData());
+                }
+            }
+            Count = newCount;
         }
 
         public void ResetDebugData() {
@@ -55,10 +81,16 @@ namespace Physics {
             return energy;
         }
 
-        public void CacheNeighbors() {
-            if (neighborsInitialized) return;
+        public void CacheVolumes() {
+            for (int i = lastInitializedCount; i < Count; i++) {
+                Node node = nodes[i];
+                float det = node.F.c0.x * node.F.c1.y - node.F.c0.y * node.F.c1.x;
+                caches[i].currentVolume = node.restVolume * math.abs(det);
+            }
+        }
 
-            for (int i = 0; i < nodes.Count; i++) {
+        public void CacheNeighbors() {
+            for (int i = 0; i < Count; i++) {
                 caches[i].neighbors = nodes[i].parent.hnsw.SearchKnn(nodes[i].pos, Const.NeighborCount + 1);
 
                 if (caches[i].neighbors.Contains(i)) {
@@ -73,13 +105,9 @@ namespace Physics {
                     return math.atan2(va.y, va.x).CompareTo(math.atan2(vb.y, vb.x));
                 });
             }
-
-            neighborsInitialized = true;
         }
 
         public void ComputeCorrectionMatrices() {
-            CacheNeighbors();
-
             for (int i = 0; i < Count; i++) {
                 var node = nodes[i];
                 var cache = caches[i];
@@ -103,8 +131,6 @@ namespace Physics {
 
                 cache.L = DeformationUtils.PseudoInverse(sum);
             }
-
-            correctionMatricesInitialized = true;
         }
 
     }

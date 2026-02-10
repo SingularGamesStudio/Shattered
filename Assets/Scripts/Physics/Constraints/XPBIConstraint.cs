@@ -1,22 +1,8 @@
 using Unity.Mathematics;
 
 namespace Physics {
-    public class XPBIConstraint {
-        private int currentIteration;
+    public static class XPBIConstraint {
 
-        public void Initialise(NodeBatch batch) {
-            batch.CacheNeighbors();
-            batch.ComputeCorrectionMatrices();
-            batch.ResetDebugData();
-            currentIteration = 0;
-
-            for (int i = 0; i < batch.Count; i++) {
-                var cache = batch.caches[i];
-                cache.F0 = batch.nodes[i].F;
-            }
-        }
-
-        // XPBI Eq. (11) analogue: corrected neighbor-based velocity gradient estimate.
         private static float2x2 EstimateVelocityGradient(NodeBatch batch, int i) {
             var xi = batch.nodes[i];
             var ci = batch.caches[i];
@@ -46,7 +32,7 @@ namespace Physics {
         }
 
 
-        public void Relax(NodeBatch batch, float stiffness, float dt) {
+        public static void Relax(NodeBatch batch, float stiffness, float dt, int currentIteration) {
             float invDt = 1.0f / math.max(dt, Const.Eps);
 
             for (int i = 0; i < batch.Count; i++) {
@@ -60,10 +46,8 @@ namespace Physics {
                 if (node.invMass <= 0f && node.isFixed) continue;
                 if (node.restVolume <= Const.Eps) continue;
 
-                // XPBI Eq. (9): F_{n+1} = (I + ∇v dt) F_n  (updated-Lagrangian style).
                 float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
 
-                // Plastic projection (implementation-specific, but driven by XPBI’s projected update loop idea).
                 float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
 
                 float C = DeformationUtils.XPBIConstraint(Fel, i);
@@ -73,7 +57,6 @@ namespace Physics {
                 }
                 dbg.constraintEnergy += math.abs(C);
 
-                // XPBD compliance: α~ = α / dt^2, and Δλ is XPBD Eq. (18).
                 float alphaTilde = ((1.0f / node.restVolume) * stiffness) * (invDt * invDt);
 
                 float2x2 dCdF = DeformationUtils.ComputeGradient(Fel, i);
@@ -117,7 +100,6 @@ namespace Physics {
                     continue;
                 }
 
-                // XPBD Eq. (18): Δλ = -(C + α~ λ) / (∑ w |∇C|^2 + α~).
                 float lambdaBefore = cache.lambda;
                 float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
 
@@ -155,10 +137,9 @@ namespace Physics {
             }
 
             batch.FinalizeDebugData();
-            currentIteration++;
         }
 
-        public void CommitDeformation(NodeBatch batch, float dt) {
+        public static void CommitDeformation(NodeBatch batch, float dt) {
             for (int i = 0; i < batch.Count; i++) {
                 var node = batch.nodes[i];
                 var cache = batch.caches[i];

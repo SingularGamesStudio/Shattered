@@ -9,14 +9,16 @@ public class Node {
     public float invMass = 1.0f;
     public bool isFixed = false;
 
-    public float2x2 F = float2x2.identity;   // Total deformation gradient
-    public float2x2 Fp = float2x2.identity;  // Plastic deformation gradient
+    public float2x2 F = float2x2.identity;
+    public float2x2 Fp = float2x2.identity;
 
-    public float restVolume = 0.0f;          // Rest area/volume associated with this node
+    public float restVolume = 0.0f;
 
     public int maxLayer;
     public List<HashSet<int>> HNSWNeighbors;
     public Meshless parent;
+
+    public int parentIndex = -1;
 
     public Node(float2 point, Meshless parent) {
         pos = point;
@@ -27,5 +29,9 @@ public class Node {
 
     private static int GetRandomLayer(float ml = 0.6f) {
         return (int)(math.floor(math.log(1.0f / UnityEngine.Random.value) * ml) + 0.01f);
+    }
+
+    public bool AtLevel(int level) {
+        return level <= maxLayer;
     }
 }

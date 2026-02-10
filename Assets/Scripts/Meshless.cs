@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using Physics;
 using Unity.Mathematics;
 using UnityEngine;
+using Physics;
 
 public class Meshless : MonoBehaviour {
     public HNSW hnsw;
@@ -10,16 +10,15 @@ public class Meshless : MonoBehaviour {
     [HideInInspector]
     public int maxLayer = -1;
 
-    // Simulation parameters
-    const float gravity = -9.81f;
+    [Header("Simulation parameters")]
+    public float gravity = -9.81f;
 
     [Header("XPBI compliance")]
     public float compliance = 0f;
 
-    private XPBIConstraint XPBI = new XPBIConstraint();
-
-    // Debug
     public NodeBatch lastBatchDebug;
+
+    public int[] levelEndIndex;
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
@@ -44,10 +43,8 @@ public class Meshless : MonoBehaviour {
         for (int i = 0; i < nodes.Count; i++) {
             Node node = nodes[i];
 
-            // Query k+1 neighbors (includes self)
             List<int> neighbors = hnsw.SearchKnn(node.pos, volumeNeighborCount + 1);
 
-            // Remove self from neighbors
             if (neighbors.Contains(i)) {
                 neighbors.Remove(i);
             } else if (neighbors.Count > volumeNeighborCount) {
@@ -89,40 +86,49 @@ public class Meshless : MonoBehaviour {
 
             node.restVolume = area / 3.0f;
         }
+
+        BuildHierarchy();
     }
 
-    void OnEnable() => MeshlessSimulationController.Instance?.Register(this);
-    void OnDisable() => MeshlessSimulationController.Instance?.Unregister(this);
+    public void BuildHierarchy() {
+        if (maxLayer < 0) return;
 
-    public void StepSimulation(float timeStep) {
-        NodeBatch batch = new NodeBatch(nodes);
+        levelEndIndex = new int[maxLayer + 1];
+        int idx = 0;
+        for (int level = maxLayer; level >= 0; level--) {
+            for (; idx < nodes.Count && nodes[idx].maxLayer >= level; idx++) { }
+            levelEndIndex[level] = idx;
+        }
 
-        // Initialize XPBI constitutive constraint (neighbors, correction matrices, F/Fp, lambdas)
-        XPBI.Initialise(batch);
-
-        // Apply external forces
         for (int i = 0; i < nodes.Count; i++) {
-            if (nodes[i].isFixed) continue;
-            nodes[i].vel.y += gravity * timeStep;
+            BuildParentRelationship(i);
         }
-
-        // XPBI/XPBD iterations with single constitutive constraint per particle
-        for (int iter = 0; iter < Const.SolverIterations; iter++) {
-            XPBI.Relax(batch, compliance, timeStep);
-        }
-        XPBI.CommitDeformation(batch, timeStep);
-
-        // Integrate positions
-        for (int i = 0; i < nodes.Count; i++) {
-            if (nodes[i].isFixed) continue;
-
-            if (float.IsNaN(nodes[i].vel.x) || float.IsInfinity(nodes[i].vel.x)) nodes[i].vel.x = 0f;
-            if (float.IsNaN(nodes[i].vel.y) || float.IsInfinity(nodes[i].vel.y)) nodes[i].vel.y = 0f;
-
-            nodes[i].pos += nodes[i].vel * timeStep;
-            hnsw.Shift(i, nodes[i].pos);
-        }
-
-        lastBatchDebug = batch;
     }
+
+    private void BuildParentRelationship(int nodeIdx) {
+        Node node = nodes[nodeIdx];
+        int parentLevel = node.maxLayer + 1;
+
+        if (parentLevel > maxLayer) {
+            node.parentIndex = -1;
+            return;
+        }
+
+        var candidates = hnsw.SearchKnn(node.pos, 1, parentLevel);
+
+        if (candidates.Count == 0) {
+            node.parentIndex = -1;
+            return;
+        }
+
+        node.parentIndex = candidates[0];
+    }
+
+    public int NodeCount(int level) {
+        if (levelEndIndex == null || level < 0 || level > maxLayer) return 0;
+        return levelEndIndex[level];
+    }
+
+    void OnEnable() => SimulationController.Instance?.Register(this);
+    void OnDisable() => SimulationController.Instance?.Unregister(this);
 }

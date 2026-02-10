@@ -99,15 +99,15 @@ public class ConstraintDebugWindow : EditorWindow {
         EditorGUILayout.LabelField("Simulation Controls", EditorStyles.boldLabel);
 
         debugMode = EditorGUILayout.Toggle("Debug Mode (1 Iter/Frame)", debugMode);
-        Const.SolverIterations = debugMode ? 1 : Const._defaultSolverIterations;
+        Const.Iterations = debugMode ? 1 : Const._defaultIterations;
 
-        var controller = Object.FindFirstObjectByType<MeshlessSimulationController>();
+        var controller = Object.FindFirstObjectByType<SimulationController>();
         if (controller != null) {
             controller.forceTPSToFPS =
                 EditorGUILayout.Toggle("Debug: FPS=TPS", controller.forceTPSToFPS);
         }
 
-        EditorGUILayout.LabelField($"Current Iterations: {Const.SolverIterations}");
+        EditorGUILayout.LabelField($"Current Iterations: {Const.Iterations}");
         EditorGUILayout.EndVertical();
     }
 
