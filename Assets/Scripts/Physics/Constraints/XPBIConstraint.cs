@@ -4,6 +4,8 @@ namespace Physics {
     public static class XPBIConstraint {
 
         private static float2x2 EstimateVelocityGradient(NodeBatch batch, int i) {
+            // XPBI Eq. (11): ∂v/∂x = Σ_b V_b^n (v_b - v_p) (L_p ∇W_b(x_p))^T
+            // In 2D we store the 2x2 gradient with columns corresponding to x/y partials.
             var xi = batch.nodes[i];
             var ci = batch.caches[i];
 
@@ -11,21 +13,29 @@ namespace Physics {
             var N = ci.neighbors;
             if (N == null || N.Count == 0) return gradV;
 
+            float h = ci.kernelH;
+            if (h <= Const.Eps) return gradV;
+
             for (int k = 0; k < N.Count; k++) {
                 int j = N[k];
                 if ((uint)j >= (uint)batch.Count) continue;
 
                 float2 xij = batch.nodes[j].pos - xi.pos;
-                float r2 = math.lengthsq(xij);
-                if (r2 < Const.Eps * Const.Eps) continue;
 
-                float w = 1.0f / r2;
+                float2 gradW = SPHKernels.GradWendlandC2(xij, h);
+                if (math.lengthsq(gradW) <= Const.Eps * Const.Eps) continue;
 
-                float2 correctedGrad = w * math.mul(ci.L, xij);
+                float Vb = batch.caches[j].currentVolume;
+                if (Vb <= Const.Eps) continue;
+
+                // XPBI Eq. (10): corrected kernel gradient uses L_p:
+                // \tilde{∇W} = L_p ∇W
+                float2 correctedGrad = math.mul(ci.L, gradW);
+
                 float2 dv = batch.nodes[j].vel - xi.vel;
 
-                gradV.c0 += dv * correctedGrad.x;
-                gradV.c1 += dv * correctedGrad.y;
+                gradV.c0 += dv * (Vb * correctedGrad.x);
+                gradV.c1 += dv * (Vb * correctedGrad.y);
             }
 
             return gradV;
@@ -44,9 +54,12 @@ namespace Physics {
 
                 if (node.isFixed || node.invMass <= 0f) continue;
                 if (node.restVolume <= Const.Eps) continue;
+                if (cache.kernelH <= Const.Eps) continue;
 
+                // Updated Lagrangian form used by XPBI: F_trial = (I + dt ∇v) F0.
                 float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
 
+                // Plastic projection in Hencky space is used for evaluation (implicit-like), but Fp is committed later.
                 float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
 
                 float C = DeformationUtils.XPBIConstraint(Fel, i);
@@ -56,38 +69,41 @@ namespace Physics {
                 }
                 dbg.constraintEnergy += math.abs(C);
 
+                // XPBD softness: α~ = (compliance / V_rest) / dt^2.
                 float alphaTilde = (compliance / math.max(node.restVolume, Const.Eps)) * (invDt * invDt);
 
                 float2x2 dCdF = DeformationUtils.ComputeGradient(Fel, i);
 
                 float2 gradC_vi = float2.zero;
                 float2[] gradC_vj = cache.gradC_vj;
-                for (int k = 0; k < N.Count; k++) gradC_vj[k] = float2.zero;
+                for (int k = 0; k < Const.NeighborCount; k++) gradC_vj[k] = float2.zero;
 
                 float2x2 FT = math.transpose(Fel);
 
-                for (int k = 0; k < N.Count; k++) {
+                // XPBI Eq. (12): ∇_{x_b} C_p = V_b^n (∂C_p/∂F_p) F_p^T (L_p ∇W_b(x_p)).
+                for (int k = 0; k < N.Count && k < Const.NeighborCount; k++) {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
 
                     float2 xij = batch.nodes[j].pos - node.pos;
-                    float r2 = math.lengthsq(xij);
-                    if (r2 < Const.Eps * Const.Eps) continue;
 
-                    float w = 1.0f / r2;
+                    float2 gradW = SPHKernels.GradWendlandC2(xij, cache.kernelH);
+                    if (math.lengthsq(gradW) <= Const.Eps * Const.Eps) continue;
 
-                    float2 correctedGrad = w * math.mul(cache.L, xij);
-                    float2 q = math.mul(dCdF, math.mul(FT, correctedGrad));
+                    float Vb = batch.caches[j].currentVolume;
+                    if (Vb <= Const.Eps) continue;
 
-                    float2 g = q;
-                    gradC_vi -= g;
-                    gradC_vj[k] = g;
+                    float2 correctedGrad = math.mul(cache.L, gradW);
+                    float2 q = Vb * math.mul(dCdF, math.mul(FT, correctedGrad));
+
+                    gradC_vi -= q;
+                    gradC_vj[k] = q;
                 }
 
                 float gradCViLenSq = math.lengthsq(gradC_vi);
 
                 float denom = node.invMass * gradCViLenSq;
-                for (int k = 0; k < N.Count; k++) {
+                for (int k = 0; k < N.Count && k < Const.NeighborCount; k++) {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
 
@@ -101,6 +117,7 @@ namespace Physics {
                     continue;
                 }
 
+                // XPBD update (XPBI Eq. (13) style): Δλ = -(C + α~ λ) / (Σ w||∇C||^2 + α~).
                 float lambdaBefore = cache.lambda;
                 float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
 
@@ -110,6 +127,7 @@ namespace Physics {
                     continue;
                 }
 
+                // Velocity-first form: Δv = (w Δλ / dt) ∇C.
                 float velScale = dLambda * invDt;
 
                 float2 dVi = node.invMass * velScale * gradC_vi;
@@ -118,7 +136,7 @@ namespace Physics {
                 dbg.RecordPositionUpdate(dVi * dt);
                 dbg.iterationsToConverge = currentIteration + 1;
 
-                for (int k = 0; k < N.Count; k++) {
+                for (int k = 0; k < N.Count && k < Const.NeighborCount; k++) {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
 
@@ -148,10 +166,13 @@ namespace Physics {
                 if (N == null || N.Count == 0) continue;
 
                 if (node.isFixed || node.invMass <= 0f) continue;
+                if (cache.kernelH <= Const.Eps) continue;
 
                 float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
                 float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
 
+                // Multiplicative plasticity update:
+                // F = Fel * Fp, and we want Fp_{n+1} such that Fel^{-1} F_trial updates plastic part.
                 float det = Fel.c0.x * Fel.c1.y - Fel.c0.y * Fel.c1.x;
                 if (math.abs(det) > Const.Eps) {
                     float invDet = 1.0f / det;

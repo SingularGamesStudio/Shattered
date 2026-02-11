@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Unity.Mathematics;
 
@@ -5,14 +6,25 @@ namespace Physics {
 
     public class NodeCache {
         public List<int> neighbors;
+
+        // XPBI Eq. (10): L_p = ( Σ_b V_b^n ∇W_b(x_p) ⊗ (x_b - x_p) )^{-1}
+        // Used to correct raw kernel gradients on irregular / sparse neighborhoods (Bonet–Lok style).
         public float2x2 L;
+
         public float2x2 F0 = float2x2.identity;
         public float lambda = 0;
         public float currentVolume;
+
+        // Per-node smoothing length h. Wendland C2 support radius is 2h.
+        public float kernelH = 0f;
+
         public readonly float2[] gradC_vj;
+
+        public readonly float[] neighborDistances;
 
         public NodeCache() {
             gradC_vj = new float2[Const.NeighborCount];
+            neighborDistances = new float[Const.NeighborCount];
         }
     }
 
@@ -25,6 +37,11 @@ namespace Physics {
         private int lastInitializedCount = 0;
         private bool fullRefreshPending = true;
 
+        // DSU-style owner cache for hierarchical volume aggregation.
+        private int[] ownerCache;
+        private int[] ownerUpdateLevel;
+        private int curLevel = 1;
+
         public NodeBatch(List<Node> nodes, int maxCount) {
             this.nodes = nodes;
             Count = 0;
@@ -35,6 +52,8 @@ namespace Physics {
                 caches.Add(new NodeCache());
                 debug.Add(new DebugData());
             }
+
+            EnsureOwnerCacheCapacity(maxCount);
         }
 
         public void BeginStep() {
@@ -56,6 +75,7 @@ namespace Physics {
         public void Initialise() {
             CacheVolumes();
             CacheNeighbors();
+            CacheKernelRadii();
             ComputeCorrectionMatrices();
             ResetDebugData();
 
@@ -91,14 +111,75 @@ namespace Physics {
             return energy;
         }
 
-        public void CacheVolumes() {
-            int start = fullRefreshPending ? 0 : lastInitializedCount;
-            if (start >= Count) return;
+        void EnsureOwnerCacheCapacity(int n) {
+            if (ownerCache == null || ownerCache.Length < n) ownerCache = new int[n];
+            if (ownerUpdateLevel == null || ownerUpdateLevel.Length < n) ownerUpdateLevel = new int[n];
+        }
 
-            for (int i = start; i < Count; i++) {
+        int FindOwnerWithCompression(int idx, int activeCount, int totalCount) {
+            if ((uint)idx < (uint)activeCount) return idx;
+
+            int x = idx;
+            int res;
+            while (true) {
+                if ((uint)x < (uint)activeCount) { res = x; break; }
+
+                if (ownerUpdateLevel[x] == curLevel) { res = ownerCache[x]; break; }
+
+                int p = nodes[x].parentIndex;
+                if (p < 0 || p == x || (uint)p >= (uint)totalCount) { res = -1; break; }
+
+                x = p;
+            }
+
+            x = idx;
+            while ((uint)x >= (uint)activeCount && (uint)x < (uint)totalCount && ownerUpdateLevel[x] != curLevel) {
+                ownerCache[x] = res;
+                ownerUpdateLevel[x] = curLevel;
+
+                int p = nodes[x].parentIndex;
+                if (p < 0 || p == x || (uint)p >= (uint)totalCount) break;
+
+                x = p;
+            }
+
+            return res;
+        }
+
+        public void CacheVolumes() {
+            // Hierarchical representative volume for XPBI kernel sums:
+            // - Finest level (Count == nodes.Count): currentVolume = restVolume * |det(F)|.
+            // - Coarse levels: each active node represents a cluster; its currentVolume is the sum of
+            //   deformed volumes of all (inactive) descendants that map to it via parentIndex chain.
+            //
+            // Volume aggregation is done by mapping each node to an "owner" in the active prefix (index < Count).
+            // We use DSU-style path compression on the parentIndex chain to make repeated owner lookups cheap.
+
+            for (int i = 0; i < Count; i++) {
+                caches[i].currentVolume = 0f;
+            }
+
+            int total = nodes.Count;
+            EnsureOwnerCacheCapacity(total);
+
+            curLevel++;
+            if (curLevel == int.MaxValue) {
+                Array.Clear(ownerUpdateLevel, 0, ownerUpdateLevel.Length);
+                curLevel = 1;
+            }
+
+            for (int i = 0; i < total; i++) {
                 Node node = nodes[i];
+                if (node.restVolume <= Const.Eps) continue;
+
                 float det = node.F.c0.x * node.F.c1.y - node.F.c0.y * node.F.c1.x;
-                caches[i].currentVolume = node.restVolume * math.abs(det);
+                float leafVol = node.restVolume * math.abs(det);
+                if (leafVol <= Const.Eps) continue;
+
+                int owner = FindOwnerWithCompression(i, Count, total);
+                if ((uint)owner < (uint)Count) {
+                    caches[owner].currentVolume += leafVol;
+                }
             }
         }
 
@@ -129,26 +210,81 @@ namespace Physics {
             }
         }
 
+        public void CacheKernelRadii() {
+            // Sparse hierarchy levels: spacing grows; h must grow too, so we take sqrt(0.5)*median
+            // In that radius KNN most probably has most neighbors covered
+            for (int i = 0; i < Count; i++) {
+                var cache = caches[i];
+                var N = cache.neighbors;
+                if (N == null || N.Count == 0) {
+                    cache.kernelH = 0f;
+                    continue;
+                }
+
+                int n = 0;
+                for (int k = 0; k < N.Count && n < Const.NeighborCount; k++) {
+                    int j = N[k];
+                    if ((uint)j >= (uint)Count) continue;
+
+                    float2 xij = nodes[j].pos - nodes[i].pos;
+                    float r = math.length(xij);
+                    if (r <= Const.Eps) continue;
+
+                    cache.neighborDistances[n++] = r;
+                }
+
+                if (n == 0) {
+                    cache.kernelH = 0f;
+                    continue;
+                }
+
+                Array.Sort(cache.neighborDistances, 0, n);
+
+                float median = (n & 1) == 1
+                    ? cache.neighborDistances[n >> 1]
+                    : 0.5f * (cache.neighborDistances[(n >> 1) - 1] + cache.neighborDistances[n >> 1]);
+
+                cache.kernelH = median * Const.KernelHScale;
+            }
+        }
+
         public void ComputeCorrectionMatrices() {
+            // XPBI Eq. (10): L_p = ( Σ_b V_b^n ∇W_b(x_p) ⊗ (x_b - x_p) )^{-1}
+            // This matrix corrects kernel gradients on irregular samples
             for (int i = 0; i < Count; i++) {
                 var node = nodes[i];
                 var cache = caches[i];
-                if (cache.neighbors == null) continue;
+                var N = cache.neighbors;
+                if (N == null || N.Count == 0) {
+                    cache.L = float2x2.zero;
+                    continue;
+                }
+
+                float h = cache.kernelH;
+                if (h <= Const.Eps) {
+                    cache.L = float2x2.zero;
+                    continue;
+                }
 
                 float2x2 sum = float2x2.zero;
 
-                for (int k = 0; k < cache.neighbors.Count; k++) {
-                    int j = cache.neighbors[k];
+                for (int k = 0; k < N.Count; k++) {
+                    int j = N[k];
                     if ((uint)j >= (uint)Count) continue;
 
                     float2 xij = nodes[j].pos - node.pos;
-                    float r2 = math.lengthsq(xij);
-                    if (r2 < Const.Eps * Const.Eps) continue;
 
-                    float w = 1.0f / r2;
+                    // ∇_{x_p} W(x_b - x_p, h_p) (Wendland C2).
+                    float2 gradW = SPHKernels.GradWendlandC2(xij, h);
+                    if (math.lengthsq(gradW) <= Const.Eps * Const.Eps) continue;
 
-                    sum.c0 += w * xij * xij.x;
-                    sum.c1 += w * xij * xij.y;
+                    // V_b^n is the effective neighbor volume (aggregate on coarse levels).
+                    float Vb = caches[j].currentVolume;
+                    if (Vb <= Const.Eps) continue;
+
+                    // Outer product: ∇W ⊗ x = matrix with columns (∇W * x_component).
+                    sum.c0 += (Vb * xij.x) * gradW;
+                    sum.c1 += (Vb * xij.y) * gradW;
                 }
 
                 cache.L = DeformationUtils.PseudoInverse(sum);

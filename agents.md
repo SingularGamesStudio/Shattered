@@ -10,11 +10,12 @@ These instructions exist to make Perplexity's code output match this project's c
 When you propose code changes:
 
 - Do not add "latest change", "changed because…", or similar commentary in code comments. Only add comments that are necessary to understand non-obvious intent.
+- But never remove existing comments, unless they became obsolete after the change.
 - Do not introduce unnecessary variables if a value is used once; inline expressions when it stays readable.
 - Output either:
   - The full changed file(s), or
   - The full changed function(s) / structure(s) (entire method/class/struct definition),
-  with no placeholders like `/* ... unchanged ... */` or "rest of file omitted", to make copy/paste safe.
+  with no placeholders like `/* ... unchanged ... */`, to make copy/paste safe.
 
 ## Change discipline
 

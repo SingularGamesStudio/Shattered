@@ -151,13 +151,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  targetTPS: 10000
+  targetTPS: 1000
   simulationSpeed: 10
   manual: 1
   maxTicksPerFrame: 1000000
   useUnscaledTime: 0
   forceTPSToFPS: 1
-  useHierarchicalSolver: 1
+  useHierarchicalSolver: 0
 --- !u!4 &86236646
 Transform:
   m_ObjectHideFlags: 0
@@ -296,7 +296,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   maxLayer: 3
-  gravity: -9.81
+  gravity: -0.1
   compliance: 1
   levelEndIndex: 
   center:
@@ -305,7 +305,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 6
+  pointCount: 50
   generateOnStart: 1
 --- !u!4 &961765557
 Transform:

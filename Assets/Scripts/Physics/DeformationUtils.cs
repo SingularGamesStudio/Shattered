@@ -7,11 +7,9 @@ namespace Physics {
         public const float YoungsModulus = 5e4f;
         public const float PoissonsRatio = 0.3f;
 
-        // Lamé parameters from (E, ν).
         public static float Mu => YoungsModulus / (2f * (1f + PoissonsRatio));
         public static float Lambda => (YoungsModulus * PoissonsRatio) / ((1f + PoissonsRatio) * (1f - 2f * PoissonsRatio));
 
-        // Hencky-space yield parameters (tunable).
         public const float YieldHencky = 0.05f;
         public const float VolumetricHenckyLimit = 0.3f;
     }
@@ -22,10 +20,14 @@ namespace Physics {
         const float EigenOffDiagEps = 1e-5f;
         const float InvDetEps = 1e-8f;
 
+        /// <summary>
+        /// Computes ∂C/∂F for C(F) = sqrt(2 Ψ(F)) (XPBI constitutive constraint).
+        /// We use Hencky (log) strain: Ψ = μ ||dev(log U)||^2 + (λ/2) tr(log U)^2, with F = R U (polar decomposition).
+        /// </summary>
         public static float2x2 ComputeGradient(float2x2 F, int nodeIdx) {
             PolarDecompose2D(F, out float2x2 R, out float2x2 S, out float s1, out float s2, nodeIdx);
 
-            // Spectral Hencky strain: h_i = log(s_i); dev via subtracting mean. (Quadratic Hencky energy model.) [web:63]
+            // Spectral Hencky strain: h_i = log(s_i); dev via subtracting mean.
             float h1 = math.log(math.max(s1, StretchEps));
             float h2 = math.log(math.max(s2, StretchEps));
             float k = h1 + h2;
@@ -33,24 +35,37 @@ namespace Physics {
             float h1Dev = h1 - mean;
             float h2Dev = h2 - mean;
 
-            // dΨ/dh_i for Ψ = μ||dev(log U)||^2 + (λ/2) tr(log U)^2 (2D specialization). [web:63]
+            // dΨ/dh_i for Ψ = μ||dev(log U)||^2 + (λ/2) tr(log U)^2 (2D specialization).
             float dPsi_dh1 = XPBIConfig.Mu * (h1Dev - h2Dev) + XPBIConfig.Lambda * k;
             float dPsi_dh2 = XPBIConfig.Mu * (h2Dev - h1Dev) + XPBIConfig.Lambda * k;
 
+            // Chain rule through s_i = exp(h_i): dΨ/ds_i = (dΨ/dh_i) * (1/s_i).
             float dPsi_ds1 = dPsi_dh1 / math.max(s1, StretchEps);
             float dPsi_ds2 = dPsi_dh2 / math.max(s2, StretchEps);
 
+            // Back to matrix form via eigenbasis of symmetric stretch.
             float2x2 V = EigenBasisSymmetric2x2(S, s1, s2);
-            float2x2 dPsi_dS = math.mul(math.mul(V, new float2x2(new float2(dPsi_ds1, 0f), new float2(0f, dPsi_ds2))), math.transpose(V));
+            float2x2 dPsi_dS = math.mul(
+                math.mul(V, new float2x2(new float2(dPsi_ds1, 0f), new float2(0f, dPsi_ds2))),
+                math.transpose(V)
+            );
+
+            // dΨ/dF = R (dΨ/dS) for polar decomposition F = R S.
             float2x2 dPsi_dF = math.mul(R, dPsi_dS);
 
             float C = XPBIConstraint(F, nodeIdx);
             if (C < StretchEps) return float2x2.zero;
 
+            // ∂C/∂F = (1/C) ∂Ψ/∂F for C = sqrt(2Ψ).
             float invC = 1f / C;
             return new float2x2(dPsi_dF.c0 * invC, dPsi_dF.c1 * invC);
         }
 
+        /// <summary>
+        /// Plastic return mapping in Hencky space:
+        /// - Deviatoric part: radial projection to yield surface (von-Mises-like on log-strain).
+        /// - Volumetric part: clamp k = tr(log U) (cap, not full volumetric flow).
+        /// </summary>
         public static float2x2 ApplyPlasticityReturn(float2x2 F_elastic, int nodeIdx, ref DebugData debug) {
             PolarDecompose2D(F_elastic, out float2x2 R, out float2x2 S, out float s1, out float s2, nodeIdx);
 
@@ -70,9 +85,6 @@ namespace Physics {
 
             debug.plasticFlowCount++;
 
-            // Return mapping in Hencky space:
-            // - deviatoric: radial projection to yield surface
-            // - volumetric: clamp (a cap, not true volumetric plastic flow)
             float devScale = devYield ? math.min(XPBIConfig.YieldHencky / math.max(gammaEq, StretchEps), 1f) : 1f;
             float kProj = volYield ? math.clamp(k, -XPBIConfig.VolumetricHenckyLimit, XPBIConfig.VolumetricHenckyLimit) : k;
 
@@ -80,7 +92,10 @@ namespace Physics {
             float s2Proj = math.exp((h2Dev * devScale) + 0.5f * kProj);
 
             float2x2 V = EigenBasisSymmetric2x2(S, s1, s2);
-            float2x2 Sproj = math.mul(math.mul(V, new float2x2(new float2(s1Proj, 0f), new float2(0f, s2Proj))), math.transpose(V));
+            float2x2 Sproj = math.mul(
+                math.mul(V, new float2x2(new float2(s1Proj, 0f), new float2(0f, s2Proj))),
+                math.transpose(V)
+            );
             return math.mul(R, Sproj);
         }
 
@@ -102,7 +117,6 @@ namespace Physics {
         public static float XPBIConstraint(float2x2 F, int nodeIdx) =>
             math.sqrt(2f * ComputePsiHencky(F, nodeIdx));
 
-        // Polar decomposition in 2D using eigendecomposition of C = F^T F: U = sqrt(C), R = F U^{-1}. [web:64]
         public static void PolarDecompose2D(float2x2 F, out float2x2 R, out float2x2 U, out float s1, out float s2, int nodeIdx = -1) {
             float2x2 C = math.mul(math.transpose(F), F);
 
@@ -119,7 +133,10 @@ namespace Physics {
             if (s2 < StretchEps) s2 = 1f;
 
             float2x2 V = EigenBasisSymmetric2x2(C, l1, l2);
-            U = math.mul(math.mul(V, new float2x2(new float2(s1, 0f), new float2(0f, s2))), math.transpose(V));
+            U = math.mul(
+                math.mul(V, new float2x2(new float2(s1, 0f), new float2(0f, s2))),
+                math.transpose(V)
+            );
 
             float detU = U.c0.x * U.c1.y - U.c0.y * U.c1.x;
             if (math.abs(detU) < InvDetEps || AnyNaNOrInf(U)) {
@@ -168,18 +185,17 @@ namespace Physics {
         public static float2x2 PseudoInverse(float2x2 A) {
             SVD2x2(A, out float2x2 U, out float2 s, out float2x2 V);
             return math.mul(
-                math.mul(V, new float2x2(new float2(s.x > StretchEps ? 1f / s.x : 0f, 0f),
-                                        new float2(0f, s.y > StretchEps ? 1f / s.y : 0f))),
+                math.mul(V, new float2x2(
+                    new float2(s.x > StretchEps ? 1f / s.x : 0f, 0f),
+                    new float2(0f, s.y > StretchEps ? 1f / s.y : 0f)
+                )),
                 math.transpose(U)
             );
         }
 
         static float2x2 EigenBasisSymmetric2x2(float2x2 M, float e1, float e2) {
-            // Minimal branching eigenbasis for symmetric 2x2; reuse across C, S, ATA.
             float b = M.c0.y;
             if (math.abs(b) <= EigenOffDiagEps) return float2x2.identity;
-
-            // For symmetric [[a, b],[b, c]], an eigenvector for eigenvalue e is (b, e - a).
             float2 v1 = math.normalize(new float2(b, e1 - M.c0.x));
             float2 v2 = math.normalize(new float2(b, e2 - M.c0.x));
             return new float2x2(v1, v2);
