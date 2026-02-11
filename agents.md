@@ -33,10 +33,11 @@ Entry points:
 - `Assets/Scripts/HNSW.cs`: Approximate kNN structure (used for neighborhoods, hierarchy parent lookup, updated via `Shift`).
 
 Physics core:
-- `Assets/Scripts/Physics/NodeBatch.cs`: Per-step caches (neighbors, correction matrix `L`, cached `F0`, lambda, current volume, debug). Expandable batch reused across hierarchical levels.
-- `Assets/Scripts/Physics/DeformationUtils.cs`: Hencky/log strain model, polar decomposition, plastic return mapping.
-- `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`: Static class with velocity-based XPBD-style solve (`Relax`, `CommitDeformation`).
-- `Assets/Scripts/Physics/Const.cs`: Global constants (eps, neighbor count, solver iterations, HPBD iterations).
+- `Assets/Scripts/Physics/NodeBatch.cs`: Per-level caches (neighbors, kernel radius `h`, correction matrix `L`, cached `F0`, lambda, current volume, debug). Designed to be expanded across hierarchy levels.
+- `Assets/Scripts/Physics/DeformationUtils.cs`: Hencky/log strain model, polar decomposition, plastic return mapping, pseudo-inverse helpers.
+- `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`: Velocity-based XPBD/XPBI-style solve (`Relax`, `CommitDeformation`) using kernel-estimated `gradV`.
+- `Assets/Scripts/Physics/Constraints/SPHKernels.cs`: Wendland C2 kernel + gradient (2D) used by corrected kernel operators.
+- `Assets/Scripts/Physics/Const.cs`: Global constants (eps, neighbor count, solver iterations, HPBD iterations, `KernelHScale`).
 
 Debug tooling:
 - `Assets/Scripts/MeshlessVisualiser.cs`: Runtime visualization helper.
@@ -46,104 +47,121 @@ Debug tooling:
 ## Architecture: Hierarchical solver
 
 ### High-level flow (SimulationController)
-The simulation uses a **hierarchical position-based dynamics (HPBD)** approach with V-cycle multigrid structure:
 
-1. **External forces** applied to all nodes (gravity)
+The simulation uses a hierarchical solver with a V-cycle-like coarse-to-fine schedule:
+
+1. **External forces** applied to all nodes (gravity modifies velocities).
 2. **V-cycle solve** from coarsest to finest level:
    - For each level L (from `maxLayer` down to 0):
-     - Save current positions
-     - Expand batch to include all nodes up to level L
-     - Initialize batch (neighbors, correction matrices, volumes, F0)
-     - Run solver iterations (2 for coarse levels, 8 for finest)
-     - **Prolongate corrections**: propagate parent position changes to child nodes
-3. **Commit deformation**: Update `F`, `Fp` on finest level (level 0)
-4. **Integrate positions** from corrected velocities
-5. **Update HNSW** via `Shift` for each moved node
+     - Expand batch to include all nodes up to level L (active prefix).
+     - Initialize batch (volumes, neighbors, kernel radii `h`, correction matrices `L`, cache `F0`, reset lambda/debug).
+     - Run solver iterations (few on coarse levels, more on finest).
+     - **Prolongate corrections (velocity-based)**: propagate parent velocity deltas to child nodes.
+3. **Commit deformation**: Update `F`, `Fp` on the finest level (level 0).
+4. **Integrate positions** once from corrected velocities.
+5. **Update HNSW** via `Shift` for each moved node.
 
 ### Hierarchy structure (Meshless)
-- Nodes are sorted descending by `maxLayer` (HNSW layer assignment)
-- `levelEndIndex[L]` = number of nodes with `maxLayer >= L` (prefix of nodes list)
-- Each node stores `parentIndex` = single closest parent at `maxLayer + 1`
-- Hierarchy rebuilt every `Const.HierarchyRebuildInterval` frames
+
+- Nodes are sorted descending by `maxLayer` (HNSW layer assignment).
+- `levelEndIndex[L]` = number of nodes with `maxLayer >= L` (prefix of nodes list).
+- Each node stores `parentIndex` = single closest parent at `maxLayer + 1`.
+- Hierarchy rebuilt every `Const.HierarchyRebuildInterval` frames.
 
 ### Batch reuse across levels (NodeBatch)
-- Single `NodeBatch` created with max capacity = total node count
-- `ExpandTo(nodeCount)` increases active `Count` without reallocation
-- `Initialise()` called per level:
-  - **Volumes**: computed only for newly added nodes (`lastInitializedCount` to `Count`)
-  - **Neighbors**: recomputed for ALL (topology changes with new nodes)
-  - **Correction matrices L**: recomputed for ALL (depend on neighbors)
-  - **F0, lambda**: reset for all active nodes
 
-### Position correction prolongation
-After solving at level L > 0, propagate corrections to finer nodes:
+- The intended usage is one `NodeBatch` allocated at max capacity and reused each step.
+- `ExpandTo(nodeCount)` increases active `Count` without reallocation (except if node count grows).
+- `Initialise()` is called per level and (currently) does:
+  - **Volumes**: recomputed for the active prefix using hierarchical aggregation (see below).
+  - **Neighbors**: recomputed for all active nodes (kNN).
+  - **Kernel radii (`h`)**: recomputed for all active nodes.
+  - **Correction matrices `L`**: recomputed for all active nodes (depend on neighbors, `h`, and volumes).
+  - **Lambda/debug**: reset for all active nodes.
+  - **F0 cache**: updated for newly-added nodes when expanding within a step.
+
+### Velocity correction prolongation
+
+After solving at level L > 0, propagate velocity deltas to finer nodes:
 ```
 for each node i in (levelEndIndex[L], levelEndIndex[L-1]):
-    parentCorrection = parent.pos - saved_parent.pos
-    node.pos += parentCorrection
+    parentDeltaV = parent.vel - saved_parent.vel
+    node.vel += parentDeltaV
 ```
-Only **corrections** (deltas) are propagated, not absolute positions, preserving fine-scale detail.
+Only **deltas** are propagated, not absolute values.
 
 ## What the solver actually does (current implementation)
 
 ### Neighborhoods (fixed-k kNN, cached per level)
-- Neighborhood size is `Const.NeighborCount` (currently 6)
-- Neighbors queried once per level via HNSW layer 0 (finest)
-- Recomputed at each hierarchical level since topology changes
+
+- Neighborhood size is `Const.NeighborCount` (currently 6).
+- Neighbors queried via HNSW (kNN) each level.
+- Neighbors are sorted by angle for deterministic accumulation order.
 
 ### Velocity-first corrections
-- The constraint solver updates **velocities** directly (`Δv`)
-- Positions integrated once per step from corrected velocities
-- Hierarchical corrections modify positions between levels, then velocities refined at finer level
+
+- The constraint solver updates **velocities** directly (`Δv`).
+- Positions are integrated once per step from corrected velocities.
+- Hierarchical coupling is done by prolongating **velocity** deltas from coarse parents to fine children.
 
 ### Trial deformation and cached reference
-- At level initialization, `batch.Initialise()` caches `F0 = node.F` per node
+
+- At level initialization, `NodeBatch` caches `F0 = node.F`.
 - Each iteration forms:
   - `Ftrial = (I + dt * gradV) * F0`
-  where `gradV` is estimated from neighbor velocity differences
+  where `gradV` is estimated from neighbor velocity differences using kernel operators.
 
-### Correction matrix L (world-space, geometry-only)
-- `L` is computed from world-space neighbor offsets `xij = xj - xi` in `NodeBatch.ComputeCorrectionMatrices()`
-- Uses simplified 1/r² weighting (not SPH kernels yet)
-- `L` depends only on neighborhood geometry, not on `F`/`Fp`
+### Kernel operators (Wendland C2 + corrected gradients)
+
+- Wendland C2 kernel and gradient are implemented in `Physics/Constraints/SPHKernels.cs`.
+- Each node has a smoothing length `h` (support radius is `2h`).
+- `h` is chosen per node from neighbor distances (median distance scaled by `Const.KernelHScale`), so it naturally increases on sparse hierarchy levels.
+
+### Correction matrix L (XPBI-style)
+
+- `L` is computed per node using a corrected kernel gradient matrix of the form:
+  - `L = (Σ V_b * (∇W_b ⊗ x_pb))^(-1)`
+- The inverse uses a pseudo-inverse (SVD) for stability.
+- `L` is then used to correct kernel gradients (`L * ∇W`) when estimating `gradV` and constraint gradients.
 
 ### Constitutive model (Hencky/log strain)
-- Energy/gradient uses polar decomposition and `log(stretch)` (Hencky strain)
-- Constraint value is `C(F) = sqrt(2 * PsiHencky(F))`
+
+- Energy/gradient uses polar decomposition and `log(stretch)` (Hencky strain).
+- Constraint value is `C(F) = sqrt(2 * PsiHencky(F))`.
 
 ### Plasticity (Hencky-space return mapping + Fp update)
-- Plastic projection is a return mapping in Hencky space (deviatoric yield + volumetric clamp)
-- `CommitDeformation()` updates `Fp` based on `Ftrial` and projected elastic `Fel`, then assigns `node.F = Fel`
-- Only runs on finest level (level 0) after V-cycle completes
+
+- Plastic projection is a return mapping in Hencky space (deviatoric yield + volumetric clamp).
+- `CommitDeformation()` updates `Fp` based on `Ftrial` and projected elastic `Fel`, then assigns `node.F = Fel`.
+- Only runs on finest level (level 0) after the V-cycle completes.
+
+### Effective volumes (hierarchy-aware)
+
+Kernel sums use an effective per-node volume `V_b`:
+
+- Finest level: `V = restVolume * |det(F)|`.
+- Coarse levels: each active node represents a cluster; its `currentVolume` is the sum of descendant leaf deformed volumes.
+- Volume mapping to the active prefix uses parentIndex-chain ownership with DSU-style path compression to avoid repeated long walks.
 
 ## Project knobs
 
 Solver parameters:
-- `Const.Iterations`: solver iterations for finest level (level 0), default 8
-- `Const.HPBDIterations`: iterations per coarse level, default 2
-- `Const.NeighborCount`: k in kNN neighborhood, default 6
-- `Meshless.compliance`: passed to `XPBIConstraint.Relax` for XPBD compliance term
+- `Const.Iterations`: solver iterations for finest level (level 0), default 8.
+- `Const.HPBDIterations`: iterations per coarse level, default 2.
+- `Const.NeighborCount`: k in kNN neighborhood, default 6.
+- `Meshless.compliance`: passed to `XPBIConstraint.Relax` for XPBD compliance term.
+- `Const.KernelHScale`: scaling applied to median neighbor distance to get per-node `h`.
 
 Hierarchy parameters:
-- `SimulationController.useHierarchicalSolver`: toggle V-cycle on/off
-- `Const.HierarchyRebuildInterval`: frames between hierarchy updates, default 60
+- `SimulationController.useHierarchicalSolver`: toggle V-cycle on/off.
+- `Const.HierarchyRebuildInterval`: frames between hierarchy updates, default 60.
 
 Material constants (global, in code):
-- `XPBIConfig.YoungsModulus`, `XPBIConfig.PoissonsRatio`
-- `XPBIConfig.YieldHencky`, `XPBIConfig.VolumetricHenckyLimit`
+- `XPBIConfig.YoungsModulus`, `XPBIConfig.PoissonsRatio`.
+- `XPBIConfig.YieldHencky`, `XPBIConfig.VolumetricHenckyLimit`.
 
 ## Common pitfalls
 
-- **Batch expansion**: `NodeBatch.ExpandTo()` increases `Count`, but caches must be explicitly invalidated/recomputed via `Initialise()`.
-- **Hot allocations**: Avoid allocating arrays/lists inside per-node/per-iteration/per-level loops. Batch and saved positions array are pre-allocated and reused.
-- **Hierarchy consistency**: Parent indices can become stale if HNSW layers change; rebuild happens periodically but not every frame.
+- **Hot allocations**: Avoid allocating arrays/lists inside per-node/per-iteration/per-level loops.
 - **Level ordering**: Nodes must stay sorted by `maxLayer` descending for `levelEndIndex` prefixes to work correctly.
 - **Unity.Mathematics**: Prefer `float2`/`float2x2` consistently; avoid mixing with `Vector2` unless necessary at Unity boundaries.
-
-## Future work: SPH kernels
-
-Current implementation uses simplified 1/r² weighting. Plan to add proper SPH kernels:
-- Wendland C2 kernel evaluation
-- Per-node effective radius based on representative volume (for hierarchical sparse levels)
-- Volume-weighted correction matrix: `L = (Σ V_j ∇W(r_ij, h) ⊗ x_ij)^(-1)`
-- This will make the correction matrix physically accurate for both dense (fine) and sparse (coarse) levels
