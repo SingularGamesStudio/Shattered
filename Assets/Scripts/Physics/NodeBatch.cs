@@ -5,7 +5,7 @@ using Unity.Mathematics;
 namespace Physics {
 
     public class NodeCache {
-        public List<int> neighbors;
+        public readonly List<int> neighbors;
 
         // XPBI Eq. (10): L_p = ( Σ_b V_b^n ∇W_b(x_p) ⊗ (x_b - x_p) )^{-1}
         // Used to correct raw kernel gradients on irregular / sparse neighborhoods (Bonet–Lok style).
@@ -21,10 +21,13 @@ namespace Physics {
         public readonly float2[] gradC_vj;
 
         public readonly float[] neighborDistances;
+        public readonly float[] neighborAngles;
 
         public NodeCache() {
+            neighbors = new List<int>(Const.NeighborCount + 1);
             gradC_vj = new float2[Const.NeighborCount];
             neighborDistances = new float[Const.NeighborCount];
+            neighborAngles = new float[Const.NeighborCount];
         }
     }
 
@@ -73,17 +76,33 @@ namespace Physics {
         }
 
         public void Initialise() {
+            long t = LoopProfiler.Stamp();
             CacheVolumes();
-            CacheNeighbors();
+            LoopProfiler.Add(LoopProfiler.Section.BatchCacheVolumes, t);
+
+            t = LoopProfiler.Stamp();
+            CacheNeighbors();//TODO: 10-13% of tick time, not GPU-friendly
+            LoopProfiler.Add(LoopProfiler.Section.BatchCacheNeighbors, t);
+
+            t = LoopProfiler.Stamp();
             CacheKernelRadii();
-            ComputeCorrectionMatrices();
+            LoopProfiler.Add(LoopProfiler.Section.BatchCacheKernelRadii, t);
+
+            t = LoopProfiler.Stamp();
+            ComputeCorrectionMatrices();//TODO: 2% of tick time
+            LoopProfiler.Add(LoopProfiler.Section.BatchComputeCorrectionMatrices, t);
+
+            t = LoopProfiler.Stamp();
             ResetDebugData();
+            LoopProfiler.Add(LoopProfiler.Section.BatchResetDebugData, t);
 
             for (int i = 0; i < Count; i++) {
                 caches[i].lambda = 0;
             }
 
+            t = LoopProfiler.Stamp();
             CacheF0();
+            LoopProfiler.Add(LoopProfiler.Section.BatchCacheF0, t);
 
             lastInitializedCount = Count;
             fullRefreshPending = false;
@@ -194,19 +213,37 @@ namespace Physics {
 
         public void CacheNeighbors() {
             for (int i = 0; i < Count; i++) {
-                caches[i].neighbors = nodes[i].parent.hnsw.SearchKnn(nodes[i].pos, Const.NeighborCount + 1);
+                var cache = caches[i];
+                var neighbors = cache.neighbors;
 
-                if (caches[i].neighbors.Contains(i)) {
-                    caches[i].neighbors.Remove(i);
-                } else if (caches[i].neighbors.Count > Const.NeighborCount) {
-                    caches[i].neighbors.RemoveAt(Const.NeighborCount);
+                nodes[i].parent.hnsw.SearchKnn(nodes[i].pos, Const.NeighborCount + 1, neighbors);
+
+                int self = neighbors.IndexOf(i);
+                if (self >= 0) neighbors.RemoveAt(self);
+
+                if (neighbors.Count > Const.NeighborCount)
+                    neighbors.RemoveAt(Const.NeighborCount);
+
+                int nCount = neighbors.Count;
+                for (int k = 0; k < nCount; k++) {
+                    float2 v = nodes[neighbors[k]].pos - nodes[i].pos;
+                    cache.neighborAngles[k] = math.atan2(v.y, v.x);
                 }
 
-                caches[i].neighbors.Sort((a, b) => {
-                    float2 va = nodes[a].pos - nodes[i].pos;
-                    float2 vb = nodes[b].pos - nodes[i].pos;
-                    return math.atan2(va.y, va.x).CompareTo(math.atan2(vb.y, vb.x));
-                });
+                for (int k = 1; k < nCount; k++) {
+                    float ak = cache.neighborAngles[k];
+                    int nk = neighbors[k];
+
+                    int j = k - 1;
+                    while (j >= 0 && cache.neighborAngles[j] > ak) {
+                        cache.neighborAngles[j + 1] = cache.neighborAngles[j];
+                        neighbors[j + 1] = neighbors[j];
+                        j--;
+                    }
+
+                    cache.neighborAngles[j + 1] = ak;
+                    neighbors[j + 1] = nk;
+                }
             }
         }
 
@@ -268,6 +305,7 @@ namespace Physics {
 
                 float2x2 sum = float2x2.zero;
 
+                long t = LoopProfiler.Stamp();
                 for (int k = 0; k < N.Count; k++) {
                     int j = N[k];
                     if ((uint)j >= (uint)Count) continue;
@@ -286,8 +324,11 @@ namespace Physics {
                     sum.c0 += (Vb * xij.x) * gradW;
                     sum.c1 += (Vb * xij.y) * gradW;
                 }
+                LoopProfiler.Add(LoopProfiler.Section.BatchCorrectionMatrixSum, t);
 
+                t = LoopProfiler.Stamp();
                 cache.L = DeformationUtils.PseudoInverse(sum);
+                LoopProfiler.Add(LoopProfiler.Section.BatchCorrectionMatrixPseudoInverse, t);
             }
         }
     }

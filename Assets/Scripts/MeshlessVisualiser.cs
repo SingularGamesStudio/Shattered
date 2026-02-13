@@ -43,6 +43,9 @@ public class MeshlessVisualiser : MonoBehaviour {
     static readonly Color fpColor = new Color(1f, 0.8f, 0f, 1f);
     static readonly Color restColor = new Color(0.75f, 0.2f, 1f, 1f);
 
+    static readonly Color layer0Color = new Color(0.15f, 0.35f, 1f, 1f);
+    static readonly Color layerMaxColor = new Color(1f, 0.2f, 0.2f, 1f);
+
     Meshless meshless;
 
     void Awake() {
@@ -69,11 +72,11 @@ public class MeshlessVisualiser : MonoBehaviour {
 
     void DrawCachedNeighborEdges() {
         var batch = meshless.lastBatchDebug;
+        int count = math.min(meshless.nodes.Count, batch.Count);
 
-        for (int i = 0; i < meshless.nodes.Count; i++) {
-            var cache = batch.caches[i];
-            var N = cache?.neighbors;
-            if (N == null) continue;
+        for (int i = 0; i < count; i++) {
+            var N = batch.caches[i].neighbors;
+            if (N == null || N.Count == 0) continue;
 
             for (int k = 0; k < N.Count; k++) {
                 int j = N[k];
@@ -120,6 +123,12 @@ public class MeshlessVisualiser : MonoBehaviour {
         return expandColor;
     }
 
+    Color GetLayerColor(int layer) {
+        int max = math.max(meshless.maxLayer, 0);
+        float t = max == 0 ? 0f : math.saturate((float)layer / max);
+        return Color.Lerp(layer0Color, layerMaxColor, t);
+    }
+
     void DrawNodes() {
         for (int i = 0; i < meshless.nodes.Count; i++) {
             var node = meshless.nodes[i];
@@ -131,34 +140,46 @@ public class MeshlessVisualiser : MonoBehaviour {
                 continue;
             }
 
-            Gizmos.color = showPrincipalStretch ? GetNodeStretchColor(i) : neutralColor;
+            Color layerColor = GetLayerColor(node.maxLayer);
+            Gizmos.color = showPrincipalStretch ? Color.Lerp(layerColor, GetNodeStretchColor(i), 0.65f) : layerColor;
             if (showNodes || showPrincipalStretch) Gizmos.DrawSphere(ToVector3(node.pos), nodeSphereRadius);
         }
     }
 
     Color GetNodeStretchColor(int i) {
-        IEnumerable<int> N = meshless.lastBatchDebug?.caches[i]?.neighbors;
-
-        // Fallback to HNSW level-0 graph if the simulation hasn't produced cached neighbors yet.
-        if (N == null) {
-            var node = meshless.nodes[i];
-            if (node.HNSWNeighbors != null && node.HNSWNeighbors.Count > 0) N = node.HNSWNeighbors[0];
-        }
-        if (N == null) return neutralColor;
+        var cached = meshless.lastBatchDebug?.caches[i]?.neighbors;
 
         float maxStretch = 1f;
         int valid = 0;
 
-        foreach (int j in N) {
-            if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+        if (cached != null) {
+            for (int idx = 0; idx < cached.Count; idx++) {
+                int j = cached[idx];
+                if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
 
-            float2 restEdge = math.mul(meshless.nodes[i].Fp, meshless.nodes[j].originalPos - meshless.nodes[i].originalPos);
-            float restLen = math.length(restEdge);
-            if (restLen < eps) continue;
+                float2 restEdge = math.mul(meshless.nodes[i].Fp, meshless.nodes[j].originalPos - meshless.nodes[i].originalPos);
+                float restLen = math.length(restEdge);
+                if (restLen < eps) continue;
 
-            float stretch = math.length(meshless.nodes[j].pos - meshless.nodes[i].pos) / restLen;
-            maxStretch = math.max(maxStretch, stretch);
-            valid++;
+                float stretch = math.length(meshless.nodes[j].pos - meshless.nodes[i].pos) / restLen;
+                maxStretch = math.max(maxStretch, stretch);
+                valid++;
+            }
+        } else {
+            var node = meshless.nodes[i];
+            if (node.HNSWNeighbors == null || node.HNSWNeighbors.Count == 0) return neutralColor;
+
+            foreach (int j in node.HNSWNeighbors[0]) {
+                if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+
+                float2 restEdge = math.mul(meshless.nodes[i].Fp, meshless.nodes[j].originalPos - meshless.nodes[i].originalPos);
+                float restLen = math.length(restEdge);
+                if (restLen < eps) continue;
+
+                float stretch = math.length(meshless.nodes[j].pos - meshless.nodes[i].pos) / restLen;
+                maxStretch = math.max(maxStretch, stretch);
+                valid++;
+            }
         }
 
         if (valid == 0) return neutralColor;
@@ -204,23 +225,32 @@ public class MeshlessVisualiser : MonoBehaviour {
             var node = meshless.nodes[i];
             if (node.isFixed) continue;
 
-            IEnumerable<int> N = meshless.lastBatchDebug?.caches[i]?.neighbors;
-            if (N == null) {
-                if (node.HNSWNeighbors == null || node.HNSWNeighbors.Count == 0) continue;
-                N = node.HNSWNeighbors[0];
-            }
+            var cached = meshless.lastBatchDebug?.caches[i]?.neighbors;
+            if (cached == null && (node.HNSWNeighbors == null || node.HNSWNeighbors.Count == 0))
+                continue;
 
             float2x2 Ftot = math.mul(node.F, node.Fp);
 
             float2 sum = float2.zero;
             int count = 0;
 
-            foreach (int j in N) {
-                if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+            if (cached != null) {
+                for (int idx = 0; idx < cached.Count; idx++) {
+                    int j = cached[idx];
+                    if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
 
-                float2 rij = math.mul(Ftot, meshless.nodes[j].originalPos - node.originalPos);
-                sum += (meshless.nodes[j].pos - rij);
-                count++;
+                    float2 rij = math.mul(Ftot, meshless.nodes[j].originalPos - node.originalPos);
+                    sum += (meshless.nodes[j].pos - rij);
+                    count++;
+                }
+            } else {
+                foreach (int j in node.HNSWNeighbors[0]) {
+                    if (j == i || (uint)j >= (uint)meshless.nodes.Count) continue;
+
+                    float2 rij = math.mul(Ftot, meshless.nodes[j].originalPos - node.originalPos);
+                    sum += (meshless.nodes[j].pos - rij);
+                    count++;
+                }
             }
 
             if (count == 0) continue;
@@ -232,7 +262,6 @@ public class MeshlessVisualiser : MonoBehaviour {
             DrawArrow(p, q, restColor);
         }
     }
-
 
     static void DrawArrow(Vector3 start, Vector3 end, Color color) {
         Gizmos.color = color;

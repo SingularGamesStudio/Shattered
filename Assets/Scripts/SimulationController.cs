@@ -28,6 +28,16 @@ public sealed class SimulationController : MonoBehaviour {
     [Header("Hierarchy")]
     public bool useHierarchicalSolver = true;
 
+    [Header("Profiling")]
+    public bool enableLoopProfiling = false;
+    [Min(1)] public int profileTicks = 2000;
+    [Min(0)] public int profileWarmupTicks = 200;
+    public string profileScenario = "default";
+    public KeyCode profileStartKey = KeyCode.P;
+
+    [Tooltip("Absolute path, or relative. Relative resolves to project root in Editor, persistentDataPath in Player.")]
+    public string profileOutputDirectory = "Profiles";
+
     readonly List<Meshless> meshless = new List<Meshless>(64);
     readonly Dictionary<Meshless, int> frameCounters = new Dictionary<Meshless, int>();
     readonly Dictionary<Meshless, float2[]> savedVelocitiesCache = new Dictionary<Meshless, float2[]>();
@@ -64,6 +74,12 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void Update() {
+        LoopProfiler.SetEnabledInController(enableLoopProfiling);
+
+        if (enableLoopProfiling && Input.GetKeyDown(profileStartKey)) {
+            LoopProfiler.StartCapture(profileTicks, profileWarmupTicks, profileScenario, profileOutputDirectory);
+        }
+
         float frameDt = useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
         if (targetTPS <= 0f || frameDt <= 0f) return;
 
@@ -104,30 +120,69 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void Tick(float dt) {
+        int tickMeshlessCount = 0;
+        int tickNodesTotal = 0;
+        int tickMaxNodes = 0;
+        int tickMaxLevel = 0;
+
+        if (LoopProfiler.IsActive) {
+            tickMeshlessCount = meshless.Count;
+            for (int i = 0; i < meshless.Count; i++) {
+                var m = meshless[i];
+                if (m == null || !m.isActiveAndEnabled) continue;
+
+                int n = m.nodes.Count;
+                tickNodesTotal += n;
+                if (n > tickMaxNodes) tickMaxNodes = n;
+
+                int level = useHierarchicalSolver && m.levelEndIndex != null ? m.maxLayer : 0;
+                if (level > tickMaxLevel) tickMaxLevel = level;
+            }
+        }
+
+        LoopProfiler.BeginTick(dt, tickMeshlessCount, tickNodesTotal, tickMaxNodes, tickMaxLevel, useHierarchicalSolver);
+
+        long tickStart = LoopProfiler.Stamp();
+
         for (int i = meshless.Count - 1; i >= 0; i--) {
             var m = meshless[i];
             if (m == null || !m.isActiveAndEnabled) {
                 meshless.RemoveAt(i);
-                frameCounters.Remove(m);
-                savedVelocitiesCache.Remove(m);
-                batchCache.Remove(m);
+                if (m != null) {
+                    frameCounters.Remove(m);
+                    savedVelocitiesCache.Remove(m);
+                    batchCache.Remove(m);
+                }
                 continue;
             }
 
             StepMeshless(m, dt * simulationSpeed);
         }
+
+        LoopProfiler.Add(LoopProfiler.Section.TickTotal, tickStart);
+        LoopProfiler.EndTick();
     }
 
     private void StepMeshless(Meshless meshless, float dt) {
+        long t = LoopProfiler.Stamp();
         ApplyExternalForces(meshless, dt);
+        LoopProfiler.Add(LoopProfiler.Section.ExternalForces, t);
+
+        t = LoopProfiler.Stamp();
         Solve(meshless, dt);
+        LoopProfiler.Add(LoopProfiler.Section.SolveTotal, t);
+
+        t = LoopProfiler.Stamp();
         IntegrateAndUpdate(meshless, dt);
+        LoopProfiler.Add(LoopProfiler.Section.IntegrateAndUpdate, t);
 
         if (!frameCounters.ContainsKey(meshless)) frameCounters[meshless] = 0;
         frameCounters[meshless]++;
 
         if (frameCounters[meshless] % Const.HierarchyRebuildInterval == 0) {
+            t = LoopProfiler.Stamp();
             meshless.BuildHierarchy();
+            LoopProfiler.Add(LoopProfiler.Section.HierarchyRebuild, t);
         }
     }
 
@@ -156,27 +211,40 @@ public sealed class SimulationController : MonoBehaviour {
         for (int level = maxLevel; level >= 0; level--) {
             int nodeCount = level > 0 ? meshless.NodeCount(level) : meshless.nodes.Count;
 
+            long t = LoopProfiler.Stamp();
             for (int i = 0; i < nodeCount; i++) {
                 savedVel[i] = meshless.nodes[i].vel;
             }
+            LoopProfiler.Add(LoopProfiler.Section.SolveSavedVelCopy, t);
 
             batch.ExpandTo(nodeCount);
+
+            t = LoopProfiler.Stamp();
             batch.Initialise();
+            LoopProfiler.Add(LoopProfiler.Section.SolveBatchInit, t);
 
             int iterations = level == 0 ? Const.Iterations : Const.HPBDIterations;
+            t = LoopProfiler.Stamp();
             for (int iter = 0; iter < iterations; iter++) {
                 XPBIConstraint.Relax(batch, meshless.compliance, dt, iter);
             }
+            LoopProfiler.Add(LoopProfiler.Section.SolveRelax, t);
 
             if (level > 0) {
+                t = LoopProfiler.Stamp();
                 ProlongateVelocityCorrections(meshless, level, nodeCount, savedVel);
+                LoopProfiler.Add(LoopProfiler.Section.SolveProlongate, t);
             } else {
+                t = LoopProfiler.Stamp();
                 batch.FinalizeDebugData();
                 meshless.lastBatchDebug = batch;
+                LoopProfiler.Add(LoopProfiler.Section.SolveFinalizeDebug, t);
             }
         }
 
+        long commitStart = LoopProfiler.Stamp();
         XPBIConstraint.CommitDeformation(batch, dt);
+        LoopProfiler.Add(LoopProfiler.Section.SolveCommitDeformation, commitStart);
     }
 
     private void ProlongateVelocityCorrections(Meshless meshless, int currentLevel, int currentLevelEnd, float2[] savedVel) {
@@ -201,7 +269,7 @@ public sealed class SimulationController : MonoBehaviour {
                 meshless.nodes[i].vel.y = 0f;
 
             meshless.nodes[i].pos += meshless.nodes[i].vel * dt;
-            meshless.hnsw.Shift(i, meshless.nodes[i].pos);
+            meshless.hnsw.Shift(i, meshless.nodes[i].pos);//TODO: 5-7% of total tick time, not GPU-friendly
         }
     }
 }

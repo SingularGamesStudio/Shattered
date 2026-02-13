@@ -20,6 +20,9 @@ public class Meshless : MonoBehaviour {
 
     public int[] levelEndIndex;
 
+    private readonly List<int> knnScratch = new List<int>(8);
+    private readonly List<int> parentCandidateScratch = new List<int>(1);
+
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
         nodes[nodeIdx].invMass = 0.0f;
@@ -43,25 +46,25 @@ public class Meshless : MonoBehaviour {
         for (int i = 0; i < nodes.Count; i++) {
             Node node = nodes[i];
 
-            List<int> neighbors = hnsw.SearchKnn(node.pos, volumeNeighborCount + 1);
+            hnsw.SearchKnn(node.pos, volumeNeighborCount + 1, knnScratch);
 
-            if (neighbors.Contains(i)) {
-                neighbors.Remove(i);
-            } else if (neighbors.Count > volumeNeighborCount) {
-                neighbors.RemoveAt(volumeNeighborCount);
+            if (knnScratch.Contains(i)) {
+                knnScratch.Remove(i);
+            } else if (knnScratch.Count > volumeNeighborCount) {
+                knnScratch.RemoveAt(volumeNeighborCount);
             }
 
-            if (neighbors.Count < 2) {
+            if (knnScratch.Count < 2) {
                 node.restVolume = 0.0f;
                 continue;
             }
 
-            int nCount = neighbors.Count;
+            int nCount = knnScratch.Count;
             float2[] rel = new float2[nCount];
             float[] ang = new float[nCount];
 
             for (int k = 0; k < nCount; k++) {
-                float2 v = nodes[neighbors[k]].pos - node.pos;
+                float2 v = nodes[knnScratch[k]].pos - node.pos;
                 rel[k] = v;
                 ang[k] = math.atan2(v.y, v.x);
             }
@@ -114,14 +117,14 @@ public class Meshless : MonoBehaviour {
             return;
         }
 
-        var candidates = hnsw.SearchKnn(node.pos, 1, parentLevel);
+        hnsw.SearchKnn(node.pos, 1, parentCandidateScratch, parentLevel);
 
-        if (candidates.Count == 0) {
+        if (parentCandidateScratch.Count == 0) {
             node.parentIndex = -1;
             return;
         }
 
-        node.parentIndex = candidates[0];
+        node.parentIndex = parentCandidateScratch[0];
     }
 
     public int NodeCount(int level) {

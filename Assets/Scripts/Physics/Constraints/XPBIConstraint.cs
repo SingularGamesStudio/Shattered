@@ -57,12 +57,23 @@ namespace Physics {
                 if (cache.kernelH <= Const.Eps) continue;
 
                 // Updated Lagrangian form used by XPBI: F_trial = (I + dt ∇v) F0.
-                float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
+                long t = LoopProfiler.Stamp();
+                float2x2 gradV = EstimateVelocityGradient(batch, i);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxEstimateGradV, t);
+
+                t = LoopProfiler.Stamp();
+                float2x2 Ftrial = math.mul(float2x2.identity + gradV * dt, cache.F0);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxFtrial, t);
 
                 // Plastic projection in Hencky space is used for evaluation (implicit-like), but Fp is committed later.
+                t = LoopProfiler.Stamp();
                 float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxPlasticityReturn, t);
 
+                t = LoopProfiler.Stamp();
                 float C = DeformationUtils.XPBIConstraint(Fel, i);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxConstraintEval, t);
+
                 if (math.abs(C) < Const.Eps) {
                     dbg.RecordConstraintEval(C, 0f, cache.lambda, 0f, 0f, currentIteration);
                     continue;
@@ -72,7 +83,9 @@ namespace Physics {
                 // XPBD softness: α~ = (compliance / V_rest) / dt^2.
                 float alphaTilde = (compliance / math.max(node.restVolume, Const.Eps)) * (invDt * invDt);
 
+                t = LoopProfiler.Stamp();
                 float2x2 dCdF = DeformationUtils.ComputeGradient(Fel, i);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxComputeGradient, t);
 
                 float2 gradC_vi = float2.zero;
                 float2[] gradC_vj = cache.gradC_vj;
@@ -81,6 +94,7 @@ namespace Physics {
                 float2x2 FT = math.transpose(Fel);
 
                 // XPBI Eq. (12): ∇_{x_b} C_p = V_b^n (∂C_p/∂F_p) F_p^T (L_p ∇W_b(x_p)).
+                t = LoopProfiler.Stamp();
                 for (int k = 0; k < N.Count && k < Const.NeighborCount; k++) {
                     int j = N[k];
                     if ((uint)j >= (uint)batch.Count) continue;
@@ -99,9 +113,11 @@ namespace Physics {
                     gradC_vi -= q;
                     gradC_vj[k] = q;
                 }
+                LoopProfiler.Add(LoopProfiler.Section.RelaxGradCAccum, t);
 
                 float gradCViLenSq = math.lengthsq(gradC_vi);
 
+                t = LoopProfiler.Stamp();
                 float denom = node.invMass * gradCViLenSq;
                 for (int k = 0; k < N.Count && k < Const.NeighborCount; k++) {
                     int j = N[k];
@@ -110,6 +126,7 @@ namespace Physics {
                     if (batch.nodes[j].isFixed || batch.nodes[j].invMass <= 0f) continue;
                     denom += batch.nodes[j].invMass * math.lengthsq(gradC_vj[k]);
                 }
+                LoopProfiler.Add(LoopProfiler.Section.RelaxDenomAccum, t);
 
                 if (denom < Const.Eps) {
                     dbg.degenerateCount++;
@@ -117,9 +134,11 @@ namespace Physics {
                     continue;
                 }
 
+                t = LoopProfiler.Stamp();
                 // XPBD update (XPBI Eq. (13) style): Δλ = -(C + α~ λ) / (Σ w||∇C||^2 + α~).
                 float lambdaBefore = cache.lambda;
                 float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
+                LoopProfiler.Add(LoopProfiler.Section.RelaxLambdaUpdate, t);
 
                 if (float.IsNaN(dLambda) || float.IsInfinity(dLambda)) {
                     dbg.nanInfCount++;
@@ -129,6 +148,8 @@ namespace Physics {
 
                 // Velocity-first form: Δv = (w Δλ / dt) ∇C.
                 float velScale = dLambda * invDt;
+
+                t = LoopProfiler.Stamp();
 
                 float2 dVi = node.invMass * velScale * gradC_vi;
                 node.vel += dVi;
@@ -153,6 +174,8 @@ namespace Physics {
                 cache.lambda = lambdaBefore + dLambda;
 
                 dbg.RecordConstraintEval(C, denom, cache.lambda, dLambda, gradCViLenSq, currentIteration);
+
+                LoopProfiler.Add(LoopProfiler.Section.RelaxApplyVelocities, t);
             }
         }
 
@@ -168,9 +191,19 @@ namespace Physics {
                 if (node.isFixed || node.invMass <= 0f) continue;
                 if (cache.kernelH <= Const.Eps) continue;
 
-                float2x2 Ftrial = math.mul(float2x2.identity + EstimateVelocityGradient(batch, i) * dt, cache.F0);
-                float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
+                long t = LoopProfiler.Stamp();
+                float2x2 gradV = EstimateVelocityGradient(batch, i);
+                LoopProfiler.Add(LoopProfiler.Section.CommitEstimateGradV, t);
 
+                t = LoopProfiler.Stamp();
+                float2x2 Ftrial = math.mul(float2x2.identity + gradV * dt, cache.F0);
+                LoopProfiler.Add(LoopProfiler.Section.CommitFtrial, t);
+
+                t = LoopProfiler.Stamp();
+                float2x2 Fel = DeformationUtils.ApplyPlasticityReturn(Ftrial, i, ref dbg);
+                LoopProfiler.Add(LoopProfiler.Section.CommitPlasticityReturn, t);
+
+                t = LoopProfiler.Stamp();
                 // Multiplicative plasticity update:
                 // F = Fel * Fp, and we want Fp_{n+1} such that Fel^{-1} F_trial updates plastic part.
                 float det = Fel.c0.x * Fel.c1.y - Fel.c0.y * Fel.c1.x;
@@ -186,6 +219,7 @@ namespace Physics {
                 }
 
                 node.F = Fel;
+                LoopProfiler.Add(LoopProfiler.Section.CommitFpUpdate, t);
             }
         }
     }
