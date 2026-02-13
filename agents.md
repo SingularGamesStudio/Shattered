@@ -20,7 +20,7 @@ When you propose code changes:
 ## Change discipline
 
 - Keep diffs small and localized.
-- Avoid per-frame allocations in hot paths (`Relax`, neighbor loops, visualization updates, hierarchical V-cycle).
+- Avoid per-frame allocations in hot paths (`Relax`, neighbor loops, visualization updates, hierarchical V-cycle, HNSW queries, NodeBatch initialisation).
 - Feel free to alter existing types or interfaces if required, but notify (in response text, not comments) when you do so.
 - Prefer deterministic math and stable behavior over micro-optimizations.
 
@@ -30,6 +30,8 @@ Entry points:
 - `Assets/Scripts/SimulationController.cs`: Top-level orchestrator (timing, hierarchical V-cycle, force application, integration).
 - `Assets/Scripts/Meshless.cs`: Per-object data container (nodes, HNSW, hierarchy metadata, parameters).
 - `Assets/Scripts/Node.cs`: Per-node state (2D pos/vel, inverse mass, deformation state, hierarchy parent).
+
+Spatial queries / neighborhood graph:
 - `Assets/Scripts/HNSW.cs`: Approximate kNN structure (used for neighborhoods, hierarchy parent lookup, updated via `Shift`).
 
 Physics core:
@@ -39,7 +41,8 @@ Physics core:
 - `Assets/Scripts/Physics/Constraints/SPHKernels.cs`: Wendland C2 kernel + gradient (2D) used by corrected kernel operators.
 - `Assets/Scripts/Physics/Const.cs`: Global constants (eps, neighbor count, solver iterations, HPBD iterations, `KernelHScale`).
 
-Debug tooling:
+Profiling / debug tooling:
+- `Assets/Scripts/LoopProfiler.cs`: Lightweight per-section profiler for hot loops (used around NodeBatch init and other per-frame code).
 - `Assets/Scripts/MeshlessVisualiser.cs`: Runtime visualization helper.
 - `Assets/Scripts/Physics/DebugData.cs`: Per-node debug accumulation.
 - `Assets/Scripts/Editor/ConstraintDebugWindow.cs`: Editor window for constraint/debug state.
@@ -72,7 +75,7 @@ The simulation uses a hierarchical solver with a V-cycle-like coarse-to-fine sch
 
 - The intended usage is one `NodeBatch` allocated at max capacity and reused each step.
 - `ExpandTo(nodeCount)` increases active `Count` without reallocation (except if node count grows).
-- `Initialise()` is called per level and (currently) does:
+- `Initialise()` is called per level and does:
   - **Volumes**: recomputed for the active prefix using hierarchical aggregation (see below).
   - **Neighbors**: recomputed for all active nodes (kNN).
   - **Kernel radii (`h`)**: recomputed for all active nodes.
@@ -95,8 +98,9 @@ Only **deltas** are propagated, not absolute values.
 ### Neighborhoods (fixed-k kNN, cached per level)
 
 - Neighborhood size is `Const.NeighborCount` (currently 6).
-- Neighbors queried via HNSW (kNN) each level.
+- Neighbors are queried via HNSW (kNN) each level.
 - Neighbors are sorted by angle for deterministic accumulation order.
+- NodeBatch neighbor caching must avoid per-node allocations; prefer preallocated `List<int>` buffers per cache entry.
 
 ### Velocity-first corrections
 
@@ -143,6 +147,16 @@ Kernel sums use an effective per-node volume `V_b`:
 - Coarse levels: each active node represents a cluster; its `currentVolume` is the sum of descendant leaf deformed volumes.
 - Volume mapping to the active prefix uses parentIndex-chain ownership with DSU-style path compression to avoid repeated long walks.
 
+## HNSW implementation notes
+
+- Prefer no-alloc query APIs: `SearchKnn(..., List<int> results, ...)` so call sites can reuse buffers.
+- Neighbor storage is abstracted by `NeighborSet` so you can switch backend (hash set vs compact list) while M is still in flux; keep both paths allocation-free in steady-state.
+
+## Profiling
+
+- Use `LoopProfiler` for quick section timing inside tight loops (NodeBatch init, correction matrix sums, etc.).
+- Keep profiler instrumentation low-overhead: no string formatting inside per-node loops, prefer enum/constant section ids.
+
 ## Project knobs
 
 Solver parameters:
@@ -162,6 +176,6 @@ Material constants (global, in code):
 
 ## Common pitfalls
 
-- **Hot allocations**: Avoid allocating arrays/lists inside per-node/per-iteration/per-level loops.
+- **Hot allocations**: Avoid allocating arrays/lists inside per-node/per-iteration/per-level loops (especially in HNSW queries and NodeBatch neighbor caching).
 - **Level ordering**: Nodes must stay sorted by `maxLayer` descending for `levelEndIndex` prefixes to work correctly.
 - **Unity.Mathematics**: Prefer `float2`/`float2x2` consistently; avoid mixing with `Vector2` unless necessary at Unity boundaries.
