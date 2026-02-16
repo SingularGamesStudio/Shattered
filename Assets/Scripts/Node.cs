@@ -15,7 +15,6 @@ public class Node {
     public float restVolume = 0.0f;
 
     public int maxLayer;
-    public List<NeighborSet> HNSWNeighbors;
     public Meshless parent;
 
     public int parentIndex = -1;

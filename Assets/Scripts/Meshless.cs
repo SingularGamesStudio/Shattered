@@ -8,8 +8,6 @@ using GPU.Delaunay;
 public class Meshless : MonoBehaviour {
     public static readonly List<Meshless> Active = new List<Meshless>(64);
 
-    public HNSW hnsw;
-
     public List<Node> nodes = new List<Node>();
 
     [HideInInspector]
@@ -26,7 +24,6 @@ public class Meshless : MonoBehaviour {
     public int[] levelEndIndex;
 
     [Header("GPU Delaunay hierarchy")]
-    public bool useDelaunayHierarchy = true;
     public ComputeShader delaunayShader;
     public int dtFixIterationsPerTick = 1;
     public int dtLegalizeIterationsPerTick = 1;
@@ -64,8 +61,6 @@ public class Meshless : MonoBehaviour {
     }
 
     public bool TryGetLevelDt(int level, out DelaunayGpu dt) {
-        dt = null;
-        if (!useDelaunayHierarchy || delaunayHierarchy == null) return false;
         dt = delaunayHierarchy.GetLevelDt(level);
         return dt != null;
     }
@@ -93,70 +88,14 @@ public class Meshless : MonoBehaviour {
 
         BuildLevelEndIndex();
 
-        if (useDelaunayHierarchy) {
-            if (!delaunayShader) throw new System.InvalidOperationException("Meshless: delaunayShader is not assigned.");
+        if (!delaunayShader) throw new System.InvalidOperationException("Meshless: delaunayShader is not assigned.");
 
-            RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
-            BuildDelaunayHierarchy();
+        RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
+        BuildDelaunayHierarchy();
 
-            ComputeRestVolumesFromDelaunayTriangles();
+        ComputeRestVolumesFromDelaunayTriangles();
 
-            BuildHierarchy();
-        } else {
-            hnsw = new HNSW(this);
-
-            const int volumeNeighborCount = 6;
-            var knnScratch = new List<int>(8);
-
-            for (int i = 0; i < nodes.Count; i++) {
-                Node node = nodes[i];
-
-                hnsw.SearchKnn(node.pos, volumeNeighborCount + 1, knnScratch);
-
-                if (knnScratch.Contains(i)) {
-                    knnScratch.Remove(i);
-                } else if (knnScratch.Count > volumeNeighborCount) {
-                    knnScratch.RemoveAt(volumeNeighborCount);
-                }
-
-                if (knnScratch.Count < 2) {
-                    node.restVolume = 0.0f;
-                    continue;
-                }
-
-                int nCount = knnScratch.Count;
-                float2[] rel = new float2[nCount];
-                float[] ang = new float[nCount];
-
-                for (int k = 0; k < nCount; k++) {
-                    float2 v = nodes[knnScratch[k]].pos - node.pos;
-                    rel[k] = v;
-                    ang[k] = math.atan2(v.y, v.x);
-                }
-
-                System.Array.Sort(ang, rel);
-
-                float area = 0.0f;
-                for (int k = 0; k < nCount; k++) {
-                    int next = (k + 1) % nCount;
-
-                    float dTheta = ang[next] - ang[k];
-                    if (dTheta < 0.0f) dTheta += 2.0f * math.PI;
-
-                    if (dTheta > math.PI) continue;
-
-                    float2 a = rel[k];
-                    float2 b = rel[next];
-
-                    float wedgeArea = 0.5f * math.abs(a.x * b.y - a.y * b.x);
-                    area += wedgeArea;
-                }
-
-                node.restVolume = area / 3.0f;
-            }
-
-            BuildHierarchy();
-        }
+        BuildHierarchy();
     }
 
     void BuildLevelEndIndex() {
@@ -189,11 +128,6 @@ public class Meshless : MonoBehaviour {
             return;
         }
 
-        if (!useDelaunayHierarchy || delaunayHierarchy == null) {
-            node.parentIndex = -1;
-            return;
-        }
-
         node.parentIndex = delaunayHierarchy.FindNearestCoarseToFine(parentLevel, node.pos, nodes);
     }
 
@@ -203,7 +137,6 @@ public class Meshless : MonoBehaviour {
     }
 
     public void UpdateDelaunayAfterIntegration() {
-        if (!useDelaunayHierarchy || delaunayHierarchy == null) return;
 
         if (dtAutoNormalizeAtRuntime) {
             bool changed = UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);

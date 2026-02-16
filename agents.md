@@ -39,10 +39,7 @@ HPBD / hierarchical acceleration:
 
 Neighborhood search motivation:
 - Original XPBI uses grid-based neighbor rebuilds; Shattered targets cases where coarse hierarchy levels become sparse and where tearing/merging makes global rebuilds expensive/unpleasant.
-- Shattered therefore uses a graph-based approximate kNN structure (HNSW) to keep fixed-k neighborhoods and predictable per-node cost.
-
-GPU-friendly alternative (planned/optional direction):
-- For GPU neighbor extraction / proximity queries, a maintained 2D Delaunay triangulation is considered more GPU-friendly than HNSW for some workloads.
+- For GPU neighbor extraction / proximity queries, Shattered can use a maintained 2D Delaunay triangulation to keep per-node cost predictable.
 
 
 ## 2) Non-negotiables (output + paste safety)
@@ -65,7 +62,7 @@ If you change any surface API (type, interface, serialized fields, public signat
 ## 3) Hard constraints (perf + determinism)
 
 Allocation discipline:
-- Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, NodeBatch init, V-cycle, HNSW, visualization updates, GPU Delaunay glue.
+- Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, NodeBatch init, V-cycle, visualization updates, GPU Delaunay glue.
 
 Determinism:
 - Prefer stable/deterministic behavior over micro-optimizations.
@@ -92,7 +89,7 @@ Hierarchical schedule (V-cycle-ish coarse → fine):
    - Prolongate parent velocity delta into children (deltas only).
 3) Commit deformation on finest level (level 0).
 4) Integrate positions once.
-5) Update spatial structure for moved nodes (HNSW Shift).
+5) Update proximity structure / GPU Delaunay hierarchy after integration (positions upload + maintenance).
 
 Prolongation rule (important):
 - Only propagate parent Δv (current parent vel minus saved parent vel); do not overwrite child velocity with parent velocity.
@@ -124,10 +121,6 @@ Orchestration / entry points:
 - `Assets/Scripts/Node.cs`
   Node state: pos/vel/invMass/deformation/parentIndex/etc.
 
-Neighborhood graph:
-- `Assets/Scripts/HNSW.cs`
-  Approximate kNN; used for neighborhoods and hierarchy parent lookup; updated via `Shift`.
-
 Physics core:
 - `Assets/Scripts/Physics/NodeBatch.cs`
   Per-level caches: neighbors, per-node `h`, correction `L`, cached `F0`, lambda, effective volumes, debug.
@@ -142,7 +135,6 @@ Physics core:
 
 Debug / tooling:
 - `Assets/Scripts/LoopProfiler.cs`
-- `Assets/Scripts/MeshlessVisualiser.cs`
 - `Assets/Scripts/Physics/DebugData.cs`
 - `Assets/Scripts/Editor/ConstraintDebugWindow.cs`
 
@@ -153,8 +145,6 @@ GPU Delaunay neighbors:
   CPU bootstrap triangulation + half-edge build.
 - `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
   Kernels: fix edges, legalize, build neighbors.
-- `Assets/Scripts/GPU/Delaunay/DelaunayGpuTest.cs`
-  Stress harness (not core).
 
 Rendering / debug visualization:
 - `Assets/Scripts/MeshlessTriangulationRenderer.cs`
@@ -196,11 +186,11 @@ Runtime normalization gotcha:
 - Wireframe: render wire as an overlay (`ZWrite Off`), and keep thickness in pixel units to avoid “level 0 is huge” artifacts; if shared edges get darker, avoid alpha blending for the wire overlay.
 - UV anchoring: to make the texture move with the object (stable under deformation), compute UVs from stored rest positions (rest in normalized DT space) rather than current/world positions.
 
+
 ## 9) References (primary)
 
 - PBD: Müller et al., “Position Based Dynamics” (2007).
 - XPBD: Macklin, Müller, Chentanez, “XPBD: Position-Based Simulation of Compliant Constrained Dynamics” (2016).
 - XPBI: Yu et al., “XPBI: Position-Based Dynamics with Smoothing Kernels Handles Continuum Inelasticity” (2024).
 - HPBD: Müller, “Hierarchical Position Based Dynamics” (HPBD).
-- HNSW: Malkov & Yashunin, “Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs”.
 - Dynamic Delaunay: Heinich Porro, Benoît Crespin. "Maintaining 2D Delaunay triangulations on the GPU for proximity queries of moving points"

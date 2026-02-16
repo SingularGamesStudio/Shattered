@@ -75,7 +75,6 @@ public sealed class MeshlessTriangulationRenderer : MonoBehaviour {
             var m = list[mi];
             if (m == null || !m.isActiveAndEnabled) continue;
             if (m.nodes == null || m.nodes.Count < 3) continue;
-            if (!m.useDelaunayHierarchy || m.delaunayHierarchy == null) continue;
 
             EnsurePerNodeBuffers(m);
 
