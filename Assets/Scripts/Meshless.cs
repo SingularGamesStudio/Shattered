@@ -61,9 +61,11 @@ public class Meshless : MonoBehaviour {
     }
 
     public bool TryGetLevelDt(int level, out DelaunayGpu dt) {
+        if (delaunayHierarchy == null) { dt = null; return false; }
         dt = delaunayHierarchy.GetLevelDt(level);
         return dt != null;
     }
+
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
@@ -240,6 +242,8 @@ public class Meshless : MonoBehaviour {
 
     void BuildDelaunayHierarchy() {
         delaunayHierarchy?.Dispose();
+        delaunayHierarchy = null;
+
         delaunayHierarchy = new DelaunayHierarchyGpu(delaunayShader);
 
         delaunayHierarchy.InitFromMeshlessNodes(
@@ -254,6 +258,7 @@ public class Meshless : MonoBehaviour {
             dtWarmupLegalizeIterations
         );
     }
+
 
     void ComputeRestVolumesFromDelaunayTriangles() {
         int n = nodes.Count;
@@ -305,5 +310,12 @@ public class Meshless : MonoBehaviour {
     void OnDisable() {
         SimulationController.Instance?.Unregister(this);
         Active.Remove(this);
+
+        delaunayHierarchy?.Dispose();
+        delaunayHierarchy = null;
+    }
+    void OnDestroy() {
+        delaunayHierarchy?.Dispose();
+        delaunayHierarchy = null;
     }
 }
