@@ -19,7 +19,9 @@ namespace GPU.Delaunay {
         struct DirectedEdge : IEquatable<DirectedEdge> {
             public readonly int a;
             public readonly int b;
+
             public DirectedEdge(int a, int b) { this.a = a; this.b = b; }
+
             public bool Equals(DirectedEdge other) => a == other.a && b == other.b;
             public override bool Equals(object obj) => obj is DirectedEdge other && Equals(other);
             public override int GetHashCode() => unchecked((a * 73856093) ^ (b * 19349663));
@@ -28,7 +30,9 @@ namespace GPU.Delaunay {
         struct EdgeKey : IEquatable<EdgeKey> {
             public readonly int a;
             public readonly int b;
+
             public EdgeKey(int a, int b) { this.a = a; this.b = b; }
+
             public bool Equals(EdgeKey other) => a == other.a && b == other.b;
             public override bool Equals(object obj) => obj is EdgeKey other && Equals(other);
             public override int GetHashCode() => unchecked((a * 73856093) ^ (b * 19349663));
@@ -58,22 +62,27 @@ namespace GPU.Delaunay {
         }
 
         static void ToggleEdge(HashSet<DirectedEdge> set, int a, int b) {
-            var e = new DirectedEdge(a, b);
-            var r = new DirectedEdge(b, a);
-            if (set.Remove(r))
-                return;
-            set.Add(e);
+            if (!set.Remove(new DirectedEdge(b, a)))
+                set.Add(new DirectedEdge(a, b));
         }
 
+        /// <summary>
+        /// Bowyer-Watson triangulation with a persistent super triangle.
+        /// Unlike typical implementations, this keeps triangles incident to the super vertices,
+        /// which is required for dynamic maintenance: hull edges become interior (paired) and thus flippable.
+        ///
+        /// superBoundsMin/superBoundsMax must cover the entire expected motion domain of real points.
+        /// </summary>
         public static void BuildBowyerWatsonWithSuper(
-    IReadOnlyList<float2> points,
-    float2 superBoundsMin,
-    float2 superBoundsMax,
-    float superScale,
-    out float2[] allPoints,
-    out List<Triangle> triangles,
-    out int realPointCount) {
+            IReadOnlyList<float2> points,
+            float2 superBoundsMin,
+            float2 superBoundsMax,
+            float superScale,
+            out float2[] allPoints,
+            out List<Triangle> triangles,
+            out int realPointCount) {
             if (points == null) throw new ArgumentNullException(nameof(points));
+
             int n = points.Count;
             realPointCount = n;
 
@@ -88,18 +97,15 @@ namespace GPU.Delaunay {
 
             allPoints = new float2[n + 3];
             for (int i = 0; i < n; i++) allPoints[i] = points[i];
-            int i0 = n;
-            int i1 = n + 1;
-            int i2 = n + 2;
-            allPoints[i0] = p0;
-            allPoints[i1] = p1;
-            allPoints[i2] = p2;
+            allPoints[n + 0] = p0;
+            allPoints[n + 1] = p1;
+            allPoints[n + 2] = p2;
 
             triangles = new List<Triangle>(math.max(16, 2 * n));
-            if (Orient2D(allPoints[i0], allPoints[i1], allPoints[i2]) < 0f)
-                triangles.Add(new Triangle(i0, i2, i1));
+            if (Orient2D(allPoints[n + 0], allPoints[n + 1], allPoints[n + 2]) < 0f)
+                triangles.Add(new Triangle(n + 0, n + 2, n + 1));
             else
-                triangles.Add(new Triangle(i0, i1, i2));
+                triangles.Add(new Triangle(n + 0, n + 1, n + 2));
 
             var bad = new List<int>(64);
             var boundary = new HashSet<DirectedEdge>(256);
@@ -148,11 +154,12 @@ namespace GPU.Delaunay {
                     triangles.Add(new Triangle(a, b, pi));
                 }
             }
-
-            // Still do NOT remove super-incident triangles (we keep them for hull dynamics).
         }
 
-
+        /// <summary>
+        /// Builds a half-edge structure for a triangle list.
+        /// Each triangle contributes 3 half-edges with 'next' cycling around the face and 'twin' linking opposite directed edges.
+        /// </summary>
         public static HalfEdge[] BuildHalfEdges(IReadOnlyList<float2> points, IReadOnlyList<Triangle> triangles) {
             if (points == null) throw new ArgumentNullException(nameof(points));
             if (triangles == null) throw new ArgumentNullException(nameof(triangles));
@@ -187,21 +194,21 @@ namespace GPU.Delaunay {
             return halfEdges;
         }
 
+        /// <summary>
+        /// Constructs a triangle that fully encloses the given AABB, scaled by <paramref name="scale"/>.
+        /// This should be large enough to contain all point motion for the entire simulation run (or until rebuild).
+        /// </summary>
         static void ComputeSuperTriangle(float2 min, float2 max, float scale, out float2 p0, out float2 p1, out float2 p2) {
             float2 center = 0.5f * (min + max);
             float2 extent = max - min;
 
             float d = math.max(extent.x, extent.y);
-            if (d <= 1e-6f) d = 1f;
+            float s = math.max(1f, scale) * math.max(1e-6f, d);
 
-            float s = math.max(1f, scale) * d;
-
-            // Large super triangle that contains the entire AABB.
             p0 = center + new float2(0f, 2f * s);
             p1 = center + new float2(-2f * s, -2f * s);
             p2 = center + new float2(2f * s, -2f * s);
         }
-
 
         static void AddTwin(Dictionary<EdgeKey, int> map, HalfEdge[] halfEdges, int he, int u, int v) {
             var rev = new EdgeKey(v, u);

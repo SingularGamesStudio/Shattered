@@ -102,6 +102,9 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
         _Neighbors[baseIdx + i] = -1;
     _NeighborCounts[v] = 0;
 
+    // Walk the 1-ring around v using:
+    // he: outgoing half-edge from v, then step to Prev(he) and cross its twin.
+    // This depends on a consistent half-edge topology (twin/next must be correct).
     int start = _VToE[v];
     if (start < 0) return;
 
@@ -118,14 +121,12 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
             for (int k = 0; k < count; k++) {
                 if (_Neighbors[baseIdx + k] == dst) { dup = true; break; }
             }
-            if (!dup) {
-                _Neighbors[baseIdx + count] = dst;
-                count++;
-            }
+
+            if (!dup)
+                _Neighbors[baseIdx + count++] = dst;
         }
 
-        int p = Prev(he);
-        int tw = _HalfEdges[p].twin;
+        int tw = _HalfEdges[Prev(he)].twin;
         if (tw < 0) break;
 
         he = tw;
@@ -150,6 +151,10 @@ static bool TryLockTwo(int t0, int t1, int owner) {
     return true;
 }
 
+// Flips the diagonal (he0, he1=twin(he0)) of the quad formed by two adjacent triangles.
+// Important invariant: keep boundary half-edges (the 4 non-diagonal edges) representing the same directed edges,
+// so their twins remain valid; only the diagonal half-edges change their origin vertex.
+// Assumes both triangles are locked by the caller.
 static void FlipDiagonal(int he0, int he1) {
     int t0 = _HalfEdges[he0].t;
     int t1 = _HalfEdges[he1].t;
@@ -193,13 +198,16 @@ void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
 
     int he0 = (int)he0u;
     int he1 = _HalfEdges[he0].twin;
-    if (he1 < 0) return;
-    if (he0 > he1) return;
+    if (he1 < 0 || he0 > he1) return;
 
     int t0 = _HalfEdges[he0].t;
     int t1 = _HalfEdges[he1].t;
     if (t0 < 0 || t1 < 0) return;
 
+    // Fixing phase:
+    // 1) Detect "creased" edges (one adjacent tri inverted, the other not).
+    // 2) Detect "crossed" creased edges (opposite vertices on different sides of the edge).
+    // 3) Flip crossed creased edges to remove inversions / crossings before Delaunay legalization.
     int a = _HalfEdges[he0].v;
     int b = Dest(he0);
     int c = Dest(Next(he0));
@@ -218,16 +226,16 @@ void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
 
     bool inv0 = o0 <= 0.0;
     bool inv1 = o1 <= 0.0;
-    if (inv0 == inv1) return; // not creased
+    if (inv0 == inv1) return;
 
-    float sC = o0;
     float sD = Orient2D(pa, pb, pd);
-    if (sC * sD >= 0.0) return; // not crossed
+    if (o0 * sD >= 0.0) return;
 
     int owner = he0 + 1;
     if (!TryLockTwo(t0, t1, owner))
         return;
 
+    // Revalidate after lock because topology/positions may have changed.
     if (_HalfEdges[he0].twin != he1 || _HalfEdges[he1].twin != he0) {
         UnlockTri(t0);
         UnlockTri(t1);
@@ -261,9 +269,8 @@ void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    sC = o0;
     sD = Orient2D(pa, pb, pd);
-    if (sC * sD >= 0.0) {
+    if (o0 * sD >= 0.0) {
         UnlockTri(t0);
         UnlockTri(t1);
         return;
@@ -283,13 +290,14 @@ void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID) {
 
     int he0 = (int)he0u;
     int he1 = _HalfEdges[he0].twin;
-    if (he1 < 0) return;
-    if (he0 > he1) return;
+    if (he1 < 0 || he0 > he1) return;
 
     int t0 = _HalfEdges[he0].t;
     int t1 = _HalfEdges[he1].t;
     if (t0 < 0 || t1 < 0) return;
 
+    // Legalization phase:
+    // Apply an orientation-corrected incircle predicate; if illegal, flip the diagonal.
     int a = _HalfEdges[he0].v;
     int b = Dest(he0);
     int c = Dest(Next(he0));

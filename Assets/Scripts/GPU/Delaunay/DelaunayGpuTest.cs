@@ -48,19 +48,15 @@ namespace GPU.Delaunay {
         Meshless meshless;
         DelaunayGpu dt;
 
-        // CPU readback (for drawing)
         DelaunayGpu.HalfEdge[] halfEdgeCpu;
 
-        // World->GPU normalization (float2)
         float2 normCenter;
         float normInvHalfExtent;
 
-        // Scratch
         float2[] worldRealScratch;
         float2[] gpuAllScratch;
-        float2[] gpuSuper; // 3 points, in GPU space
+        float2[] gpuSuper;
 
-        // Bowyer-Watson scratch (CPU init only)
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
         readonly List<int> bad = new List<int>(128);
         readonly HashSet<DirEdge> boundary = new HashSet<DirEdge>(2048);
@@ -68,9 +64,7 @@ namespace GPU.Delaunay {
         uint frameIndex;
         float2 moverVel;
 
-        void OnEnable() {
-            meshless = GetComponent<Meshless>();
-        }
+        void OnEnable() => meshless = GetComponent<Meshless>();
 
         void Start() {
             if (!delaunayShader) { enabled = false; return; }
@@ -111,6 +105,7 @@ namespace GPU.Delaunay {
                         float2 d = meshless.nodes[j].pos - p;
                         if (math.dot(d, d) < minDist2) { ok = false; break; }
                     }
+
                     if (ok) break;
                     p = min + rng.NextFloat2() * size;
                 }
@@ -139,22 +134,24 @@ namespace GPU.Delaunay {
             if (gpuAllScratch == null || gpuAllScratch.Length != n + 3)
                 gpuAllScratch = new float2[n + 3];
 
-            if (gpuSuper == null || gpuSuper.Length != 3)
-                gpuSuper = new float2[3];
+            gpuSuper ??= new float2[3];
         }
 
+        /// <summary>
+        /// Defines the normalization transform used for all GPU predicate evaluation:
+        ///   p_gpu = (p_world - center) * invHalfExtent.
+        /// The super triangle is defined in normalized GPU coordinates to keep determinants well-conditioned.
+        /// </summary>
         void RecomputeNormalization() {
             float2 min = new float2(boundsMin.x - normalizePadding, boundsMin.y - normalizePadding);
             float2 max = new float2(boundsMax.x + normalizePadding, boundsMax.y + normalizePadding);
 
             normCenter = 0.5f * (min + max);
+
             float2 extent = max - min;
             float half = 0.5f * math.max(extent.x, extent.y);
-            if (half <= 1e-6f) half = 1f;
-            normInvHalfExtent = 1f / half;
+            normInvHalfExtent = 1f / math.max(1e-6f, half);
 
-            // GPU-space super triangle around the normalized domain ~ [-1, 1].
-            // Keeping this modest avoids huge determinants and predicate instability.
             gpuSuper[0] = new float2(0f, 3f);
             gpuSuper[1] = new float2(-3f, -3f);
             gpuSuper[2] = new float2(3f, -3f);
@@ -203,20 +200,23 @@ namespace GPU.Delaunay {
 
         static void ToggleEdge(HashSet<DirEdge> set, int a, int b) {
             var e = new DirEdge(a, b);
-            var r = new DirEdge(b, a);
-            if (!set.Remove(r)) set.Add(e);
+            if (!set.Remove(new DirEdge(b, a)))
+                set.Add(e);
         }
 
+        /// <summary>
+        /// CPU Bowyer-Watson in normalized coordinates, keeping the super-triangle triangles.
+        /// This gives the GPU maintenance passes a "virtual outside face", so hull edges are flippable.
+        /// </summary>
         void BuildAndUploadDT() {
             int n = meshless.nodes.Count;
             if (n < 3) { enabled = false; return; }
 
-            for (int i = 0; i < n; i++)
-                worldRealScratch[i] = meshless.nodes[i].pos;
-
-            // Build initial triangulation in GPU-normalized space.
-            for (int i = 0; i < n; i++)
-                gpuAllScratch[i] = WorldToGpu(worldRealScratch[i]);
+            for (int i = 0; i < n; i++) {
+                float2 p = meshless.nodes[i].pos;
+                worldRealScratch[i] = p;
+                gpuAllScratch[i] = WorldToGpu(p);
+            }
 
             gpuAllScratch[n + 0] = gpuSuper[0];
             gpuAllScratch[n + 1] = gpuSuper[1];
@@ -224,14 +224,10 @@ namespace GPU.Delaunay {
 
             triangles.Clear();
 
-            int i0 = n, i1 = n + 1, i2 = n + 2;
-            if (Orient2D(gpuAllScratch[i0], gpuAllScratch[i1], gpuAllScratch[i2]) < 0f)
-                triangles.Add(new DTBuilder.Triangle(i0, i2, i1));
+            if (Orient2D(gpuAllScratch[n + 0], gpuAllScratch[n + 1], gpuAllScratch[n + 2]) < 0f)
+                triangles.Add(new DTBuilder.Triangle(n + 0, n + 2, n + 1));
             else
-                triangles.Add(new DTBuilder.Triangle(i0, i1, i2));
-
-            bad.Clear();
-            boundary.Clear();
+                triangles.Add(new DTBuilder.Triangle(n + 0, n + 1, n + 2));
 
             for (int pi = 0; pi < n; pi++) {
                 float2 p = gpuAllScratch[pi];
@@ -311,6 +307,10 @@ namespace GPU.Delaunay {
                 Debug.Log($"DT flips (last iter): {dt.GetLastFlipCount()}");
         }
 
+        /// <summary>
+        /// Moves a single vertex using small substeps (important for local maintenance),
+        /// optionally rebuilds if leaving the normalization domain, then runs Fix+Legalize.
+        /// </summary>
         void SubstepMoveAndMaintain() {
             float dtFrame = Time.deltaTime;
             if (dtFrame <= 0f) return;
@@ -326,8 +326,7 @@ namespace GPU.Delaunay {
             if (len <= 1e-12f) return;
 
             int steps = math.max(1, (int)math.ceil(len / math.max(1e-6f, maxMoveStep)));
-            float invSteps = 1f / steps;
-            float2 stepMove = totalMove * invSteps;
+            float2 stepMove = totalMove / steps;
 
             for (int s = 0; s < steps; s++) {
                 var node = meshless.nodes[movingIndex];
@@ -344,12 +343,10 @@ namespace GPU.Delaunay {
                 node.pos = p;
                 node.vel = float2.zero;
 
-                if (!IsInsideNormalizeBounds(p)) {
-                    if (rebuildIfOutsideNormalizeBounds) {
-                        RecomputeNormalization();
-                        BuildAndUploadDT();
-                        return;
-                    }
+                if (rebuildIfOutsideNormalizeBounds && !IsInsideNormalizeBounds(p)) {
+                    RecomputeNormalization();
+                    BuildAndUploadDT();
+                    return;
                 }
 
                 dt.UpdatePositionsFromNodes(meshless.nodes, normCenter, normInvHalfExtent);
@@ -361,8 +358,7 @@ namespace GPU.Delaunay {
 
         float2 GetDrawPosWorld(int v) {
             int real = meshless.nodes.Count;
-            if ((uint)v < (uint)real) return meshless.nodes[v].pos;
-            return GpuToWorld(gpuSuper[v - real]);
+            return (uint)v < (uint)real ? meshless.nodes[v].pos : GpuToWorld(gpuSuper[v - real]);
         }
 
         void DrawDebugWireframe() {
@@ -390,12 +386,10 @@ namespace GPU.Delaunay {
                 float2 a = GetDrawPosWorld(v0);
                 float2 b = GetDrawPosWorld(v1);
 
-                Color c = (v0Real && v1Real) ? lineColor : superEdgeColor;
-
                 Debug.DrawLine(
                     new Vector3(a.x, a.y, 0f),
                     new Vector3(b.x, b.y, 0f),
-                    c,
+                    (v0Real && v1Real) ? lineColor : superEdgeColor,
                     0f,
                     depthTest
                 );

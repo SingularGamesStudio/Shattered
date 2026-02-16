@@ -1,181 +1,158 @@
-# Shattered (Unity) — AGENTS.md
+# Shattered (Unity) — Perplexity context (AGENTS.md)
 
-This repo is not worked on by autonomous AI agents.
-I use Perplexity as an assistant: it reads the repository state (GitHub), I review its output, and I manually copy/paste the produced code.
+Shattered is a Unity project for real-time 2D deformable simulation (meshless / particle-like nodes) with:
+- Velocity-first constraint solving (XPBI-style).
+- A hierarchical coarse-to-fine (V-cycle-like) solver schedule.
+- Neighborhood queries backed by a spatial structure (HNSW) and optionally GPU Delaunay-based neighbors.
 
-These instructions exist to make Perplexity's code output match this project's conventions and be easy to paste into Unity.
+I use Perplexity as an assistant: it reads limited GitHub state, I review output, and I manually copy/paste code into Unity.
 
-## Output rules (strict)
 
-When you propose code changes:
+## 1) Non-negotiables (copy/paste safety)
 
-- Do not add "latest change", "changed because…", or similar commentary in code comments. Only add comments that are necessary to understand non-obvious intent.
-- But never remove existing comments, unless they became obsolete after the change.
-- Do not introduce unnecessary variables if a value is used once; inline expressions when it stays readable.
+When proposing code changes:
+
 - Output either:
-  - The full changed file(s), or
-  - The full changed function(s) / structure(s) (entire method/class/struct definition),
-  with no placeholders like `/* ... unchanged ... */`, to make copy/paste safe.
-
-## Change discipline
-
+  - Full changed file(s), OR
+  - Full changed method/class/struct definitions (entire definition).
+- No placeholders like `/* unchanged */`.
+- No “latest change / changed because …” commentary inside code comments.
+- Never remove existing comments unless they are obsolete after your change.
+- Avoid unnecessary variables when an expression is used once and stays readable.
 - Keep diffs small and localized.
-- Avoid per-frame allocations in hot paths (`Relax`, neighbor loops, visualization updates, hierarchical V-cycle, HNSW queries, NodeBatch initialisation).
-- Feel free to alter existing types or interfaces if required, but notify (in response text, not comments) when you do so.
-- Prefer deterministic math and stable behavior over micro-optimizations.
 
-## Repository map
+If you change any public surface (type / interface / serialized fields / public method signature),
+call it out in your response text (not in code comments).
 
-Entry points:
-- `Assets/Scripts/SimulationController.cs`: Top-level orchestrator (timing, hierarchical V-cycle, force application, integration).
-- `Assets/Scripts/Meshless.cs`: Per-object data container (nodes, HNSW, hierarchy metadata, parameters).
-- `Assets/Scripts/Node.cs`: Per-node state (2D pos/vel, inverse mass, deformation state, hierarchy parent).
 
-Spatial queries / neighborhood graph:
-- `Assets/Scripts/HNSW.cs`: Approximate kNN structure (used for neighborhoods, hierarchy parent lookup, updated via `Shift`).
+## 2) Hard constraints (perf + determinism)
+
+Allocation discipline (steady-state):
+- Avoid per-frame allocations in hot paths: solver iterations (`Relax`), neighbor loops, NodeBatch init, V-cycle loops, HNSW queries, visualization updates, GPU Delaunay maintenance / neighbor rebuild glue.
+
+Determinism / stability:
+- Prefer stable/deterministic behavior over micro-optimizations.
+- Stabilize ordering where it affects accumulation; do not rely on hash iteration order.
+- Neighbor accumulation must be deterministic (neighbors are angle-sorted).
+
+Types:
+- Prefer `Unity.Mathematics` (`float2`, `float2x2`, etc.) internally.
+- Use `Vector2` only at Unity boundaries if required.
+
+
+## 3) Project vocabulary (mental model)
+
+Nodes:
+- Each node has position/velocity and deformation state.
+- Simulation updates velocities via constraints, then integrates positions once.
+
+Neighborhood:
+- Most operators depend on a fixed-size kNN neighborhood (k = `Const.NeighborCount`).
+- Neighborhood ordering matters (angle-sorted for stable sums).
+
+Hierarchy:
+- Nodes are sorted by `maxLayer` descending.
+- Level L uses a prefix of nodes (all nodes with `maxLayer >= L`).
+- Each node stores `parentIndex` pointing to a single parent on the next coarser layer.
+
+
+## 4) Solver: what happens each step (minimal)
+
+High-level step:
+1) Apply external forces to velocities.
+2) Hierarchical solve (coarse → fine):
+   - Expand active prefix for current level.
+   - Initialise level caches.
+   - Run solver iterations (fewer on coarse, more on fine).
+   - Prolongate: add parent velocity delta to children (deltas only).
+3) Commit deformation on the finest level (level 0).
+4) Integrate positions once from corrected velocities.
+5) Update spatial structure (HNSW `Shift`) for moved nodes.
+
+Prolongation rule (important):
+- Only propagate parent Δv (current parent vel minus saved parent vel); do not overwrite child velocity with parent velocity.
+
+
+## 5) Invariants (do not break)
+
+Hierarchy / indexing:
+- Nodes must remain sorted by `maxLayer` descending.
+- `levelEndIndex[L]` is a prefix count: nodes with `maxLayer >= L`.
+- `parentIndex` must refer to a valid parent on the next layer.
+
+Neighborhood:
+- kNN size is fixed (`Const.NeighborCount`).
+- Neighbors must be angle-sorted before any accumulation that affects physics.
+
+Execution:
+- Solver is velocity-first; do not switch to per-iteration position integration.
+- Hot loops must be allocation-free in steady-state.
+
+
+## 6) Where to edit (routing index)
+
+Entry points / orchestration:
+- `Assets/Scripts/SimulationController.cs`
+  Timing, V-cycle schedule, prolongation, integration, HNSW shift calls.
+
+Core data & hierarchy:
+- `Assets/Scripts/Meshless.cs`
+  Nodes container, hierarchy metadata (`levelEndIndex`), parameters.
+- `Assets/Scripts/Node.cs`
+  Node state (pos/vel/invMass/deformation/parentIndex/etc).
+
+Neighborhood queries:
+- `Assets/Scripts/HNSW.cs`
+  kNN structure, queries, updates via `Shift`.
 
 Physics core:
-- `Assets/Scripts/Physics/NodeBatch.cs`: Per-level caches (neighbors, kernel radius `h`, correction matrix `L`, cached `F0`, lambda, current volume, debug). Designed to be expanded across hierarchy levels.
-- `Assets/Scripts/Physics/DeformationUtils.cs`: Hencky/log strain model, polar decomposition, plastic return mapping, pseudo-inverse helpers.
-- `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`: Velocity-based XPBD/XPBI-style solve (`Relax`, `CommitDeformation`) using kernel-estimated `gradV`.
-- `Assets/Scripts/Physics/Constraints/SPHKernels.cs`: Wendland C2 kernel + gradient (2D) used by corrected kernel operators.
-- `Assets/Scripts/Physics/Const.cs`: Global constants (eps, neighbor count, solver iterations, HPBD iterations, `KernelHScale`).
+- `Assets/Scripts/Physics/NodeBatch.cs`
+  Per-level caches: neighbors, per-node `h`, correction matrix `L`, cached `F0`, lambda, volumes, debug.
+- `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`
+  `Relax`, `CommitDeformation`, gradV-based velocity corrections.
+- `Assets/Scripts/Physics/DeformationUtils.cs`
+  Polar decomposition, Hencky/log strain, plastic return mapping, pseudo-inverse helpers.
+- `Assets/Scripts/Physics/Constraints/SPHKernels.cs`
+  Wendland C2 kernel + gradient (2D).
+- `Assets/Scripts/Physics/Const.cs`
+  Constants: neighbor count, iterations, eps, `KernelHScale`, rebuild intervals.
 
-Profiling / debug tooling:
-- `Assets/Scripts/LoopProfiler.cs`: Lightweight per-section profiler for hot loops (used around NodeBatch init and other per-frame code).
-- `Assets/Scripts/MeshlessVisualiser.cs`: Runtime visualization helper.
-- `Assets/Scripts/Physics/DebugData.cs`: Per-node debug accumulation.
-- `Assets/Scripts/Editor/ConstraintDebugWindow.cs`: Editor window for constraint/debug state.
+Debug / tooling:
+- `Assets/Scripts/LoopProfiler.cs`
+- `Assets/Scripts/MeshlessVisualiser.cs`
+- `Assets/Scripts/Physics/DebugData.cs`
+- `Assets/Scripts/Editor/ConstraintDebugWindow.cs`
 
-## Architecture: Hierarchical solver
+## 7) GPU Delaunay neighbors (in-project notes)
 
-### High-level flow (SimulationController)
+This subsystem maintains a dynamic 2D triangulation on GPU and extracts a fixed-size neighbor list for real vertices.
 
-The simulation uses a hierarchical solver with a V-cycle-like coarse-to-fine schedule:
+Files:
+- `Assets/Scripts/GPU/Delaunay/DelaunayGPU.cs`
+  GPU driver / dispatch (`Init`, `Maintain`, `RebuildVertexAdjacency`, `UpdatePositionsFromNodes(...)`).
+- `Assets/Scripts/GPU/Delaunay/DTBuilder.cs`
+  CPU bootstrap triangulation + half-edge build.
+- `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
+  Kernels (`FixHalfEdges`, `LegalizeHalfEdges`, `BuildNeighbors`).
+- `Assets/Scripts/GPU/Delaunay/DelaunayGpuTest.cs`
+  Stress harness (not core).
 
-1. **External forces** applied to all nodes (gravity modifies velocities).
-2. **V-cycle solve** from coarsest to finest level:
-   - For each level L (from `maxLayer` down to 0):
-     - Expand batch to include all nodes up to level L (active prefix).
-     - Initialize batch (volumes, neighbors, kernel radii `h`, correction matrices `L`, cache `F0`, reset lambda/debug).
-     - Run solver iterations (few on coarse levels, more on finest).
-     - **Prolongate corrections (velocity-based)**: propagate parent velocity deltas to child nodes.
-3. **Commit deformation**: Update `F`, `Fp` on the finest level (level 0).
-4. **Integrate positions** once from corrected velocities.
-5. **Update HNSW** via `Shift` for each moved node.
+Key design assumptions (don’t accidentally “simplify” them away):
+- 3 “super” vertices are appended: `VertexCount = RealVertexCount + 3`.
+- Triangles incident to super vertices are kept (not deleted).
+- Predicates may run on normalized coordinates (uniform translate + scale) for conditioning.
+- Maintenance is typically “fix” then “legalize”, then rebuild adjacency/neighbors.
+- Neighbor extraction ignores super vertices.
 
-### Hierarchy structure (Meshless)
+If you propose changes here, be extra careful about:
+- Allocation-free CPU glue.
+- Stable neighbor list layout and bounds (fixed `_NeighborCount`).
+- Locking / race safety (triangle-local locks / ownership rules).
 
-- Nodes are sorted descending by `maxLayer` (HNSW layer assignment).
-- `levelEndIndex[L]` = number of nodes with `maxLayer >= L` (prefix of nodes list).
-- Each node stores `parentIndex` = single closest parent at `maxLayer + 1`.
-- Hierarchy rebuilt every `Const.HierarchyRebuildInterval` frames.
 
-### Batch reuse across levels (NodeBatch)
+## 8) Research pointers (for quick recall)
 
-- The intended usage is one `NodeBatch` allocated at max capacity and reused each step.
-- `ExpandTo(nodeCount)` increases active `Count` without reallocation (except if node count grows).
-- `Initialise()` is called per level and does:
-  - **Volumes**: recomputed for the active prefix using hierarchical aggregation (see below).
-  - **Neighbors**: recomputed for all active nodes (kNN).
-  - **Kernel radii (`h`)**: recomputed for all active nodes.
-  - **Correction matrices `L`**: recomputed for all active nodes (depend on neighbors, `h`, and volumes).
-  - **Lambda/debug**: reset for all active nodes.
-  - **F0 cache**: updated for newly-added nodes when expanding within a step.
-
-### Velocity correction prolongation
-
-After solving at level L > 0, propagate velocity deltas to finer nodes:
-```
-for each node i in (levelEndIndex[L], levelEndIndex[L-1]):
-    parentDeltaV = parent.vel - saved_parent.vel
-    node.vel += parentDeltaV
-```
-Only **deltas** are propagated, not absolute values.
-
-## What the solver actually does (current implementation)
-
-### Neighborhoods (fixed-k kNN, cached per level)
-
-- Neighborhood size is `Const.NeighborCount` (currently 6).
-- Neighbors are queried via HNSW (kNN) each level.
-- Neighbors are sorted by angle for deterministic accumulation order.
-- NodeBatch neighbor caching must avoid per-node allocations; prefer preallocated `List<int>` buffers per cache entry.
-
-### Velocity-first corrections
-
-- The constraint solver updates **velocities** directly (`Δv`).
-- Positions are integrated once per step from corrected velocities.
-- Hierarchical coupling is done by prolongating **velocity** deltas from coarse parents to fine children.
-
-### Trial deformation and cached reference
-
-- At level initialization, `NodeBatch` caches `F0 = node.F`.
-- Each iteration forms:
-  - `Ftrial = (I + dt * gradV) * F0`
-  where `gradV` is estimated from neighbor velocity differences using kernel operators.
-
-### Kernel operators (Wendland C2 + corrected gradients)
-
-- Wendland C2 kernel and gradient are implemented in `Physics/Constraints/SPHKernels.cs`.
-- Each node has a smoothing length `h` (support radius is `2h`).
-- `h` is chosen per node from neighbor distances (median distance scaled by `Const.KernelHScale`), so it naturally increases on sparse hierarchy levels.
-
-### Correction matrix L (XPBI-style)
-
-- `L` is computed per node using a corrected kernel gradient matrix of the form:
-  - `L = (Σ V_b * (∇W_b ⊗ x_pb))^(-1)`
-- The inverse uses a pseudo-inverse (SVD) for stability.
-- `L` is then used to correct kernel gradients (`L * ∇W`) when estimating `gradV` and constraint gradients.
-
-### Constitutive model (Hencky/log strain)
-
-- Energy/gradient uses polar decomposition and `log(stretch)` (Hencky strain).
-- Constraint value is `C(F) = sqrt(2 * PsiHencky(F))`.
-
-### Plasticity (Hencky-space return mapping + Fp update)
-
-- Plastic projection is a return mapping in Hencky space (deviatoric yield + volumetric clamp).
-- `CommitDeformation()` updates `Fp` based on `Ftrial` and projected elastic `Fel`, then assigns `node.F = Fel`.
-- Only runs on finest level (level 0) after the V-cycle completes.
-
-### Effective volumes (hierarchy-aware)
-
-Kernel sums use an effective per-node volume `V_b`:
-
-- Finest level: `V = restVolume * |det(F)|`.
-- Coarse levels: each active node represents a cluster; its `currentVolume` is the sum of descendant leaf deformed volumes.
-- Volume mapping to the active prefix uses parentIndex-chain ownership with DSU-style path compression to avoid repeated long walks.
-
-## HNSW implementation notes
-
-- Prefer no-alloc query APIs: `SearchKnn(..., List<int> results, ...)` so call sites can reuse buffers.
-- Neighbor storage is abstracted by `NeighborSet` so you can switch backend (hash set vs compact list) while M is still in flux; keep both paths allocation-free in steady-state.
-
-## Profiling
-
-- Use `LoopProfiler` for quick section timing inside tight loops (NodeBatch init, correction matrix sums, etc.).
-- Keep profiler instrumentation low-overhead: no string formatting inside per-node loops, prefer enum/constant section ids.
-
-## Project knobs
-
-Solver parameters:
-- `Const.Iterations`: solver iterations for finest level (level 0), default 8.
-- `Const.HPBDIterations`: iterations per coarse level, default 2.
-- `Const.NeighborCount`: k in kNN neighborhood, default 6.
-- `Meshless.compliance`: passed to `XPBIConstraint.Relax` for XPBD compliance term.
-- `Const.KernelHScale`: scaling applied to median neighbor distance to get per-node `h`.
-
-Hierarchy parameters:
-- `SimulationController.useHierarchicalSolver`: toggle V-cycle on/off.
-- `Const.HierarchyRebuildInterval`: frames between hierarchy updates, default 60.
-
-Material constants (global, in code):
-- `XPBIConfig.YoungsModulus`, `XPBIConfig.PoissonsRatio`.
-- `XPBIConfig.YieldHencky`, `XPBIConfig.VolumetricHenckyLimit`.
-
-## Common pitfalls
-
-- **Hot allocations**: Avoid allocating arrays/lists inside per-node/per-iteration/per-level loops (especially in HNSW queries and NodeBatch neighbor caching).
-- **Level ordering**: Nodes must stay sorted by `maxLayer` descending for `levelEndIndex` prefixes to work correctly.
-- **Unity.Mathematics**: Prefer `float2`/`float2x2` consistently; avoid mixing with `Vector2` unless necessary at Unity boundaries.
+These are references used to guide implementation choices:
+- XPBI: https://arxiv.org/html/2405.11694v2
+- GPU-maintained 2D Delaunay triangulation for proximity queries:
+  https://meshinglab.dcc.uchile.cl/publication/porro-hal-04029968/porro-hal-04029968.pdf

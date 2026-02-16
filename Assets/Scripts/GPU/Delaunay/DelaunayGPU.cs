@@ -4,6 +4,12 @@ using Unity.Mathematics;
 using UnityEngine;
 
 namespace GPU.Delaunay {
+    /// <summary>
+    /// GPU-side maintenance for a 2D Delaunay triangulation stored as a half-edge structure.
+    /// Maintains topology using two phases:
+    /// 1) Fixing (restore a valid triangulation after point motion).
+    /// 2) Legalizing (Delaunay edge flips based on in-circle test).
+    /// </summary>
     public sealed class DelaunayGpu : IDisposable {
         public struct HalfEdge {
             public int v;
@@ -33,12 +39,12 @@ namespace GPU.Delaunay {
         int halfEdgeCount;
         int triCount;
 
-        int kClearTriLocks;
-        int kClearVertexToEdge;
-        int kBuildVertexToEdge;
-        int kBuildNeighbors;
-        int kFixHalfEdges;
-        int kLegalizeHalfEdges;
+        readonly int kClearTriLocks;
+        readonly int kClearVertexToEdge;
+        readonly int kBuildVertexToEdge;
+        readonly int kBuildNeighbors;
+        readonly int kFixHalfEdges;
+        readonly int kLegalizeHalfEdges;
 
         public int VertexCount => vertexCount;
         public int RealVertexCount => realVertexCount;
@@ -48,14 +54,19 @@ namespace GPU.Delaunay {
         public DelaunayGpu(ComputeShader shader) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
 
-            kClearTriLocks = shader.FindKernel("ClearTriLocks");
-            kClearVertexToEdge = shader.FindKernel("ClearVertexToEdge");
-            kBuildVertexToEdge = shader.FindKernel("BuildVertexToEdge");
-            kBuildNeighbors = shader.FindKernel("BuildNeighbors");
-            kFixHalfEdges = shader.FindKernel("FixHalfEdges");
-            kLegalizeHalfEdges = shader.FindKernel("LegalizeHalfEdges");
+            kClearTriLocks = this.shader.FindKernel("ClearTriLocks");
+            kClearVertexToEdge = this.shader.FindKernel("ClearVertexToEdge");
+            kBuildVertexToEdge = this.shader.FindKernel("BuildVertexToEdge");
+            kBuildNeighbors = this.shader.FindKernel("BuildNeighbors");
+            kFixHalfEdges = this.shader.FindKernel("FixHalfEdges");
+            kLegalizeHalfEdges = this.shader.FindKernel("LegalizeHalfEdges");
         }
 
+        /// <summary>
+        /// Initializes GPU buffers for a triangulation that includes 3 "super" vertices.
+        /// The super vertices must be appended at the end of <paramref name="allPoints"/>.
+        /// They are kept fixed across updates and provide a "virtual outside face" so hull edges can flip.
+        /// </summary>
         public void Init(
             IReadOnlyList<float2> allPoints,
             int realPointCount,
@@ -72,6 +83,7 @@ namespace GPU.Delaunay {
 
             vertexCount = allPoints.Count;
             realVertexCount = realPointCount;
+
             if (vertexCount < realVertexCount) throw new ArgumentException("VertexCount < realPointCount.", nameof(allPoints));
             if (vertexCount != realVertexCount + 3) throw new ArgumentException("Expected real points + 3 super points.", nameof(allPoints));
 
@@ -83,11 +95,14 @@ namespace GPU.Delaunay {
             NeighborCount = neighborCount;
 
             positionScratch = new float2[vertexCount];
-            superPoints = new float2[3] { allPoints[realVertexCount], allPoints[realVertexCount + 1], allPoints[realVertexCount + 2] };
+            superPoints = new float2[3] {
+                allPoints[realVertexCount + 0],
+                allPoints[realVertexCount + 1],
+                allPoints[realVertexCount + 2],
+            };
 
             positions = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
             halfEdges = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
-
             triLocks = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
 
             vToE = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
@@ -113,7 +128,6 @@ namespace GPU.Delaunay {
             halfEdges.SetData(he);
 
             BindCommon();
-
             DispatchClearTriLocks();
             RebuildVertexAdjacency();
         }
@@ -148,6 +162,9 @@ namespace GPU.Delaunay {
             shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", flipCount);
         }
 
+        /// <summary>
+        /// Updates only the real vertices from Meshless nodes and keeps super vertices fixed.
+        /// </summary>
         public void UpdatePositionsFromNodes(List<Node> nodes) {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
@@ -162,12 +179,10 @@ namespace GPU.Delaunay {
             positions.SetData(positionScratch);
         }
 
-        public uint GetLastFlipCount() {
-            if (flipCount == null) return 0u;
-            flipCount.GetData(flipScratch);
-            return flipScratch[0];
-        }
-
+        /// <summary>
+        /// Updates only the real vertices, applying a (center, invHalfExtent) normalization before upload.
+        /// This is used to keep predicate math well-conditioned when using super vertices.
+        /// </summary>
         public void UpdatePositionsFromNodes(List<Node> nodes, float2 center, float invHalfExtent) {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
@@ -182,7 +197,16 @@ namespace GPU.Delaunay {
             positions.SetData(positionScratch);
         }
 
+        public uint GetLastFlipCount() {
+            if (flipCount == null) return 0u;
+            flipCount.GetData(flipScratch);
+            return flipScratch[0];
+        }
 
+        /// <summary>
+        /// Runs fixing iterations followed by legalizing iterations.
+        /// Lock buffer is cleared before each iteration to keep contention local per-dispatch.
+        /// </summary>
         public void Maintain(int fixIterations, int legalizeIterations) {
             int groups = (halfEdgeCount + 255) / 256;
 
@@ -203,20 +227,18 @@ namespace GPU.Delaunay {
             RebuildVertexAdjacency();
         }
 
+        /// <summary>
+        /// Rebuilds a per-vertex incident half-edge map and a fixed-size neighbor list for real vertices.
+        /// Neighbor list excludes super vertices.
+        /// </summary>
         public void RebuildVertexAdjacency() {
-            int vGroups = (vertexCount + 255) / 256;
-            shader.Dispatch(kClearVertexToEdge, vGroups, 1, 1);
-
-            int heGroups = (halfEdgeCount + 255) / 256;
-            shader.Dispatch(kBuildVertexToEdge, heGroups, 1, 1);
-
-            int rvGroups = (realVertexCount + 255) / 256;
-            shader.Dispatch(kBuildNeighbors, rvGroups, 1, 1);
+            shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
         }
 
         void DispatchClearTriLocks() {
-            int groups = (triCount + 255) / 256;
-            shader.Dispatch(kClearTriLocks, groups, 1, 1);
+            shader.Dispatch(kClearTriLocks, (triCount + 255) / 256, 1, 1);
         }
 
         public void GetHalfEdges(HalfEdge[] dst) {
