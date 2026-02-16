@@ -34,6 +34,12 @@ public class Meshless : MonoBehaviour {
     public int dtWarmupLegalizeIterations = 128;
     public float dtNormalizePadding = 2f;
 
+    [Header("DT normalization (runtime)")]
+    public bool dtAutoNormalizeAtRuntime = true;
+    [Range(1.0f, 2.0f)] public float dtAutoNormalizeGrowFactor = 1.15f;
+    [Range(0.0f, 1.0f)] public float dtAutoNormalizeRecenterThreshold = 0.25f;
+    public bool dtAutoNormalizeIncludeCamera = true;
+
     [HideInInspector] public DelaunayHierarchyGpu delaunayHierarchy;
 
     float2 dtNormCenter;
@@ -90,7 +96,7 @@ public class Meshless : MonoBehaviour {
         if (useDelaunayHierarchy) {
             if (!delaunayShader) throw new System.InvalidOperationException("Meshless: delaunayShader is not assigned.");
 
-            RecomputeDelaunayNormalizationBounds();
+            RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
             BuildDelaunayHierarchy();
 
             ComputeRestVolumesFromDelaunayTriangles();
@@ -199,6 +205,14 @@ public class Meshless : MonoBehaviour {
     public void UpdateDelaunayAfterIntegration() {
         if (!useDelaunayHierarchy || delaunayHierarchy == null) return;
 
+        if (dtAutoNormalizeAtRuntime) {
+            bool changed = UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);
+            if (changed) {
+                // No rebuild needed: translation + uniform scale keeps DT topology valid,
+                // we only need to update positions with the new normalization.
+            }
+        }
+
         delaunayHierarchy.UpdatePositionsFromNodesAllLevels(nodes, dtNormCenter, dtNormInvHalfExtent);
         delaunayHierarchy.MaintainAllLevels(dtFixIterationsPerTick, dtLegalizeIterationsPerTick);
         delaunayHierarchy.ReadbackAllLevels();
@@ -208,7 +222,56 @@ public class Meshless : MonoBehaviour {
         delaunayHierarchy?.FillNeighbors(level, nodeIndex, dst);
     }
 
-    void RecomputeDelaunayNormalizationBounds() {
+    bool UpdateDelaunayNormalizationIfNeeded(Camera cam) {
+        if (nodes.Count == 0) return false;
+
+        float2 min = nodes[0].pos;
+        float2 max = nodes[0].pos;
+
+        for (int i = 1; i < nodes.Count; i++) {
+            float2 p = nodes[i].pos;
+            min = math.min(min, p);
+            max = math.max(max, p);
+        }
+
+        if (cam != null && cam.orthographic) {
+            float halfH = cam.orthographicSize;
+            float halfW = halfH * cam.aspect;
+
+            float2 c = new float2(cam.transform.position.x, cam.transform.position.y);
+            float2 camMin = c - new float2(halfW, halfH);
+            float2 camMax = c + new float2(halfW, halfH);
+
+            min = math.min(min, camMin);
+            max = math.max(max, camMax);
+        }
+
+        float2 targetMin = min - new float2(dtNormalizePadding, dtNormalizePadding);
+        float2 targetMax = max + new float2(dtNormalizePadding, dtNormalizePadding);
+
+        float2 targetCenter = 0.5f * (targetMin + targetMax);
+        float2 extent = targetMax - targetMin;
+        float targetHalf = 0.5f * math.max(extent.x, extent.y);
+        targetHalf = math.max(targetHalf, 1e-6f);
+
+        float currentHalf = 1f / math.max(1e-6f, dtNormInvHalfExtent);
+
+        bool needGrow = targetHalf > currentHalf;
+        bool needRecenter = math.any(math.abs(targetCenter - dtNormCenter) > currentHalf * dtAutoNormalizeRecenterThreshold);
+
+        if (!needGrow && !needRecenter) return false;
+
+        float newHalf = needGrow ? targetHalf * dtAutoNormalizeGrowFactor : currentHalf;
+        dtNormCenter = targetCenter;
+        dtNormInvHalfExtent = 1f / newHalf;
+
+        dtBoundsMinWorld = dtNormCenter - new float2(newHalf, newHalf);
+        dtBoundsMaxWorld = dtNormCenter + new float2(newHalf, newHalf);
+
+        return true;
+    }
+
+    void RecomputeDelaunayNormalizationBounds(Camera cam) {
         if (nodes.Count == 0) return;
 
         float2 min = nodes[0].pos;
@@ -218,6 +281,18 @@ public class Meshless : MonoBehaviour {
             float2 p = nodes[i].pos;
             min = math.min(min, p);
             max = math.max(max, p);
+        }
+
+        if (cam != null && cam.orthographic) {
+            float halfH = cam.orthographicSize;
+            float halfW = halfH * cam.aspect;
+
+            float2 c = new float2(cam.transform.position.x, cam.transform.position.y);
+            float2 camMin = c - new float2(halfW, halfH);
+            float2 camMax = c + new float2(halfW, halfH);
+
+            min = math.min(min, camMin);
+            max = math.max(max, camMax);
         }
 
         dtBoundsMinWorld = min - new float2(dtNormalizePadding, dtNormalizePadding);

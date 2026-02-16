@@ -6,6 +6,7 @@ The core solver is “velocity-first” (constraints apply Δv; positions integr
 Perplexity is used as a browser assistant:
 - It can read limited GitHub repo state.
 - I manually copy/paste code from Perplexity into Unity.
+- I do not commit often mid-conversation.
 
 
 ## 0) What Shattered is trying to do (big picture)
@@ -25,13 +26,13 @@ Non-goals:
 ## 1) Research baseline (what this is built from)
 
 PBD:
-- Classic Position-Based Dynamics manipulates positions via constraint projections for stability and controllability. [page:1]
+- Classic Position-Based Dynamics manipulates positions via constraint projections for stability and controllability.
 
 XPBD:
 - XPBD extends PBD with compliant constraints so stiffness behaves consistently across time step and iteration count, instead of “getting stiffer” as you add iterations.
 
 XPBI:
-- XPBI (2024) explores extending XPBD-style ideas to continuum inelasticity using smoothing kernels and velocity-based formulations for updated Lagrangian deformation handling.
+- XPBI explores extending XPBD-style ideas to continuum inelasticity using smoothing kernels and velocity-based formulations for updated Lagrangian deformation handling.
 
 HPBD / hierarchical acceleration:
 - Hierarchical Position-Based Dynamics (HPBD) uses a multilevel / multigrid-like hierarchy to improve convergence under tight iteration budgets.
@@ -47,7 +48,6 @@ GPU-friendly alternative (planned/optional direction):
 ## 2) Non-negotiables (output + paste safety)
 
 When proposing code changes:
-
 - Output either:
   - Full changed file(s), OR
   - Full changed method/class/struct definitions (entire definition).
@@ -156,6 +156,16 @@ GPU Delaunay neighbors:
 - `Assets/Scripts/GPU/Delaunay/DelaunayGpuTest.cs`
   Stress harness (not core).
 
+Rendering / debug visualization:
+- `Assets/Scripts/MeshlessTriangulationRenderer.cs`
+  Procedural DT debug draw (fill + wire).
+- `Assets/Shaders/MeshlessTriangulation.shader`
+  DT fill shader (samples material texture array).
+- `Assets/Shaders/MeshlessTriangulationWire.shader`
+  DT wire-only overlay shader.
+- `Assets/Scripts/MeshlessMaterialLibrary.cs`
+  Bakes per-material sprites into a Texture2DArray for DT visualization.
+
 
 ## 7) GPU Delaunay neighbors (in-project notes)
 
@@ -173,7 +183,20 @@ If you propose changes here, be extra careful about:
 - Stable neighbor list layout and bounds (fixed `_NeighborCount`).
 - Locking / race safety (triangle-local locks / ownership rules).
 
-## 8) References (primary)
+Runtime normalization gotcha:
+- If DT normalization bounds are only computed on `Build()` and the object drifts/moves far, real vertices can “escape” the fixed super-triangle domain.
+- Preferred mitigation for long-running sims: auto-renormalize at runtime (recenter + grow) and re-upload positions using the updated `(dtNormCenter, dtNormInvHalfExtent)`, without rebuilding topology unless necessary.
+
+
+## 8) Rendering & materials
+
+- Texture baking: sprite → Texture2DArray baking should not rely on `Graphics.CopyTexture` because format conversions/cropping can fail; prefer a bake path that supports conversion and cropping.
+- Procedural draw: `Graphics.DrawProcedural` does not select shader passes; the `layer` argument is a Unity render layer. If you need “fill-only” vs “wire-only”, use separate shaders/materials.
+- Coarse levels: higher DT levels are for wireframe visualization only; do not draw textured fill for them.
+- Wireframe: render wire as an overlay (`ZWrite Off`), and keep thickness in pixel units to avoid “level 0 is huge” artifacts; if shared edges get darker, avoid alpha blending for the wire overlay.
+- UV anchoring: to make the texture move with the object (stable under deformation), compute UVs from stored rest positions (rest in normalized DT space) rather than current/world positions.
+
+## 9) References (primary)
 
 - PBD: Müller et al., “Position Based Dynamics” (2007).
 - XPBD: Macklin, Müller, Chentanez, “XPBD: Position-Based Simulation of Compliant Constrained Dynamics” (2016).

@@ -208,15 +208,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c77595f26629367488aef2c1da549694, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  triangulationShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
-  uvScale: 0.25
+  fillShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
+  wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
+  uvScale: 5
   showWireframe: 1
   wireColorLevel0: {r: 0.15, g: 0.35, b: 1, a: 1}
   wireColorMaxLevel: {r: 1, g: 0.2, b: 0.2, a: 1}
-  wireWidth: 0.97
+  wireWidthPixels: 0.74
   drawLevel0Fill: 1
   drawCoarseLevels: 1
-  coarseWireOnly: 1
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
