@@ -220,7 +220,7 @@ public sealed class SimulationController : MonoBehaviour {
             batch.ExpandTo(nodeCount);
 
             t = LoopProfiler.Stamp();
-            batch.Initialise();
+            batch.Initialise(level);
             LoopProfiler.Add(LoopProfiler.Section.SolveBatchInit, t);
 
             int iterations = level == 0 ? Const.Iterations : Const.HPBDIterations;
@@ -269,7 +269,8 @@ public sealed class SimulationController : MonoBehaviour {
                 meshless.nodes[i].vel.y = 0f;
 
             meshless.nodes[i].pos += meshless.nodes[i].vel * dt;
-            meshless.hnsw.Shift(i, meshless.nodes[i].pos);//TODO: 5-7% of total tick time, not GPU-friendly
         }
+
+        meshless.UpdateDelaunayAfterIntegration();
     }
 }

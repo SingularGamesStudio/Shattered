@@ -12,6 +12,7 @@ namespace Physics {
         public float2x2 L;
 
         public float2x2 F0 = float2x2.identity;
+
         public float lambda = 0;
         public float currentVolume;
 
@@ -75,13 +76,13 @@ namespace Physics {
             Count = newCount;
         }
 
-        public void Initialise() {
+        public void Initialise(int level) {
             long t = LoopProfiler.Stamp();
             CacheVolumes();
             LoopProfiler.Add(LoopProfiler.Section.BatchCacheVolumes, t);
 
             t = LoopProfiler.Stamp();
-            CacheNeighbors();//TODO: 10-13% of tick time, not GPU-friendly
+            CacheNeighbors(level);//TODO: 10-13% of tick time, not GPU-friendly
             LoopProfiler.Add(LoopProfiler.Section.BatchCacheNeighbors, t);
 
             t = LoopProfiler.Stamp();
@@ -166,14 +167,6 @@ namespace Physics {
         }
 
         public void CacheVolumes() {
-            // Hierarchical representative volume for XPBI kernel sums:
-            // - Finest level (Count == nodes.Count): currentVolume = restVolume * |det(F)|.
-            // - Coarse levels: each active node represents a cluster; its currentVolume is the sum of
-            //   deformed volumes of all (inactive) descendants that map to it via parentIndex chain.
-            //
-            // Volume aggregation is done by mapping each node to an "owner" in the active prefix (index < Count).
-            // We use DSU-style path compression on the parentIndex chain to make repeated owner lookups cheap.
-
             for (int i = 0; i < Count; i++) {
                 caches[i].currentVolume = 0f;
             }
@@ -211,12 +204,12 @@ namespace Physics {
             }
         }
 
-        public void CacheNeighbors() {
+        public void CacheNeighbors(int level) {
             for (int i = 0; i < Count; i++) {
                 var cache = caches[i];
                 var neighbors = cache.neighbors;
 
-                nodes[i].parent.hnsw.SearchKnn(nodes[i].pos, Const.NeighborCount + 1, neighbors);
+                nodes[i].parent.GetNeighborsForLevel(level, i, neighbors);
 
                 int self = neighbors.IndexOf(i);
                 if (self >= 0) neighbors.RemoveAt(self);
@@ -248,8 +241,6 @@ namespace Physics {
         }
 
         public void CacheKernelRadii() {
-            // Sparse hierarchy levels: spacing grows; h must grow too, so we take sqrt(0.5)*median
-            // In that radius KNN most probably has most neighbors covered
             for (int i = 0; i < Count; i++) {
                 var cache = caches[i];
                 var N = cache.neighbors;
@@ -286,8 +277,6 @@ namespace Physics {
         }
 
         public void ComputeCorrectionMatrices() {
-            // XPBI Eq. (10): L_p = ( Σ_b V_b^n ∇W_b(x_p) ⊗ (x_b - x_p) )^{-1}
-            // This matrix corrects kernel gradients on irregular samples
             for (int i = 0; i < Count; i++) {
                 var node = nodes[i];
                 var cache = caches[i];
@@ -312,15 +301,12 @@ namespace Physics {
 
                     float2 xij = nodes[j].pos - node.pos;
 
-                    // ∇_{x_p} W(x_b - x_p, h_p) (Wendland C2).
                     float2 gradW = SPHKernels.GradWendlandC2(xij, h);
                     if (math.lengthsq(gradW) <= Const.Eps * Const.Eps) continue;
 
-                    // V_b^n is the effective neighbor volume (aggregate on coarse levels).
                     float Vb = caches[j].currentVolume;
                     if (Vb <= Const.Eps) continue;
 
-                    // Outer product: ∇W ⊗ x = matrix with columns (∇W * x_component).
                     sum.c0 += (Vb * xij.x) * gradW;
                     sum.c1 += (Vb * xij.y) * gradW;
                 }

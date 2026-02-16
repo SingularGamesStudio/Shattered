@@ -5,6 +5,9 @@
 #pragma kernel FixHalfEdges
 #pragma kernel LegalizeHalfEdges
 
+#pragma kernel ClearTriToHE
+#pragma kernel BuildRenderableTriToHE
+
 struct HalfEdge {
     int v;
     int next;
@@ -22,6 +25,9 @@ RWStructuredBuffer<int> _Neighbors;
 RWStructuredBuffer<int> _NeighborCounts;
 
 RWStructuredBuffer<uint> _FlipCount;
+
+// For rendering: tri -> representative half-edge index (or -1).
+RWStructuredBuffer<int> _TriToHE;
 
 int _VertexCount;
 int _RealVertexCount;
@@ -102,9 +108,6 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
         _Neighbors[baseIdx + i] = -1;
     _NeighborCounts[v] = 0;
 
-    // Walk the 1-ring around v using:
-    // he: outgoing half-edge from v, then step to Prev(he) and cross its twin.
-    // This depends on a consistent half-edge topology (twin/next must be correct).
     int start = _VToE[v];
     if (start < 0) return;
 
@@ -134,6 +137,34 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
     }
 
     _NeighborCounts[v] = count;
+}
+
+[numthreads(256, 1, 1)]
+void ClearTriToHE(uint3 id : SV_DispatchThreadID) {
+    uint t = id.x;
+    if (t >= (uint)_TriCount) return;
+    _TriToHE[t] = -1;
+}
+
+[numthreads(256, 1, 1)]
+void BuildRenderableTriToHE(uint3 id : SV_DispatchThreadID) {
+    uint heu = id.x;
+    if (heu >= (uint)_HalfEdgeCount) return;
+
+    int he = (int)heu;
+    HalfEdge e = _HalfEdges[he];
+    int t = e.t;
+    if (t < 0 || t >= _TriCount) return;
+
+    int a = e.v;
+    int b = Dest(he);
+    int c = Dest(Next(he));
+
+    if ((uint)a >= (uint)_RealVertexCount || (uint)b >= (uint)_RealVertexCount || (uint)c >= (uint)_RealVertexCount)
+        return;
+
+    int original;
+    InterlockedCompareExchange(_TriToHE[t], -1, he, original);
 }
 
 static bool TryLockTwo(int t0, int t1, int owner) {
@@ -208,10 +239,20 @@ void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
     // 1) Detect "creased" edges (one adjacent tri inverted, the other not).
     // 2) Detect "crossed" creased edges (opposite vertices on different sides of the edge).
     // 3) Flip crossed creased edges to remove inversions / crossings before Delaunay legalization.
-    int a = _HalfEdges[he0].v;
-    int b = Dest(he0);
-    int c = Dest(Next(he0));
-    int d = Dest(Next(he1));
+    HalfEdge e0 = _HalfEdges[he0];
+    int he0n = e0.next;
+    HalfEdge e0n = _HalfEdges[he0n];
+    int he0p = e0n.next;
+
+    HalfEdge e1 = _HalfEdges[he1];
+    int he1n = e1.next;
+    HalfEdge e1n = _HalfEdges[he1n];
+    int he1p = e1n.next;
+
+    int a = e0.v;
+    int b = e0n.v;
+    int c = _HalfEdges[he0p].v;
+    int d = _HalfEdges[he1p].v;
 
     if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
         return;
@@ -242,10 +283,20 @@ void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    a = _HalfEdges[he0].v;
-    b = Dest(he0);
-    c = Dest(Next(he0));
-    d = Dest(Next(he1));
+    e0 = _HalfEdges[he0];
+    he0n = e0.next;
+    e0n = _HalfEdges[he0n];
+    he0p = e0n.next;
+
+    e1 = _HalfEdges[he1];
+    he1n = e1.next;
+    e1n = _HalfEdges[he1n];
+    he1p = e1n.next;
+
+    a = e0.v;
+    b = e0n.v;
+    c = _HalfEdges[he0p].v;
+    d = _HalfEdges[he1p].v;
 
     if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount) {
         UnlockTri(t0);
@@ -298,10 +349,20 @@ void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID) {
 
     // Legalization phase:
     // Apply an orientation-corrected incircle predicate; if illegal, flip the diagonal.
-    int a = _HalfEdges[he0].v;
-    int b = Dest(he0);
-    int c = Dest(Next(he0));
-    int d = Dest(Next(he1));
+    HalfEdge e0 = _HalfEdges[he0];
+    int he0n = e0.next;
+    HalfEdge e0n = _HalfEdges[he0n];
+    int he0p = e0n.next;
+
+    HalfEdge e1 = _HalfEdges[he1];
+    int he1n = e1.next;
+    HalfEdge e1n = _HalfEdges[he1n];
+    int he1p = e1n.next;
+
+    int a = e0.v;
+    int b = e0n.v;
+    int c = _HalfEdges[he0p].v;
+    int d = _HalfEdges[he1p].v;
 
     if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
         return;
@@ -327,10 +388,20 @@ void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    a = _HalfEdges[he0].v;
-    b = Dest(he0);
-    c = Dest(Next(he0));
-    d = Dest(Next(he1));
+    e0 = _HalfEdges[he0];
+    he0n = e0.next;
+    e0n = _HalfEdges[he0n];
+    he0p = e0n.next;
+
+    e1 = _HalfEdges[he1];
+    he1n = e1.next;
+    e1n = _HalfEdges[he1n];
+    he1p = e1n.next;
+
+    a = e0.v;
+    b = e0n.v;
+    c = _HalfEdges[he0p].v;
+    d = _HalfEdges[he1p].v;
 
     if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount) {
         UnlockTri(t0);

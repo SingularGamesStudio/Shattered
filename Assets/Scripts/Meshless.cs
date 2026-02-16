@@ -3,10 +3,13 @@ using System.Linq;
 using Unity.Mathematics;
 using UnityEngine;
 using Physics;
+using GPU.Delaunay;
 
 public class Meshless : MonoBehaviour {
     public HNSW hnsw;
+
     public List<Node> nodes = new List<Node>();
+
     [HideInInspector]
     public int maxLayer = -1;
 
@@ -20,8 +23,25 @@ public class Meshless : MonoBehaviour {
 
     public int[] levelEndIndex;
 
-    private readonly List<int> knnScratch = new List<int>(8);
-    private readonly List<int> parentCandidateScratch = new List<int>(1);
+    [Header("GPU Delaunay hierarchy")]
+    public bool useDelaunayHierarchy = true;
+    public ComputeShader delaunayShader;
+    public int dtFixIterationsPerTick = 1;
+    public int dtLegalizeIterationsPerTick = 1;
+    public int dtWarmupFixIterations = 64;
+    public int dtWarmupLegalizeIterations = 128;
+    public float dtNormalizePadding = 2f;
+
+    [HideInInspector] public DelaunayHierarchyGpu delaunayHierarchy;
+
+    float2 dtNormCenter;
+    float dtNormInvHalfExtent;
+    float2 dtBoundsMinWorld;
+    float2 dtBoundsMaxWorld;
+
+    readonly float2 dtSuper0 = new float2(0f, 3f);
+    readonly float2 dtSuper1 = new float2(-3f, -3f);
+    readonly float2 dtSuper2 = new float2(3f, -3f);
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
@@ -39,62 +59,81 @@ public class Meshless : MonoBehaviour {
 
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
-        hnsw = new HNSW(this);
 
-        const int volumeNeighborCount = 6;
+        maxLayer = -1;
+        for (int i = 0; i < nodes.Count; i++)
+            maxLayer = math.max(maxLayer, nodes[i].maxLayer);
 
-        for (int i = 0; i < nodes.Count; i++) {
-            Node node = nodes[i];
+        BuildLevelEndIndex();
 
-            hnsw.SearchKnn(node.pos, volumeNeighborCount + 1, knnScratch);
+        if (useDelaunayHierarchy) {
+            if (!delaunayShader) throw new System.InvalidOperationException("Meshless: delaunayShader is not assigned.");
 
-            if (knnScratch.Contains(i)) {
-                knnScratch.Remove(i);
-            } else if (knnScratch.Count > volumeNeighborCount) {
-                knnScratch.RemoveAt(volumeNeighborCount);
+            RecomputeDelaunayNormalizationBounds();
+            BuildDelaunayHierarchy();
+
+            ComputeRestVolumesFromDelaunayTriangles();
+
+            BuildHierarchy();
+        } else {
+            hnsw = new HNSW(this);
+
+            const int volumeNeighborCount = 6;
+            var knnScratch = new List<int>(8);
+
+            for (int i = 0; i < nodes.Count; i++) {
+                Node node = nodes[i];
+
+                hnsw.SearchKnn(node.pos, volumeNeighborCount + 1, knnScratch);
+
+                if (knnScratch.Contains(i)) {
+                    knnScratch.Remove(i);
+                } else if (knnScratch.Count > volumeNeighborCount) {
+                    knnScratch.RemoveAt(volumeNeighborCount);
+                }
+
+                if (knnScratch.Count < 2) {
+                    node.restVolume = 0.0f;
+                    continue;
+                }
+
+                int nCount = knnScratch.Count;
+                float2[] rel = new float2[nCount];
+                float[] ang = new float[nCount];
+
+                for (int k = 0; k < nCount; k++) {
+                    float2 v = nodes[knnScratch[k]].pos - node.pos;
+                    rel[k] = v;
+                    ang[k] = math.atan2(v.y, v.x);
+                }
+
+                System.Array.Sort(ang, rel);
+
+                float area = 0.0f;
+                for (int k = 0; k < nCount; k++) {
+                    int next = (k + 1) % nCount;
+
+                    float dTheta = ang[next] - ang[k];
+                    if (dTheta < 0.0f) dTheta += 2.0f * math.PI;
+
+                    if (dTheta > math.PI) continue;
+
+                    float2 a = rel[k];
+                    float2 b = rel[next];
+
+                    float wedgeArea = 0.5f * math.abs(a.x * b.y - a.y * b.x);
+                    area += wedgeArea;
+                }
+
+                node.restVolume = area / 3.0f;
             }
 
-            if (knnScratch.Count < 2) {
-                node.restVolume = 0.0f;
-                continue;
-            }
-
-            int nCount = knnScratch.Count;
-            float2[] rel = new float2[nCount];
-            float[] ang = new float[nCount];
-
-            for (int k = 0; k < nCount; k++) {
-                float2 v = nodes[knnScratch[k]].pos - node.pos;
-                rel[k] = v;
-                ang[k] = math.atan2(v.y, v.x);
-            }
-
-            System.Array.Sort(ang, rel);
-
-            float area = 0.0f;
-            for (int k = 0; k < nCount; k++) {
-                int next = (k + 1) % nCount;
-
-                float dTheta = ang[next] - ang[k];
-                if (dTheta < 0.0f) dTheta += 2.0f * math.PI;
-
-                if (dTheta > math.PI) continue;
-
-                float2 a = rel[k];
-                float2 b = rel[next];
-
-                float wedgeArea = 0.5f * math.abs(a.x * b.y - a.y * b.x);
-                area += wedgeArea;
-            }
-
-            node.restVolume = area / 3.0f;
+            BuildHierarchy();
         }
-
-        BuildHierarchy();
     }
 
-    public void BuildHierarchy() {
-        if (maxLayer < 0) return;
+    void BuildLevelEndIndex() {
+        if (maxLayer < 0) { levelEndIndex = null; return; }
 
         levelEndIndex = new int[maxLayer + 1];
         int idx = 0;
@@ -102,13 +141,19 @@ public class Meshless : MonoBehaviour {
             for (; idx < nodes.Count && nodes[idx].maxLayer >= level; idx++) { }
             levelEndIndex[level] = idx;
         }
+    }
+
+    public void BuildHierarchy() {
+        if (maxLayer < 0) return;
+        if (levelEndIndex == null || levelEndIndex.Length != maxLayer + 1)
+            BuildLevelEndIndex();
 
         for (int i = 0; i < nodes.Count; i++) {
             BuildParentRelationship(i);
         }
     }
 
-    private void BuildParentRelationship(int nodeIdx) {
+    void BuildParentRelationship(int nodeIdx) {
         Node node = nodes[nodeIdx];
         int parentLevel = node.maxLayer + 1;
 
@@ -117,19 +162,110 @@ public class Meshless : MonoBehaviour {
             return;
         }
 
-        hnsw.SearchKnn(node.pos, 1, parentCandidateScratch, parentLevel);
-
-        if (parentCandidateScratch.Count == 0) {
+        if (!useDelaunayHierarchy || delaunayHierarchy == null) {
             node.parentIndex = -1;
             return;
         }
 
-        node.parentIndex = parentCandidateScratch[0];
+        node.parentIndex = delaunayHierarchy.FindNearestCoarseToFine(parentLevel, node.pos, nodes);
     }
 
     public int NodeCount(int level) {
         if (levelEndIndex == null || level < 0 || level > maxLayer) return 0;
         return levelEndIndex[level];
+    }
+
+    public void UpdateDelaunayAfterIntegration() {
+        if (!useDelaunayHierarchy || delaunayHierarchy == null) return;
+
+        delaunayHierarchy.UpdatePositionsFromNodesAllLevels(nodes, dtNormCenter, dtNormInvHalfExtent);
+        delaunayHierarchy.MaintainAllLevels(dtFixIterationsPerTick, dtLegalizeIterationsPerTick);
+        delaunayHierarchy.ReadbackAllLevels();
+    }
+
+    public void GetNeighborsForLevel(int level, int nodeIndex, List<int> dst) {
+        delaunayHierarchy?.FillNeighbors(level, nodeIndex, dst);
+    }
+
+    void RecomputeDelaunayNormalizationBounds() {
+        if (nodes.Count == 0) return;
+
+        float2 min = nodes[0].pos;
+        float2 max = nodes[0].pos;
+
+        for (int i = 1; i < nodes.Count; i++) {
+            float2 p = nodes[i].pos;
+            min = math.min(min, p);
+            max = math.max(max, p);
+        }
+
+        dtBoundsMinWorld = min - new float2(dtNormalizePadding, dtNormalizePadding);
+        dtBoundsMaxWorld = max + new float2(dtNormalizePadding, dtNormalizePadding);
+
+        dtNormCenter = 0.5f * (dtBoundsMinWorld + dtBoundsMaxWorld);
+
+        float2 extent = dtBoundsMaxWorld - dtBoundsMinWorld;
+        float half = 0.5f * math.max(extent.x, extent.y);
+        dtNormInvHalfExtent = 1f / math.max(1e-6f, half);
+    }
+
+    void BuildDelaunayHierarchy() {
+        delaunayHierarchy?.Dispose();
+        delaunayHierarchy = new DelaunayHierarchyGpu(delaunayShader);
+
+        delaunayHierarchy.InitFromMeshlessNodes(
+            nodes,
+            dtNormCenter,
+            dtNormInvHalfExtent,
+            dtSuper0,
+            dtSuper1,
+            dtSuper2,
+            Const.NeighborCount,
+            dtWarmupFixIterations,
+            dtWarmupLegalizeIterations
+        );
+    }
+
+    void ComputeRestVolumesFromDelaunayTriangles() {
+        int n = nodes.Count;
+        if (n < 3) return;
+
+        var points = new float2[n];
+        for (int i = 0; i < n; i++) points[i] = nodes[i].pos;
+
+        DTBuilder.BuildBowyerWatsonWithSuper(
+            points,
+            dtBoundsMinWorld,
+            dtBoundsMaxWorld,
+            2f,
+            out float2[] allPoints,
+            out List<DTBuilder.Triangle> tris,
+            out int realCount
+        );
+
+        var vol = new float[n];
+        for (int i = 0; i < vol.Length; i++) vol[i] = 0f;
+
+        for (int ti = 0; ti < tris.Count; ti++) {
+            var t = tris[ti];
+
+            if ((uint)t.a >= (uint)realCount || (uint)t.b >= (uint)realCount || (uint)t.c >= (uint)realCount)
+                continue;
+
+            float2 a = allPoints[t.a];
+            float2 b = allPoints[t.b];
+            float2 c = allPoints[t.c];
+
+            float area = 0.5f * math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+            float share = area / 3f;
+
+            vol[t.a] += share;
+            vol[t.b] += share;
+            vol[t.c] += share;
+        }
+
+        for (int i = 0; i < n; i++)
+            nodes[i].restVolume = vol[i];
     }
 
     void OnEnable() => SimulationController.Instance?.Register(this);

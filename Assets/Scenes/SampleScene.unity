@@ -281,7 +281,6 @@ GameObject:
   m_Component:
   - component: {fileID: 961765557}
   - component: {fileID: 961765556}
-  - component: {fileID: 961765558}
   - component: {fileID: 961765559}
   m_Layer: 0
   m_Name: Box
@@ -306,6 +305,13 @@ MonoBehaviour:
   gravity: -0.01
   compliance: 1
   levelEndIndex: 
+  useDelaunayHierarchy: 1
+  delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
+  dtFixIterationsPerTick: 1
+  dtLegalizeIterationsPerTick: 1
+  dtWarmupFixIterations: 64
+  dtWarmupLegalizeIterations: 128
+  dtNormalizePadding: 2
   center:
     x: -1
     y: 2
@@ -329,31 +335,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &961765558
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 961765555}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e7841c22fd250394e8f7317ea069a333, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  show: 0
-  showNodes: 1
-  showEdges: 1
-  showPrincipalStretch: 1
-  showDeformationGradient: 0
-  showVelocity: 0
-  showFixedNodes: 1
-  showRestArrow: 1
-  restArrowScale: 1
-  edgeMode: 0
-  yieldStretch: 1.05
-  velocityScale: 0.5
-  deformationScale: 0.4
 --- !u!114 &961765559
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -376,7 +357,7 @@ MonoBehaviour:
   boundsMin: {x: -5, y: -5}
   boundsMax: {x: 5, y: 5}
   minDistance: 0.15
-  buildMeshlessHnsw: 1
+  buildMeshlessHnsw: 0
   movingIndex: 0
   moveSpeed: 2
   maxMoveStep: 0.05
@@ -389,6 +370,11 @@ MonoBehaviour:
   drawSuperEdges: 0
   superEdgeColor: {r: 1, g: 0.2, b: 0.2, a: 1}
   readbackIntervalFrames: 1
+  drawHierarchyLevels: 1
+  hierarchyHueStart: 0.58
+  hierarchyHueStep: 0.12
+  hierarchySaturation: 0.85
+  hierarchyValue: 1
   logFlips: 1
   logEveryNFrames: 60
 --- !u!1660057539 &9223372036854775807

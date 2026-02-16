@@ -19,6 +19,7 @@ namespace GPU.Delaunay {
         }
 
         readonly ComputeShader shader;
+        readonly bool ownsShaderInstance;
 
         ComputeBuffer positions;
         ComputeBuffer halfEdges;
@@ -52,7 +53,12 @@ namespace GPU.Delaunay {
         public int NeighborCount { get; private set; }
 
         public DelaunayGpu(ComputeShader shader) {
-            this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
+            if (!shader) throw new ArgumentNullException(nameof(shader));
+
+            // Buffer bindings are stored on the ComputeShader instance.
+            // Multiple hierarchy levels must not share one shader object.
+            this.shader = UnityEngine.Object.Instantiate(shader);
+            ownsShaderInstance = true;
 
             kClearTriLocks = this.shader.FindKernel("ClearTriLocks");
             kClearVertexToEdge = this.shader.FindKernel("ClearVertexToEdge");
@@ -72,7 +78,8 @@ namespace GPU.Delaunay {
             int realPointCount,
             DTBuilder.HalfEdge[] initialHalfEdges,
             int triangleCount,
-            int neighborCount) {
+            int neighborCount
+        ) {
             DisposeBuffers();
 
             if (allPoints == null) throw new ArgumentNullException(nameof(allPoints));
@@ -162,9 +169,6 @@ namespace GPU.Delaunay {
             shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", flipCount);
         }
 
-        /// <summary>
-        /// Updates only the real vertices from Meshless nodes and keeps super vertices fixed.
-        /// </summary>
         public void UpdatePositionsFromNodes(List<Node> nodes) {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
@@ -179,13 +183,24 @@ namespace GPU.Delaunay {
             positions.SetData(positionScratch);
         }
 
-        /// <summary>
-        /// Updates only the real vertices, applying a (center, invHalfExtent) normalization before upload.
-        /// This is used to keep predicate math well-conditioned when using super vertices.
-        /// </summary>
         public void UpdatePositionsFromNodes(List<Node> nodes, float2 center, float invHalfExtent) {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
+
+            for (int i = 0; i < realVertexCount; i++)
+                positionScratch[i] = (nodes[i].pos - center) * invHalfExtent;
+
+            positionScratch[realVertexCount + 0] = superPoints[0];
+            positionScratch[realVertexCount + 1] = superPoints[1];
+            positionScratch[realVertexCount + 2] = superPoints[2];
+
+            positions.SetData(positionScratch);
+        }
+
+        // Used by the hierarchy: the DT only owns the prefix [0..RealVertexCount).
+        public void UpdatePositionsFromNodesPrefix(List<Node> nodes, float2 center, float invHalfExtent) {
+            if (nodes == null) throw new ArgumentNullException(nameof(nodes));
+            if (nodes.Count < realVertexCount) throw new ArgumentException("Node count is smaller than RealVertexCount.", nameof(nodes));
 
             for (int i = 0; i < realVertexCount; i++)
                 positionScratch[i] = (nodes[i].pos - center) * invHalfExtent;
@@ -203,10 +218,6 @@ namespace GPU.Delaunay {
             return flipScratch[0];
         }
 
-        /// <summary>
-        /// Runs fixing iterations followed by legalizing iterations.
-        /// Lock buffer is cleared before each iteration to keep contention local per-dispatch.
-        /// </summary>
         public void Maintain(int fixIterations, int legalizeIterations) {
             int groups = (halfEdgeCount + 255) / 256;
 
@@ -227,10 +238,6 @@ namespace GPU.Delaunay {
             RebuildVertexAdjacency();
         }
 
-        /// <summary>
-        /// Rebuilds a per-vertex incident half-edge map and a fixed-size neighbor list for real vertices.
-        /// Neighbor list excludes super vertices.
-        /// </summary>
         public void RebuildVertexAdjacency() {
             shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
@@ -247,8 +254,24 @@ namespace GPU.Delaunay {
             halfEdges.GetData(dst);
         }
 
+        public void GetNeighbors(int[] dst) {
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            int expected = realVertexCount * NeighborCount;
+            if (dst.Length != expected) throw new ArgumentException($"Wrong destination length (expected {expected}).", nameof(dst));
+            neighbors.GetData(dst);
+        }
+
+        public void GetNeighborCounts(int[] dst) {
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (dst.Length != realVertexCount) throw new ArgumentException($"Wrong destination length (expected {realVertexCount}).", nameof(dst));
+            neighborCounts.GetData(dst);
+        }
+
         public void Dispose() {
             DisposeBuffers();
+
+            if (ownsShaderInstance && shader)
+                UnityEngine.Object.Destroy(shader);
         }
 
         void DisposeBuffers() {
