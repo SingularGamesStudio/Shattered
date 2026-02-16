@@ -1,0 +1,349 @@
+#pragma kernel ClearTriLocks
+#pragma kernel ClearVertexToEdge
+#pragma kernel BuildVertexToEdge
+#pragma kernel BuildNeighbors
+#pragma kernel FixHalfEdges
+#pragma kernel LegalizeHalfEdges
+
+struct HalfEdge {
+    int v;
+    int next;
+    int twin;
+    int t;
+};
+
+StructuredBuffer<float2> _Positions;
+
+RWStructuredBuffer<HalfEdge> _HalfEdges;
+RWStructuredBuffer<int> _TriLocks;
+
+RWStructuredBuffer<int> _VToE;
+RWStructuredBuffer<int> _Neighbors;
+RWStructuredBuffer<int> _NeighborCounts;
+
+RWStructuredBuffer<uint> _FlipCount;
+
+int _VertexCount;
+int _RealVertexCount;
+int _HalfEdgeCount;
+int _TriCount;
+int _NeighborCount;
+
+static float Orient2D(float2 a, float2 b, float2 c) {
+    float2 ab = b - a;
+    float2 ac = c - a;
+    return ab.x * ac.y - ab.y * ac.x;
+}
+
+static float InCircleDet(float2 a, float2 b, float2 c, float2 p) {
+    float2 ap = a - p;
+    float2 bp = b - p;
+    float2 cp = c - p;
+
+    float a2 = dot(ap, ap);
+    float b2 = dot(bp, bp);
+    float c2 = dot(cp, cp);
+
+    return
+        ap.x * (bp.y * c2 - b2 * cp.y) -
+        ap.y * (bp.x * c2 - b2 * cp.x) +
+        a2 * (bp.x * cp.y - bp.y * cp.x);
+}
+
+static int Next(int he) { return _HalfEdges[he].next; }
+
+static int Prev(int he) {
+    int n = Next(he);
+    return Next(n);
+}
+
+static int Dest(int he) {
+    return _HalfEdges[Next(he)].v;
+}
+
+static void UnlockTri(int t) {
+    _TriLocks[t] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void ClearTriLocks(uint3 id : SV_DispatchThreadID) {
+    uint t = id.x;
+    if (t >= (uint)_TriCount) return;
+    _TriLocks[t] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void ClearVertexToEdge(uint3 id : SV_DispatchThreadID) {
+    uint v = id.x;
+    if (v >= (uint)_VertexCount) return;
+    _VToE[v] = -1;
+}
+
+[numthreads(256, 1, 1)]
+void BuildVertexToEdge(uint3 id : SV_DispatchThreadID) {
+    uint he = id.x;
+    if (he >= (uint)_HalfEdgeCount) return;
+
+    HalfEdge e = _HalfEdges[he];
+    if (e.t < 0) return;
+    if ((uint)e.v >= (uint)_VertexCount) return;
+
+    int original;
+    InterlockedCompareExchange(_VToE[e.v], -1, (int)he, original);
+}
+
+[numthreads(256, 1, 1)]
+void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
+    uint v = id.x;
+    if (v >= (uint)_RealVertexCount) return;
+
+    int baseIdx = (int)v * _NeighborCount;
+    for (int i = 0; i < _NeighborCount; i++)
+        _Neighbors[baseIdx + i] = -1;
+    _NeighborCounts[v] = 0;
+
+    int start = _VToE[v];
+    if (start < 0) return;
+
+    int he = start;
+    int count = 0;
+
+    [loop]
+    for (int iter = 0; iter < 128 && count < _NeighborCount; iter++) {
+        int dst = Dest(he);
+        if ((uint)dst >= (uint)_VertexCount) break;
+
+        if (dst < _RealVertexCount) {
+            bool dup = false;
+            for (int k = 0; k < count; k++) {
+                if (_Neighbors[baseIdx + k] == dst) { dup = true; break; }
+            }
+            if (!dup) {
+                _Neighbors[baseIdx + count] = dst;
+                count++;
+            }
+        }
+
+        int p = Prev(he);
+        int tw = _HalfEdges[p].twin;
+        if (tw < 0) break;
+
+        he = tw;
+        if (he == start) break;
+    }
+
+    _NeighborCounts[v] = count;
+}
+
+static bool TryLockTwo(int t0, int t1, int owner) {
+    int prev0;
+    InterlockedCompareExchange(_TriLocks[t0], 0, owner, prev0);
+    if (prev0 != 0) return false;
+
+    int prev1;
+    InterlockedCompareExchange(_TriLocks[t1], 0, owner, prev1);
+    if (prev1 != 0) {
+        UnlockTri(t0);
+        return false;
+    }
+
+    return true;
+}
+
+static void FlipDiagonal(int he0, int he1) {
+    int t0 = _HalfEdges[he0].t;
+    int t1 = _HalfEdges[he1].t;
+
+    int he0n = Next(he0);
+    int he0p = Next(he0n);
+
+    int he1n = Next(he1);
+    int he1p = Next(he1n);
+
+    int c = Dest(he0n);
+    int d = Dest(he1n);
+
+    _HalfEdges[he0].v = c;
+    _HalfEdges[he1].v = d;
+
+    _HalfEdges[he0].twin = he1;
+    _HalfEdges[he1].twin = he0;
+
+    _HalfEdges[he0].t = t0;
+    _HalfEdges[he1p].t = t0;
+    _HalfEdges[he0n].t = t0;
+
+    _HalfEdges[he0].next = he1p;
+    _HalfEdges[he1p].next = he0n;
+    _HalfEdges[he0n].next = he0;
+
+    _HalfEdges[he1].t = t1;
+    _HalfEdges[he0p].t = t1;
+    _HalfEdges[he1n].t = t1;
+
+    _HalfEdges[he1].next = he0p;
+    _HalfEdges[he0p].next = he1n;
+    _HalfEdges[he1n].next = he1;
+}
+
+[numthreads(256, 1, 1)]
+void FixHalfEdges(uint3 id : SV_DispatchThreadID) {
+    uint he0u = id.x;
+    if (he0u >= (uint)_HalfEdgeCount) return;
+
+    int he0 = (int)he0u;
+    int he1 = _HalfEdges[he0].twin;
+    if (he1 < 0) return;
+    if (he0 > he1) return;
+
+    int t0 = _HalfEdges[he0].t;
+    int t1 = _HalfEdges[he1].t;
+    if (t0 < 0 || t1 < 0) return;
+
+    int a = _HalfEdges[he0].v;
+    int b = Dest(he0);
+    int c = Dest(Next(he0));
+    int d = Dest(Next(he1));
+
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+        return;
+
+    float2 pa = _Positions[a];
+    float2 pb = _Positions[b];
+    float2 pc = _Positions[c];
+    float2 pd = _Positions[d];
+
+    float o0 = Orient2D(pa, pb, pc);
+    float o1 = Orient2D(pb, pa, pd);
+
+    bool inv0 = o0 <= 0.0;
+    bool inv1 = o1 <= 0.0;
+    if (inv0 == inv1) return; // not creased
+
+    float sC = o0;
+    float sD = Orient2D(pa, pb, pd);
+    if (sC * sD >= 0.0) return; // not crossed
+
+    int owner = he0 + 1;
+    if (!TryLockTwo(t0, t1, owner))
+        return;
+
+    if (_HalfEdges[he0].twin != he1 || _HalfEdges[he1].twin != he0) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    a = _HalfEdges[he0].v;
+    b = Dest(he0);
+    c = Dest(Next(he0));
+    d = Dest(Next(he1));
+
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    pa = _Positions[a];
+    pb = _Positions[b];
+    pc = _Positions[c];
+    pd = _Positions[d];
+
+    o0 = Orient2D(pa, pb, pc);
+    o1 = Orient2D(pb, pa, pd);
+
+    inv0 = o0 <= 0.0;
+    inv1 = o1 <= 0.0;
+    if (inv0 == inv1) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    sC = o0;
+    sD = Orient2D(pa, pb, pd);
+    if (sC * sD >= 0.0) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    FlipDiagonal(he0, he1);
+    InterlockedAdd(_FlipCount[0], 1);
+
+    UnlockTri(t0);
+    UnlockTri(t1);
+}
+
+[numthreads(256, 1, 1)]
+void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID) {
+    uint he0u = id.x;
+    if (he0u >= (uint)_HalfEdgeCount) return;
+
+    int he0 = (int)he0u;
+    int he1 = _HalfEdges[he0].twin;
+    if (he1 < 0) return;
+    if (he0 > he1) return;
+
+    int t0 = _HalfEdges[he0].t;
+    int t1 = _HalfEdges[he1].t;
+    if (t0 < 0 || t1 < 0) return;
+
+    int a = _HalfEdges[he0].v;
+    int b = Dest(he0);
+    int c = Dest(Next(he0));
+    int d = Dest(Next(he1));
+
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+        return;
+
+    float2 pa = _Positions[a];
+    float2 pb = _Positions[b];
+    float2 pc = _Positions[c];
+    float2 pd = _Positions[d];
+
+    float o = Orient2D(pa, pb, pc);
+    float det = InCircleDet(pa, pb, pc, pd);
+    if (o < 0.0) det = -det;
+
+    if (det <= 1e-12) return;
+
+    int owner = he0 + 1;
+    if (!TryLockTwo(t0, t1, owner))
+        return;
+
+    if (_HalfEdges[he0].twin != he1 || _HalfEdges[he1].twin != he0) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    a = _HalfEdges[he0].v;
+    b = Dest(he0);
+    c = Dest(Next(he0));
+    d = Dest(Next(he1));
+
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount) {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
+    pa = _Positions[a];
+    pb = _Positions[b];
+    pc = _Positions[c];
+    pd = _Positions[d];
+
+    o = Orient2D(pa, pb, pc);
+    det = InCircleDet(pa, pb, pc, pd);
+    if (o < 0.0) det = -det;
+
+    if (det > 1e-12) {
+        FlipDiagonal(he0, he1);
+        InterlockedAdd(_FlipCount[0], 1);
+    }
+
+    UnlockTri(t0);
+    UnlockTri(t1);
+}

@@ -151,7 +151,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  targetTPS: 10
+  targetTPS: 100
   simulationSpeed: 10
   manual: 1
   maxTicksPerFrame: 1000000
@@ -282,6 +282,7 @@ GameObject:
   - component: {fileID: 961765557}
   - component: {fileID: 961765556}
   - component: {fileID: 961765558}
+  - component: {fileID: 961765559}
   m_Layer: 0
   m_Name: Box
   m_TagString: Untagged
@@ -311,8 +312,8 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 1000
-  generateOnStart: 1
+  pointCount: 10
+  generateOnStart: 0
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
@@ -340,7 +341,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e7841c22fd250394e8f7317ea069a333, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  show: 1
+  show: 0
   showNodes: 1
   showEdges: 1
   showPrincipalStretch: 1
@@ -353,6 +354,43 @@ MonoBehaviour:
   yieldStretch: 1.05
   velocityScale: 0.5
   deformationScale: 0.4
+--- !u!114 &961765559
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 961765555}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1606241d9587c3744a6afc8e38ca3985, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
+  fixIterationsPerSubstep: 2
+  legalizeIterationsPerSubstep: 2
+  warmupFixIterations: 32
+  warmupLegalizeIterations: 64
+  seed: 1
+  pointCount: 256
+  boundsMin: {x: -5, y: -5}
+  boundsMax: {x: 5, y: 5}
+  minDistance: 0.15
+  buildMeshlessHnsw: 1
+  movingIndex: 0
+  moveSpeed: 2
+  maxMoveStep: 0.05
+  clampMoverToBounds: 0
+  normalizePadding: 2
+  rebuildIfOutsideNormalizeBounds: 1
+  drawEveryFrame: 1
+  depthTest: 0
+  lineColor: {r: 0.1, g: 0.8, b: 1, a: 1}
+  drawSuperEdges: 0
+  superEdgeColor: {r: 1, g: 0.2, b: 0.2, a: 1}
+  readbackIntervalFrames: 1
+  logFlips: 1
+  logEveryNFrames: 60
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
