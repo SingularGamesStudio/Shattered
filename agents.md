@@ -1,73 +1,98 @@
-# Shattered (Unity) — Perplexity context (AGENTS.md)
+# Shattered (Unity) — AGENTS.md (Perplexity assistant context)
 
-Shattered is a Unity project for real-time 2D deformable simulation (meshless / particle-like nodes) with:
-- Velocity-first constraint solving (XPBI-style).
-- A hierarchical coarse-to-fine (V-cycle-like) solver schedule.
-- Neighborhood queries backed by a spatial structure (HNSW) and optionally GPU Delaunay-based neighbors.
+Shattered is a Unity real-time deformables project focused on stable, controllable simulation of elastic + plastic behavior for gameplay.
+The core solver is “velocity-first” (constraints apply Δv; positions integrate once per step) and is designed to stay stable under large time steps and limited iteration budgets.
 
-I use Perplexity as an assistant: it reads limited GitHub state, I review output, and I manually copy/paste code into Unity.
+Perplexity is used as a browser assistant:
+- It can read limited GitHub repo state.
+- I manually copy/paste code from Perplexity into Unity.
 
 
-## 1) Non-negotiables (copy/paste safety)
+## 0) What Shattered is trying to do (big picture)
+
+Goals:
+- Real-time soft bodies that are stable, controllable, and predictable in a game loop.
+- Support both elastic response and long-term inelastic/plastic deformation without “rebuilding a mesh”.
+- Keep per-step work bounded: fixed-k neighborhoods, limited solver iterations, allocation-free hot loops.
+- Scale better when objects tear/merge: avoid global remeshing / global factorization.
+
+Non-goals:
+- Scientific-grade accuracy guarantees.
+- Fully general FEM remeshing / fracture pipelines.
+- Heavy grid-based methods that blow up memory/bandwidth budgets in typical Unity gameplay scenes.
+
+
+## 1) Research baseline (what this is built from)
+
+PBD:
+- Classic Position-Based Dynamics manipulates positions via constraint projections for stability and controllability. [page:1]
+
+XPBD:
+- XPBD extends PBD with compliant constraints so stiffness behaves consistently across time step and iteration count, instead of “getting stiffer” as you add iterations.
+
+XPBI:
+- XPBI (2024) explores extending XPBD-style ideas to continuum inelasticity using smoothing kernels and velocity-based formulations for updated Lagrangian deformation handling.
+
+HPBD / hierarchical acceleration:
+- Hierarchical Position-Based Dynamics (HPBD) uses a multilevel / multigrid-like hierarchy to improve convergence under tight iteration budgets.
+
+Neighborhood search motivation:
+- Original XPBI uses grid-based neighbor rebuilds; Shattered targets cases where coarse hierarchy levels become sparse and where tearing/merging makes global rebuilds expensive/unpleasant.
+- Shattered therefore uses a graph-based approximate kNN structure (HNSW) to keep fixed-k neighborhoods and predictable per-node cost.
+
+GPU-friendly alternative (planned/optional direction):
+- For GPU neighbor extraction / proximity queries, a maintained 2D Delaunay triangulation is considered more GPU-friendly than HNSW for some workloads.
+
+
+## 2) Non-negotiables (output + paste safety)
 
 When proposing code changes:
 
 - Output either:
   - Full changed file(s), OR
   - Full changed method/class/struct definitions (entire definition).
-- No placeholders like `/* unchanged */`.
-- No “latest change / changed because …” commentary inside code comments.
-- Never remove existing comments unless they are obsolete after your change.
-- Avoid unnecessary variables when an expression is used once and stays readable.
+- No placeholders like `/* ... unchanged ... */`.
+- No partial snippets that require manual merging.
+- Do not add “latest change / changed because …” commentary in code comments.
+  Only add comments that explain non-obvious intent.
+- Never remove existing comments unless they are obsolete after the change.
+- Do not introduce unnecessary variables if a value is used once and stays readable.
 - Keep diffs small and localized.
 
-If you change any public surface (type / interface / serialized fields / public method signature),
-call it out in your response text (not in code comments).
+If you change any surface API (type, interface, serialized fields, public signatures), call it out in your response text (not in code comments).
 
 
-## 2) Hard constraints (perf + determinism)
+## 3) Hard constraints (perf + determinism)
 
-Allocation discipline (steady-state):
-- Avoid per-frame allocations in hot paths: solver iterations (`Relax`), neighbor loops, NodeBatch init, V-cycle loops, HNSW queries, visualization updates, GPU Delaunay maintenance / neighbor rebuild glue.
+Allocation discipline:
+- Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, NodeBatch init, V-cycle, HNSW, visualization updates, GPU Delaunay glue.
 
-Determinism / stability:
+Determinism:
 - Prefer stable/deterministic behavior over micro-optimizations.
-- Stabilize ordering where it affects accumulation; do not rely on hash iteration order.
-- Neighbor accumulation must be deterministic (neighbors are angle-sorted).
+- Do not depend on hash iteration order anywhere that affects physics.
+- Neighborhood accumulation order must be deterministic (neighbors angle-sorted).
 
-Types:
-- Prefer `Unity.Mathematics` (`float2`, `float2x2`, etc.) internally.
+Math/types:
+- Prefer `Unity.Mathematics` types (`float2`, `float2x2`, etc.) internally.
 - Use `Vector2` only at Unity boundaries if required.
 
 
-## 3) Project vocabulary (mental model)
+## 4) Core algorithm (what happens each step)
 
-Nodes:
-- Each node has position/velocity and deformation state.
-- Simulation updates velocities via constraints, then integrates positions once.
+The simulation is velocity-first:
+- Constraints correct velocities (Δv).
+- Positions integrate once per step from corrected velocities.
 
-Neighborhood:
-- Most operators depend on a fixed-size kNN neighborhood (k = `Const.NeighborCount`).
-- Neighborhood ordering matters (angle-sorted for stable sums).
-
-Hierarchy:
-- Nodes are sorted by `maxLayer` descending.
-- Level L uses a prefix of nodes (all nodes with `maxLayer >= L`).
-- Each node stores `parentIndex` pointing to a single parent on the next coarser layer.
-
-
-## 4) Solver: what happens each step (minimal)
-
-High-level step:
-1) Apply external forces to velocities.
-2) Hierarchical solve (coarse → fine):
-   - Expand active prefix for current level.
-   - Initialise level caches.
-   - Run solver iterations (fewer on coarse, more on fine).
-   - Prolongate: add parent velocity delta to children (deltas only).
-3) Commit deformation on the finest level (level 0).
-4) Integrate positions once from corrected velocities.
-5) Update spatial structure (HNSW `Shift`) for moved nodes.
+Hierarchical schedule (V-cycle-ish coarse → fine):
+1) External forces modify velocities.
+2) For each hierarchy level (coarse → fine):
+   - Expand active prefix to include all nodes up to this level.
+   - Initialise per-level caches (neighbors, h, correction matrices, volumes, cached reference deformation).
+   - Run solver iterations.
+   - Prolongate parent velocity delta into children (deltas only).
+3) Commit deformation on finest level (level 0).
+4) Integrate positions once.
+5) Update spatial structure for moved nodes (HNSW Shift).
 
 Prolongation rule (important):
 - Only propagate parent Δv (current parent vel minus saved parent vel); do not overwrite child velocity with parent velocity.
@@ -75,47 +100,45 @@ Prolongation rule (important):
 
 ## 5) Invariants (do not break)
 
-Hierarchy / indexing:
+Hierarchy:
 - Nodes must remain sorted by `maxLayer` descending.
 - `levelEndIndex[L]` is a prefix count: nodes with `maxLayer >= L`.
-- `parentIndex` must refer to a valid parent on the next layer.
+- `parentIndex` must refer to a valid parent on the next coarser level.
 
-Neighborhood:
-- kNN size is fixed (`Const.NeighborCount`).
-- Neighbors must be angle-sorted before any accumulation that affects physics.
+Neighborhoods:
+- Fixed-k neighborhood size: `Const.NeighborCount`.
+- Neighbor order must be deterministic before any accumulation (angle sort).
 
-Execution:
-- Solver is velocity-first; do not switch to per-iteration position integration.
+Execution model:
+- Solver is velocity-first; don’t switch to per-iteration position integration.
 - Hot loops must be allocation-free in steady-state.
 
 
-## 6) Where to edit (routing index)
+## 6) File map (where to look)
 
-Entry points / orchestration:
+Orchestration / entry points:
 - `Assets/Scripts/SimulationController.cs`
-  Timing, V-cycle schedule, prolongation, integration, HNSW shift calls.
-
-Core data & hierarchy:
+  Timing, V-cycle schedule, prolongation, integration, spatial updates.
 - `Assets/Scripts/Meshless.cs`
-  Nodes container, hierarchy metadata (`levelEndIndex`), parameters.
+  Nodes container, hierarchy metadata (`levelEndIndex`), parameters, rebuild cadence.
 - `Assets/Scripts/Node.cs`
-  Node state (pos/vel/invMass/deformation/parentIndex/etc).
+  Node state: pos/vel/invMass/deformation/parentIndex/etc.
 
-Neighborhood queries:
+Neighborhood graph:
 - `Assets/Scripts/HNSW.cs`
-  kNN structure, queries, updates via `Shift`.
+  Approximate kNN; used for neighborhoods and hierarchy parent lookup; updated via `Shift`.
 
 Physics core:
 - `Assets/Scripts/Physics/NodeBatch.cs`
-  Per-level caches: neighbors, per-node `h`, correction matrix `L`, cached `F0`, lambda, volumes, debug.
+  Per-level caches: neighbors, per-node `h`, correction `L`, cached `F0`, lambda, effective volumes, debug.
 - `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`
   `Relax`, `CommitDeformation`, gradV-based velocity corrections.
 - `Assets/Scripts/Physics/DeformationUtils.cs`
-  Polar decomposition, Hencky/log strain, plastic return mapping, pseudo-inverse helpers.
+  Polar decomposition, Hencky/log strain, plasticity helpers, pseudo-inverse helpers.
 - `Assets/Scripts/Physics/Constraints/SPHKernels.cs`
   Wendland C2 kernel + gradient (2D).
 - `Assets/Scripts/Physics/Const.cs`
-  Constants: neighbor count, iterations, eps, `KernelHScale`, rebuild intervals.
+  Constants: eps, iterations, neighbor count, `KernelHScale`, rebuild cadence.
 
 Debug / tooling:
 - `Assets/Scripts/LoopProfiler.cs`
@@ -123,21 +146,22 @@ Debug / tooling:
 - `Assets/Scripts/Physics/DebugData.cs`
 - `Assets/Scripts/Editor/ConstraintDebugWindow.cs`
 
+GPU Delaunay neighbors:
+- `Assets/Scripts/GPU/Delaunay/DelaunayGPU.cs`
+  GPU driver: init/maintain, adjacency rebuild, upload node positions.
+- `Assets/Scripts/GPU/Delaunay/DTBuilder.cs`
+  CPU bootstrap triangulation + half-edge build.
+- `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
+  Kernels: fix edges, legalize, build neighbors.
+- `Assets/Scripts/GPU/Delaunay/DelaunayGpuTest.cs`
+  Stress harness (not core).
+
+
 ## 7) GPU Delaunay neighbors (in-project notes)
 
 This subsystem maintains a dynamic 2D triangulation on GPU and extracts a fixed-size neighbor list for real vertices.
 
-Files:
-- `Assets/Scripts/GPU/Delaunay/DelaunayGPU.cs`
-  GPU driver / dispatch (`Init`, `Maintain`, `RebuildVertexAdjacency`, `UpdatePositionsFromNodes(...)`).
-- `Assets/Scripts/GPU/Delaunay/DTBuilder.cs`
-  CPU bootstrap triangulation + half-edge build.
-- `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
-  Kernels (`FixHalfEdges`, `LegalizeHalfEdges`, `BuildNeighbors`).
-- `Assets/Scripts/GPU/Delaunay/DelaunayGpuTest.cs`
-  Stress harness (not core).
-
-Key design assumptions (don’t accidentally “simplify” them away):
+Key design assumptions:
 - 3 “super” vertices are appended: `VertexCount = RealVertexCount + 3`.
 - Triangles incident to super vertices are kept (not deleted).
 - Predicates may run on normalized coordinates (uniform translate + scale) for conditioning.
@@ -149,10 +173,11 @@ If you propose changes here, be extra careful about:
 - Stable neighbor list layout and bounds (fixed `_NeighborCount`).
 - Locking / race safety (triangle-local locks / ownership rules).
 
+## 8) References (primary)
 
-## 8) Research pointers (for quick recall)
-
-These are references used to guide implementation choices:
-- XPBI: https://arxiv.org/html/2405.11694v2
-- GPU-maintained 2D Delaunay triangulation for proximity queries:
-  https://meshinglab.dcc.uchile.cl/publication/porro-hal-04029968/porro-hal-04029968.pdf
+- PBD: Müller et al., “Position Based Dynamics” (2007).
+- XPBD: Macklin, Müller, Chentanez, “XPBD: Position-Based Simulation of Compliant Constrained Dynamics” (2016).
+- XPBI: Yu et al., “XPBI: Position-Based Dynamics with Smoothing Kernels Handles Continuum Inelasticity” (2024).
+- HPBD: Müller, “Hierarchical Position Based Dynamics” (HPBD).
+- HNSW: Malkov & Yashunin, “Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs”.
+- Dynamic Delaunay: Heinich Porro, Benoît Crespin. "Maintaining 2D Delaunay triangulations on the GPU for proximity queries of moving points"
