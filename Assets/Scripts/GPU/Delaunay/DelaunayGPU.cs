@@ -31,6 +31,9 @@ namespace GPU.Delaunay {
 
         ComputeBuffer flipCount;
 
+        // Rendering support: tri -> representative half-edge (or -1 if not renderable).
+        ComputeBuffer triToHE;
+
         float2[] positionScratch;
         float2[] superPoints;
         readonly uint[] flipScratch = { 0u };
@@ -47,10 +50,18 @@ namespace GPU.Delaunay {
         readonly int kFixHalfEdges;
         readonly int kLegalizeHalfEdges;
 
+        readonly int kClearTriToHE;
+        readonly int kBuildRenderableTriToHE;
+
         public int VertexCount => vertexCount;
         public int RealVertexCount => realVertexCount;
         public int HalfEdgeCount => halfEdgeCount;
+        public int TriCount => triCount;
         public int NeighborCount { get; private set; }
+
+        public ComputeBuffer PositionsBuffer => positions;
+        public ComputeBuffer HalfEdgesBuffer => halfEdges;
+        public ComputeBuffer TriToHEBuffer => triToHE;
 
         public DelaunayGpu(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
@@ -66,6 +77,9 @@ namespace GPU.Delaunay {
             kBuildNeighbors = this.shader.FindKernel("BuildNeighbors");
             kFixHalfEdges = this.shader.FindKernel("FixHalfEdges");
             kLegalizeHalfEdges = this.shader.FindKernel("LegalizeHalfEdges");
+
+            kClearTriToHE = this.shader.FindKernel("ClearTriToHE");
+            kBuildRenderableTriToHE = this.shader.FindKernel("BuildRenderableTriToHE");
         }
 
         /// <summary>
@@ -118,6 +132,8 @@ namespace GPU.Delaunay {
 
             flipCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
+            triToHE = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+
             for (int i = 0; i < vertexCount; i++)
                 positionScratch[i] = allPoints[i];
 
@@ -136,7 +152,7 @@ namespace GPU.Delaunay {
 
             BindCommon();
             DispatchClearTriLocks();
-            RebuildVertexAdjacency();
+            RebuildVertexAdjacencyAndTriMap();
         }
 
         void BindCommon() {
@@ -167,6 +183,11 @@ namespace GPU.Delaunay {
             shader.SetBuffer(kLegalizeHalfEdges, "_HalfEdges", halfEdges);
             shader.SetBuffer(kLegalizeHalfEdges, "_TriLocks", triLocks);
             shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", flipCount);
+
+            shader.SetBuffer(kClearTriToHE, "_TriToHE", triToHE);
+
+            shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", halfEdges);
+            shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", triToHE);
         }
 
         public void UpdatePositionsFromNodes(List<Node> nodes) {
@@ -235,13 +256,16 @@ namespace GPU.Delaunay {
                 shader.Dispatch(kLegalizeHalfEdges, groups, 1, 1);
             }
 
-            RebuildVertexAdjacency();
+            RebuildVertexAdjacencyAndTriMap();
         }
 
-        public void RebuildVertexAdjacency() {
+        public void RebuildVertexAdjacencyAndTriMap() {
             shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
+
+            shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
         }
 
         void DispatchClearTriLocks() {
@@ -282,6 +306,7 @@ namespace GPU.Delaunay {
             neighbors?.Dispose(); neighbors = null;
             neighborCounts?.Dispose(); neighborCounts = null;
             flipCount?.Dispose(); flipCount = null;
+            triToHE?.Dispose(); triToHE = null;
 
             positionScratch = null;
             superPoints = null;

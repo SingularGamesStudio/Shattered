@@ -132,6 +132,8 @@ GameObject:
   m_Component:
   - component: {fileID: 86236646}
   - component: {fileID: 86236645}
+  - component: {fileID: 86236647}
+  - component: {fileID: 86236648}
   m_Layer: 0
   m_Name: Simulation
   m_TagString: Untagged
@@ -179,6 +181,42 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &86236647
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 86236644}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 42179c1ea0a32c24cacebf170923e652, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  materials:
+  - {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  fallbackTexture: {fileID: 0}
+--- !u!114 &86236648
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 86236644}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c77595f26629367488aef2c1da549694, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  triangulationShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
+  uvScale: 0.25
+  showWireframe: 1
+  wireColorLevel0: {r: 0.15, g: 0.35, b: 1, a: 1}
+  wireColorMaxLevel: {r: 1, g: 0.2, b: 0.2, a: 1}
+  wireWidth: 0.97
+  drawLevel0Fill: 1
+  drawCoarseLevels: 1
+  coarseWireOnly: 1
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -281,7 +319,6 @@ GameObject:
   m_Component:
   - component: {fileID: 961765557}
   - component: {fileID: 961765556}
-  - component: {fileID: 961765559}
   m_Layer: 0
   m_Name: Box
   m_TagString: Untagged
@@ -312,14 +349,15 @@ MonoBehaviour:
   dtWarmupFixIterations: 64
   dtWarmupLegalizeIterations: 128
   dtNormalizePadding: 2
+  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   center:
     x: -1
     y: 2
   size:
     x: 3
     y: 3
-  pointCount: 10
-  generateOnStart: 0
+  pointCount: 20
+  generateOnStart: 1
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0
@@ -335,48 +373,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &961765559
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 961765555}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1606241d9587c3744a6afc8e38ca3985, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
-  fixIterationsPerSubstep: 2
-  legalizeIterationsPerSubstep: 2
-  warmupFixIterations: 32
-  warmupLegalizeIterations: 64
-  seed: 1
-  pointCount: 256
-  boundsMin: {x: -5, y: -5}
-  boundsMax: {x: 5, y: 5}
-  minDistance: 0.15
-  buildMeshlessHnsw: 0
-  movingIndex: 0
-  moveSpeed: 2
-  maxMoveStep: 0.05
-  clampMoverToBounds: 0
-  normalizePadding: 2
-  rebuildIfOutsideNormalizeBounds: 1
-  drawEveryFrame: 1
-  depthTest: 0
-  lineColor: {r: 0.1, g: 0.8, b: 1, a: 1}
-  drawSuperEdges: 0
-  superEdgeColor: {r: 1, g: 0.2, b: 0.2, a: 1}
-  readbackIntervalFrames: 1
-  drawHierarchyLevels: 1
-  hierarchyHueStart: 0.58
-  hierarchyHueStep: 0.12
-  hierarchySaturation: 0.85
-  hierarchyValue: 1
-  logFlips: 1
-  logEveryNFrames: 60
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

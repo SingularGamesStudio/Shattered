@@ -6,6 +6,8 @@ using Physics;
 using GPU.Delaunay;
 
 public class Meshless : MonoBehaviour {
+    public static readonly List<Meshless> Active = new List<Meshless>(64);
+
     public HNSW hnsw;
 
     public List<Node> nodes = new List<Node>();
@@ -42,6 +44,25 @@ public class Meshless : MonoBehaviour {
     readonly float2 dtSuper0 = new float2(0f, 3f);
     readonly float2 dtSuper1 = new float2(-3f, -3f);
     readonly float2 dtSuper2 = new float2(3f, -3f);
+
+    [Header("Material")]
+    public MeshlessMaterialDef baseMaterialDef;
+
+    public float2 DtNormCenter => dtNormCenter;
+    public float DtNormInvHalfExtent => dtNormInvHalfExtent;
+
+    public int GetBaseMaterialId() {
+        var lib = MeshlessMaterialLibrary.Instance;
+        if (lib == null) return 0;
+        return lib.GetMaterialIndex(baseMaterialDef);
+    }
+
+    public bool TryGetLevelDt(int level, out DelaunayGpu dt) {
+        dt = null;
+        if (!useDelaunayHierarchy || delaunayHierarchy == null) return false;
+        dt = delaunayHierarchy.GetLevelDt(level);
+        return dt != null;
+    }
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
@@ -268,6 +289,13 @@ public class Meshless : MonoBehaviour {
             nodes[i].restVolume = vol[i];
     }
 
-    void OnEnable() => SimulationController.Instance?.Register(this);
-    void OnDisable() => SimulationController.Instance?.Unregister(this);
+    void OnEnable() {
+        SimulationController.Instance?.Register(this);
+        if (!Active.Contains(this)) Active.Add(this);
+    }
+
+    void OnDisable() {
+        SimulationController.Instance?.Unregister(this);
+        Active.Remove(this);
+    }
 }

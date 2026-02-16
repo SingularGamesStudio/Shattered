@@ -37,6 +37,12 @@ namespace GPU.Delaunay {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
         }
 
+        public DelaunayGpu GetLevelDt(int level) {
+            if (levels == null) return null;
+            if ((uint)level >= (uint)levels.Length) return null;
+            return levels[level];
+        }
+
         public int GetLevelRealVertexCount(int level) {
             if ((uint)level >= (uint)LevelCount) return 0;
             return levelEndIndex[level];

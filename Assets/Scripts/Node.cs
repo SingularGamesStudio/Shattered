@@ -20,11 +20,14 @@ public class Node {
 
     public int parentIndex = -1;
 
+    public int materialId = 0;
+
     public Node(float2 point, Meshless parent) {
         pos = point;
         originalPos = point;
         this.parent = parent;
         maxLayer = GetRandomLayer();
+        materialId = parent != null ? parent.GetBaseMaterialId() : 0;
     }
 
     private static int GetRandomLayer(float ml = 0.6f) {
