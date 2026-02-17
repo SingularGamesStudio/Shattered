@@ -3,9 +3,11 @@
 
 #include "XPBICommon.hlsl"
 
-static XPBI_Mat2 XPBI_EigenBasisSymmetric2x2(XPBI_Mat2 M, float e1, float e2, float offDiagEps) {
+static XPBI_Mat2 XPBI_EigenBasisSymmetric2x2(XPBI_Mat2 M, float e1, float e2, float offDiagEps)
+{
     float b = M.c0.y;
-    if (abs(b) <= offDiagEps) return XPBI_Mat2Identity();
+    if (abs(b) <= offDiagEps)
+        return XPBI_Mat2Identity();
 
     float2 v1 = normalize(float2(b, e1 - M.c0.x));
     float2 v2 = normalize(float2(b, e2 - M.c0.x));
@@ -24,8 +26,8 @@ static void XPBI_PolarDecompose2D(
     out float s2,
     float stretchEps,
     float offDiagEps,
-    float invDetEps
-) {
+    float invDetEps)
+{
     XPBI_Mat2 FT = XPBI_TransposeMat2(F);
     XPBI_Mat2 C = XPBI_MulMat2(FT, F);
 
@@ -38,8 +40,10 @@ static void XPBI_PolarDecompose2D(
 
     s1 = sqrt(max(l1, 0.0));
     s2 = sqrt(max(l2, 0.0));
-    if (s1 < stretchEps) s1 = 1.0;
-    if (s2 < stretchEps) s2 = 1.0;
+    if (s1 < stretchEps)
+        s1 = 1.0;
+    if (s2 < stretchEps)
+        s2 = 1.0;
 
     XPBI_Mat2 V = XPBI_EigenBasisSymmetric2x2(C, l1, l2, offDiagEps);
 
@@ -50,7 +54,8 @@ static void XPBI_PolarDecompose2D(
     U = XPBI_MulMat2(XPBI_MulMat2(V, Sdiag), XPBI_TransposeMat2(V));
 
     float detU = XPBI_DetMat2(U);
-    if (abs(detU) < invDetEps) {
+    if (abs(detU) < invDetEps)
+    {
         R = XPBI_Mat2Identity();
         U = XPBI_Mat2Identity();
         s1 = 1.0;
@@ -69,15 +74,14 @@ static void XPBI_PolarDecompose2D(
     R = XPBI_MulMat2(F, Uinv);
 }
 
-
 static float XPBI_ComputePsiHencky(
     XPBI_Mat2 F,
     float mu,
     float lambda,
     float stretchEps,
     float offDiagEps,
-    float invDetEps
-) {
+    float invDetEps)
+{
     XPBI_Mat2 R, U;
     float s1, s2;
     XPBI_PolarDecompose2D(F, R, U, s1, s2, stretchEps, offDiagEps, invDetEps);
@@ -99,8 +103,8 @@ static float XPBI_ConstraintC(
     float lambda,
     float stretchEps,
     float offDiagEps,
-    float invDetEps
-) {
+    float invDetEps)
+{
     return sqrt(2.0 * XPBI_ComputePsiHencky(F, mu, lambda, stretchEps, offDiagEps, invDetEps));
 }
 
@@ -110,8 +114,8 @@ static XPBI_Mat2 XPBI_ApplyPlasticityReturn(
     float volHenckyLimit,
     float stretchEps,
     float offDiagEps,
-    float invDetEps
-) {
+    float invDetEps)
+{
     XPBI_Mat2 R, S;
     float s1, s2;
     XPBI_PolarDecompose2D(F_elastic, R, S, s1, s2, stretchEps, offDiagEps, invDetEps);
@@ -128,12 +132,15 @@ static XPBI_Mat2 XPBI_ApplyPlasticityReturn(
     bool devYield = gammaEq > yieldHencky;
     bool volYield = abs(k) > volHenckyLimit;
 
-    if (!devYield && !volYield) return F_elastic;
+    if (!devYield && !volYield)
+        return F_elastic;
 
     float devScale = 1.0;
-    if (devYield) devScale =  min(yieldHencky / max(gammaEq, stretchEps), 1.0);
+    if (devYield)
+        devScale = min(yieldHencky / max(gammaEq, stretchEps), 1.0);
     float kProj = k;
-    if(volYield) kProj = clamp(k, -volHenckyLimit, volHenckyLimit);
+    if (volYield)
+        kProj = clamp(k, -volHenckyLimit, volHenckyLimit);
 
     float s1Proj = exp((h1Dev * devScale) + 0.5 * kProj);
     float s2Proj = exp((h2Dev * devScale) + 0.5 * kProj);
@@ -154,8 +161,8 @@ static XPBI_Mat2 XPBI_ComputeGradient(
     float lambda,
     float stretchEps,
     float offDiagEps,
-    float invDetEps
-) {
+    float invDetEps)
+{
     XPBI_Mat2 R, S;
     float s1, s2;
     XPBI_PolarDecompose2D(F, R, S, s1, s2, stretchEps, offDiagEps, invDetEps);
@@ -170,7 +177,8 @@ static XPBI_Mat2 XPBI_ComputeGradient(
 
     float psi = mu * (h1Dev * h1Dev + h2Dev * h2Dev) + 0.5 * lambda * (k * k);
     float C = sqrt(2.0 * psi);
-    if (C < stretchEps) return XPBI_Mat2Zero();
+    if (C < stretchEps)
+        return XPBI_Mat2Zero();
 
     float dPsi_dh1 = mu * (h1Dev - h2Dev) + lambda * k;
     float dPsi_dh2 = mu * (h2Dev - h1Dev) + lambda * k;
@@ -194,6 +202,5 @@ static XPBI_Mat2 XPBI_ComputeGradient(
     dC_dF.c1 = dPsi_dF.c1 * invC;
     return dC_dF;
 }
-
 
 #endif

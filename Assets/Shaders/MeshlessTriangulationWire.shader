@@ -1,23 +1,31 @@
-Shader "Unlit/MeshlessTriangulationWire" {
-    Properties {
-        _WireColor ("Wire Color", Color) = (1,1,1,1)
-        _WireWidthPx ("Wire Width (px)", Float) = 1.5
-    }
-    SubShader {
-        Tags { "RenderType"="Transparent" "Queue"="Transparent+10" }
+Shader "Unlit/MeshlessTriangulationWire"
+{
+    Properties{
+        _WireColor("Wire Color", Color) = (1, 1, 1, 1)
+            _WireWidthPx("Wire Width (px)", Float) = 1.5} SubShader
+    {
+        Tags{"RenderType" = "Transparent"
+                            "Queue" = "Transparent+10"}
 
-        Pass {
+        Pass
+        {
             ZWrite Off
-            ZTest Always
-            Cull Off
-            Blend Off
+                ZTest Always
+                    Cull Off
+                        Blend Off
 
-            HLSLPROGRAM
-            #pragma vertex Vert
-            #pragma fragment Frag
-            #include "UnityCG.cginc"
+                            HLSLPROGRAM
+#pragma vertex Vert
+#pragma fragment Frag
+#include "UnityCG.cginc"
 
-            struct HalfEdge { int v; int next; int twin; int t; };
+                struct HalfEdge
+            {
+                int v;
+                int next;
+                int twin;
+                int t;
+            };
 
             StructuredBuffer<float2> _Positions;
             StructuredBuffer<HalfEdge> _HalfEdges;
@@ -36,20 +44,23 @@ Shader "Unlit/MeshlessTriangulationWire" {
 
             float2 GpuToWorld(float2 p) { return p / _NormInvHalfExtent + _NormCenter; }
 
-            struct v2f {
+            struct v2f
+            {
                 float4 pos : SV_POSITION;
                 float3 bary : TEXCOORD0;
                 nointerpolation int valid : TEXCOORD1;
             };
 
-            v2f Vert(uint vid : SV_VertexID) {
+            v2f Vert(uint vid : SV_VertexID)
+            {
                 v2f o;
 
                 uint tri = vid / 3;
                 uint corner = vid - tri * 3;
 
                 int he0 = _TriToHE[tri];
-                if (he0 < 0) {
+                if (he0 < 0)
+                {
                     o.pos = float4(0, 0, 0, 0);
                     o.bary = 0;
                     o.valid = 0;
@@ -60,7 +71,8 @@ Shader "Unlit/MeshlessTriangulationWire" {
                 int v1 = Dest(he0);
                 int v2 = Dest(Next(he0));
 
-                if (v0 >= _RealPointCount || v1 >= _RealPointCount || v2 >= _RealPointCount) {
+                if (v0 >= _RealPointCount || v1 >= _RealPointCount || v2 >= _RealPointCount)
+                {
                     o.pos = float4(0, 0, 0, 0);
                     o.bary = 0;
                     o.valid = 0;
@@ -72,19 +84,22 @@ Shader "Unlit/MeshlessTriangulationWire" {
                 float2 pW = GpuToWorld(_Positions[v]);
                 o.pos = mul(UNITY_MATRIX_VP, float4(pW.x, pW.y, 0.0, 1.0));
 
-                o.bary = (corner == 0) ? float3(1,0,0) : (corner == 1 ? float3(0,1,0) : float3(0,0,1));
+                o.bary = (corner == 0) ? float3(1, 0, 0) : (corner == 1 ? float3(0, 1, 0) : float3(0, 0, 1));
                 o.valid = 1;
                 return o;
             }
 
-            float WireAlpha(float3 bary) {
+            float WireAlpha(float3 bary)
+            {
                 float e = min(bary.x, min(bary.y, bary.z));
                 float w = fwidth(e) * _WireWidthPx;
                 return 1.0 - smoothstep(0.0, w, e);
             }
 
-            fixed4 Frag(v2f i) : SV_Target {
-                if (i.valid == 0) discard;
+            fixed4 Frag(v2f i) : SV_Target
+            {
+                if (i.valid == 0)
+                    discard;
 
                 float a = WireAlpha(i.bary);
                 clip(a - 0.001);

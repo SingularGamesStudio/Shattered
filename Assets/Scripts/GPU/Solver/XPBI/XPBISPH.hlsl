@@ -1,17 +1,21 @@
 #ifndef XPBI_SPH_INCLUDED
 #define XPBI_SPH_INCLUDED
 
-static float XPBI_Alpha2D(float h) {
+static float XPBI_Alpha2D(float h)
+{
     return 7.0 / (4.0 * 3.14159265358979323846 * h * h);
 }
 
-static float2 XPBI_GradWendlandC2(float2 xij, float h, float eps) {
+static float2 XPBI_GradWendlandC2(float2 xij, float h, float eps)
+{
     float r2 = dot(xij, xij);
-    if (h <= eps || r2 <= eps * eps) return float2(0, 0);
+    if (h <= eps || r2 <= eps * eps)
+        return float2(0, 0);
 
     float r = sqrt(r2);
     float q = r / h;
-    if (q >= 2.0) return float2(0, 0);
+    if (q >= 2.0)
+        return float2(0, 0);
 
     float alpha = XPBI_Alpha2D(h);
 
