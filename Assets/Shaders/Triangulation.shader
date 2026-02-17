@@ -1,4 +1,4 @@
-Shader "Unlit/MeshlessTriangulation"
+Shader "Unlit/Triangulation"
 {
     Properties{
         _UvScale("UV Scale", Float) = 0.25} SubShader

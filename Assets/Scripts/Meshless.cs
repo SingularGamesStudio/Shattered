@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.Linq;
 using Unity.Mathematics;
 using UnityEngine;
-using Physics;
 using GPU.Delaunay;
 
 public class Meshless : MonoBehaviour {
@@ -18,8 +17,6 @@ public class Meshless : MonoBehaviour {
 
     [Header("XPBI compliance")]
     public float compliance = 0f;
-
-    public NodeBatch lastBatchDebug;
 
     public int[] levelEndIndex;
 
@@ -37,7 +34,7 @@ public class Meshless : MonoBehaviour {
     [Range(0.0f, 1.0f)] public float dtAutoNormalizeRecenterThreshold = 0.25f;
     public bool dtAutoNormalizeIncludeCamera = true;
 
-    [HideInInspector] public DelaunayHierarchyGpu delaunayHierarchy;
+    [HideInInspector] public DTHierarchy delaunayHierarchy;
 
     float2 dtNormCenter;
     float dtNormInvHalfExtent;
@@ -49,18 +46,18 @@ public class Meshless : MonoBehaviour {
     readonly float2 dtSuper2 = new float2(3f, -3f);
 
     [Header("Material")]
-    public MeshlessMaterialDef baseMaterialDef;
+    public MaterialDef baseMaterialDef;
 
     public float2 DtNormCenter => dtNormCenter;
     public float DtNormInvHalfExtent => dtNormInvHalfExtent;
 
     public int GetBaseMaterialId() {
-        var lib = MeshlessMaterialLibrary.Instance;
+        var lib = MaterialLibrary.Instance;
         if (lib == null) return 0;
         return lib.GetMaterialIndex(baseMaterialDef);
     }
 
-    public bool TryGetLevelDt(int level, out DelaunayGpu dt) {
+    public bool TryGetLevelDt(int level, out DT dt) {
         if (delaunayHierarchy == null) { dt = null; return false; }
         dt = delaunayHierarchy.GetLevelDt(level);
         return dt != null;
@@ -255,7 +252,7 @@ public class Meshless : MonoBehaviour {
         delaunayHierarchy?.Dispose();
         delaunayHierarchy = null;
 
-        delaunayHierarchy = new DelaunayHierarchyGpu(delaunayShader);
+        delaunayHierarchy = new DTHierarchy(delaunayShader);
 
         delaunayHierarchy.InitFromMeshlessNodes(
             nodes,

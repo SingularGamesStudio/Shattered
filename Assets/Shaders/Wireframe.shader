@@ -1,4 +1,4 @@
-Shader "Unlit/MeshlessTriangulationWire"
+Shader "Unlit/Wireframe"
 {
     Properties{
         _WireColor("Wire Color", Color) = (1, 1, 1, 1)

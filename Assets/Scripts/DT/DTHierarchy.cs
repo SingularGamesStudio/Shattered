@@ -4,10 +4,10 @@ using Unity.Mathematics;
 using UnityEngine;
 
 namespace GPU.Delaunay {
-    public sealed class DelaunayHierarchyGpu : IDisposable {
+    public sealed class DTHierarchy : IDisposable {
         readonly ComputeShader shader;
 
-        DelaunayGpu[] levels;
+        DT[] levels;
         int[] levelEndIndex;
         int maxLevel;
 
@@ -33,11 +33,11 @@ namespace GPU.Delaunay {
         public int MaxLevel => maxLevel;
         public int LevelCount => levels?.Length ?? 0;
 
-        public DelaunayHierarchyGpu(ComputeShader shader) {
+        public DTHierarchy(ComputeShader shader) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
         }
 
-        public DelaunayGpu GetLevelDt(int level) {
+        public DT GetLevelDt(int level) {
             if (levels == null) return null;
             if ((uint)level >= (uint)levels.Length) return null;
             return levels[level];
@@ -73,7 +73,7 @@ namespace GPU.Delaunay {
             ComputeLevelEndIndex(nodes, out maxLevel, out levelEndIndex);
 
             DisposeLevels();
-            levels = new DelaunayGpu[maxLevel + 1];
+            levels = new DT[maxLevel + 1];
 
             for (int level = 0; level <= maxLevel; level++) {
                 int n = levelEndIndex[level];
@@ -95,7 +95,7 @@ namespace GPU.Delaunay {
 
                 var he = DTBuilder.BuildHalfEdges(gpuAllScratch, triangles);
 
-                var dt = new DelaunayGpu(shader);
+                var dt = new DT(shader);
                 dt.Init(gpuAllScratch, n, he, triangles.Count, neighborCount);
                 dt.Maintain(warmupFixIterations, warmupLegalizeIterations);
 
@@ -238,7 +238,7 @@ namespace GPU.Delaunay {
             return cur;
         }
 
-        public void GetHalfEdges(int level, DelaunayGpu.HalfEdge[] dst) {
+        public void GetHalfEdges(int level, DT.HalfEdge[] dst) {
             if ((uint)level >= (uint)LevelCount) throw new ArgumentOutOfRangeException(nameof(level));
             if (levels[level] == null) throw new InvalidOperationException("Level DT is not initialized (too few vertices).");
             levels[level].GetHalfEdges(dst);

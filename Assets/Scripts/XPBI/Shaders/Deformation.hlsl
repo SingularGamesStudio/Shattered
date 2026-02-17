@@ -1,7 +1,7 @@
 #ifndef XPBI_DEFORMATION_INCLUDED
 #define XPBI_DEFORMATION_INCLUDED
 
-#include "XPBICommon.hlsl"
+#include "Utils.hlsl"
 
 static XPBI_Mat2 XPBI_EigenBasisSymmetric2x2(XPBI_Mat2 M, float e1, float e2, float offDiagEps)
 {

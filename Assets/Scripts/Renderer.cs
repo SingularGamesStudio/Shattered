@@ -4,7 +4,7 @@ using UnityEngine;
 using GPU.Delaunay;
 
 [DefaultExecutionOrder(1000)]
-public sealed class MeshlessTriangulationRenderer : MonoBehaviour {
+public sealed class Renderer : MonoBehaviour {
     [Header("Shaders")]
     public Shader fillShader;
     public Shader wireShader;
@@ -64,7 +64,7 @@ public sealed class MeshlessTriangulationRenderer : MonoBehaviour {
 
         mpb ??= new MaterialPropertyBlock();
 
-        var lib = MeshlessMaterialLibrary.Instance;
+        var lib = MaterialLibrary.Instance;
         if (lib == null || lib.AlbedoArray == null) return;
 
         fillMaterial ??= new Material(fillShader);
@@ -155,7 +155,7 @@ public sealed class MeshlessTriangulationRenderer : MonoBehaviour {
         }
     }
 
-    void SetupCommon(Meshless m, DelaunayGpu dt, MeshlessMaterialLibrary lib, int realPointCount) {
+    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount) {
         if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
 
         mpb.Clear();

@@ -2,11 +2,11 @@ using System.Collections.Generic;
 using UnityEngine;
 
 [DefaultExecutionOrder(-2000)]
-public sealed class MeshlessMaterialLibrary : MonoBehaviour {
-    public static MeshlessMaterialLibrary Instance { get; private set; }
+public sealed class MaterialLibrary : MonoBehaviour {
+    public static MaterialLibrary Instance { get; private set; }
 
     [Header("Material defs")]
-    public MeshlessMaterialDef[] materials;
+    public MaterialDef[] materials;
 
     [Header("Fallback (used when material sprite is null)")]
     public Texture2D fallbackTexture;
@@ -14,7 +14,7 @@ public sealed class MeshlessMaterialLibrary : MonoBehaviour {
     Texture2DArray albedoArray;
     ComputeBuffer physicalParams;
 
-    Dictionary<MeshlessMaterialDef, int> defToIndex;
+    Dictionary<MaterialDef, int> defToIndex;
 
     public Texture2DArray AlbedoArray => albedoArray;
     public ComputeBuffer PhysicalParamsBuffer => physicalParams;
@@ -37,9 +37,9 @@ public sealed class MeshlessMaterialLibrary : MonoBehaviour {
         physicalParams = null;
     }
 
-    public int GetMaterialIndex(MeshlessMaterialDef def) {
+    public int GetMaterialIndex(MaterialDef def) {
         if (def == null) return 0;
-        defToIndex ??= new Dictionary<MeshlessMaterialDef, int>(64);
+        defToIndex ??= new Dictionary<MaterialDef, int>(64);
         if (!defToIndex.TryGetValue(def, out int idx)) {
             Debug.LogWarning($"MeshlessMaterialLibrary: material def '{def.name}' is not in MeshlessMaterialLibrary.materials; returning 0.");
             return 0;
@@ -47,7 +47,7 @@ public sealed class MeshlessMaterialLibrary : MonoBehaviour {
         return idx;
     }
 
-    static bool TryGetSliceSize(MeshlessMaterialDef[] defs, out int w, out int h) {
+    static bool TryGetSliceSize(MaterialDef[] defs, out int w, out int h) {
         w = 0;
         h = 0;
 
@@ -74,7 +74,7 @@ public sealed class MeshlessMaterialLibrary : MonoBehaviour {
 
     [ContextMenu("Rebuild")]
     public void Rebuild() {
-        defToIndex ??= new Dictionary<MeshlessMaterialDef, int>(64);
+        defToIndex ??= new Dictionary<MaterialDef, int>(64);
         defToIndex.Clear();
 
         physicalParams?.Dispose();

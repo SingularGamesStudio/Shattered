@@ -12,10 +12,10 @@
 #pragma kernel ExternalForces
 #pragma kernel RelaxColored
 
-#include "XPBIAtomics.hlsl"
-#include "XPBICommon.hlsl"
-#include "XPBISPH.hlsl"
-#include "XPBIDeformation.hlsl"
+#include "Atomics.hlsl"
+#include "Utils.hlsl"
+#include "SPH.hlsl"
+#include "Deformation.hlsl"
 
 #define targetNeighborCount 6
 

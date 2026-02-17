@@ -151,7 +151,7 @@ GPU XPBI solver (this thread):
   CPU-side driver: binds buffers, runs hierarchical schedule, builds/caches coloring, dispatches `RelaxColored` per color.
 
 GPU Delaunay neighbors:
-- `Assets/Scripts/GPU/Delaunay/DelaunayGPU.cs`
+- `Assets/Scripts/GPU/Delaunay/DT.cs`
   GPU driver: init/maintain, adjacency rebuild, upload node positions.
   Neighbor caching/versioning for solver: keep CPU neighbor arrays synchronized on adjacency rebuild and expose an adjacency version counter.
 - `Assets/Scripts/GPU/Delaunay/DelaunayHierarchyGPU.cs`

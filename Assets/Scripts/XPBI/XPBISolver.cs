@@ -4,7 +4,7 @@ using Unity.Mathematics;
 using UnityEngine;
 
 namespace GPU.Solver {
-    public sealed class XPBIGpuSolver : IDisposable {
+    public sealed class XPBISolver : IDisposable {
         const uint FixedFlag = 1u;
 
         readonly ComputeShader shader;
@@ -56,7 +56,7 @@ namespace GPU.Solver {
 
         bool loggedKernelError;
 
-        public XPBIGpuSolver(ComputeShader shader) {
+        public XPBISolver(ComputeShader shader) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
         }
 
@@ -413,7 +413,7 @@ namespace GPU.Solver {
             EnsurePerLevelCaches(maxLevel + 1);
 
             for (int level = maxLevel; level >= 0; level--) {
-                if (!m.TryGetLevelDt(level, out DelaunayGpu dtLevel))
+                if (!m.TryGetLevelDt(level, out DT dtLevel))
                     continue;
 
                 int activeCount = level > 0 ? m.NodeCount(level) : total;

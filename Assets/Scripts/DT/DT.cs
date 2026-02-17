@@ -10,7 +10,7 @@ namespace GPU.Delaunay {
     /// 1) Fixing (restore a valid triangulation after point motion).
     /// 2) Legalizing (Delaunay edge flips based on in-circle test).
     /// </summary>
-    public sealed class DelaunayGpu : IDisposable {
+    public sealed class DT : IDisposable {
         public struct HalfEdge {
             public int v;
             public int next;
@@ -75,7 +75,7 @@ namespace GPU.Delaunay {
         public ComputeBuffer NeighborsBuffer => neighbors;
         public ComputeBuffer NeighborCountsBuffer => neighborCounts;
 
-        public DelaunayGpu(ComputeShader shader) {
+        public DT(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
 
             // Buffer bindings are stored on the ComputeShader instance.
