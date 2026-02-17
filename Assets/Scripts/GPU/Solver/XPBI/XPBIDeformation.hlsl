@@ -138,7 +138,7 @@ static XPBI_Mat2 XPBI_ApplyPlasticityReturn(
     float s1Proj = exp((h1Dev * devScale) + 0.5 * kProj);
     float s2Proj = exp((h2Dev * devScale) + 0.5 * kProj);
 
-    XPBI_Mat2 V = XPBI_EigenBasisSymmetric2x2(S, s1 * s1, s2 * s2, offDiagEps);
+    XPBI_Mat2 V = XPBI_EigenBasisSymmetric2x2(S, s1, s2, offDiagEps);
 
     XPBI_Mat2 SprojDiag;
     SprojDiag.c0 = float2(s1Proj, 0);
@@ -147,5 +147,53 @@ static XPBI_Mat2 XPBI_ApplyPlasticityReturn(
     XPBI_Mat2 Sproj = XPBI_MulMat2(XPBI_MulMat2(V, SprojDiag), XPBI_TransposeMat2(V));
     return XPBI_MulMat2(R, Sproj);
 }
+
+static XPBI_Mat2 XPBI_ComputeGradient(
+    XPBI_Mat2 F,
+    float mu,
+    float lambda,
+    float stretchEps,
+    float offDiagEps,
+    float invDetEps
+) {
+    XPBI_Mat2 R, S;
+    float s1, s2;
+    XPBI_PolarDecompose2D(F, R, S, s1, s2, stretchEps, offDiagEps, invDetEps);
+
+    float h1 = log(max(s1, stretchEps));
+    float h2 = log(max(s2, stretchEps));
+
+    float k = h1 + h2;
+    float mean = 0.5 * k;
+    float h1Dev = h1 - mean;
+    float h2Dev = h2 - mean;
+
+    float psi = mu * (h1Dev * h1Dev + h2Dev * h2Dev) + 0.5 * lambda * (k * k);
+    float C = sqrt(2.0 * psi);
+    if (C < stretchEps) return XPBI_Mat2Zero();
+
+    float dPsi_dh1 = mu * (h1Dev - h2Dev) + lambda * k;
+    float dPsi_dh2 = mu * (h2Dev - h1Dev) + lambda * k;
+
+    float dPsi_ds1 = dPsi_dh1 / max(s1, stretchEps);
+    float dPsi_ds2 = dPsi_dh2 / max(s2, stretchEps);
+
+    XPBI_Mat2 V = XPBI_EigenBasisSymmetric2x2(S, s1, s2, offDiagEps);
+
+    XPBI_Mat2 D;
+    D.c0 = float2(dPsi_ds1, 0);
+    D.c1 = float2(0, dPsi_ds2);
+
+    XPBI_Mat2 dPsi_dS = XPBI_MulMat2(XPBI_MulMat2(V, D), XPBI_TransposeMat2(V));
+    XPBI_Mat2 dPsi_dF = XPBI_MulMat2(R, dPsi_dS);
+
+    float invC = 1.0 / C;
+
+    XPBI_Mat2 dC_dF;
+    dC_dF.c0 = dPsi_dF.c0 * invC;
+    dC_dF.c1 = dPsi_dF.c1 * invC;
+    return dC_dF;
+}
+
 
 #endif

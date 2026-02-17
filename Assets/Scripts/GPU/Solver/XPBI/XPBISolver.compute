@@ -348,6 +348,9 @@ void RelaxScatter(uint3 id : SV_DispatchThreadID) {
     float C = XPBI_ConstraintC(Fel, MU, LAMBDA, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
     if (abs(C) < EPS) return;
 
+    XPBI_Mat2 dCdF = XPBI_ComputeGradient(Fel, MU, LAMBDA, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+    XPBI_Mat2 FT = XPBI_TransposeMat2(Fel);
+
     float invDt = 1.0 / max(_Dt, EPS);
     float alphaTilde = (_Compliance / max(_RestVolume[gi], EPS)) * (invDt * invDt);
 
@@ -376,8 +379,8 @@ void RelaxScatter(uint3 id : SV_DispatchThreadID) {
         if (Vb <= EPS) continue;
 
         float2 correctedGrad = XPBI_MulMat2Vec(Lm, gradW);
-
-        float2 q = Vb * correctedGrad;
+        float2 t = XPBI_MulMat2Vec(FT, correctedGrad);
+        float2 q = Vb * XPBI_MulMat2Vec(dCdF, t);
 
         gradC_vi -= q;
         gradC_vj[k] = q;

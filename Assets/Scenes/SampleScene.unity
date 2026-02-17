@@ -153,7 +153,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  targetTPS: 100
+  targetTPS: 1000
   simulationSpeed: 10
   manual: 1
   maxTicksPerFrame: 1000000
