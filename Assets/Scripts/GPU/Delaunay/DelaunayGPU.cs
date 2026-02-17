@@ -38,6 +38,10 @@ namespace GPU.Delaunay {
         float2[] superPoints;
         readonly uint[] flipScratch = { 0u };
 
+        int[] neighborsCpu;
+        int[] neighborCountsCpu;
+        uint adjacencyVersion;
+
         int vertexCount;
         int realVertexCount;
         int halfEdgeCount;
@@ -58,6 +62,11 @@ namespace GPU.Delaunay {
         public int HalfEdgeCount => halfEdgeCount;
         public int TriCount => triCount;
         public int NeighborCount { get; private set; }
+
+        public uint AdjacencyVersion => adjacencyVersion;
+
+        public int[] NeighborsCpu => neighborsCpu;
+        public int[] NeighborCountsCpu => neighborCountsCpu;
 
         public ComputeBuffer PositionsBuffer => positions;
         public ComputeBuffer HalfEdgesBuffer => halfEdges;
@@ -262,6 +271,16 @@ namespace GPU.Delaunay {
             RebuildVertexAdjacencyAndTriMap();
         }
 
+        void EnsureNeighborCpuCache() {
+            int expectedNeighbors = realVertexCount * NeighborCount;
+
+            if (neighborsCpu == null || neighborsCpu.Length != expectedNeighbors)
+                neighborsCpu = new int[expectedNeighbors];
+
+            if (neighborCountsCpu == null || neighborCountsCpu.Length != realVertexCount)
+                neighborCountsCpu = new int[realVertexCount];
+        }
+
         public void RebuildVertexAdjacencyAndTriMap() {
             shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
@@ -269,6 +288,11 @@ namespace GPU.Delaunay {
 
             shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
+
+            EnsureNeighborCpuCache();
+            neighbors.GetData(neighborsCpu);
+            neighborCounts.GetData(neighborCountsCpu);
+            adjacencyVersion++;
         }
 
         void DispatchClearTriLocks() {
@@ -313,6 +337,10 @@ namespace GPU.Delaunay {
 
             positionScratch = null;
             superPoints = null;
+
+            neighborsCpu = null;
+            neighborCountsCpu = null;
+            adjacencyVersion = 0;
 
             vertexCount = 0;
             realVertexCount = 0;
