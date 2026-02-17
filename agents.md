@@ -64,6 +64,10 @@ If you change any surface API (type, interface, serialized fields, public signat
 Allocation discipline:
 - Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, NodeBatch init, V-cycle, visualization updates, GPU Delaunay glue.
 
+GPU/CPU sync discipline:
+- Avoid per-step GPU→CPU readbacks in hot paths (solver iterations, per-level relax loops).
+- If readback is needed, do it where topology is rebuilt anyway (DT adjacency rebuild), then reuse cached CPU arrays.
+
 Determinism:
 - Prefer stable/deterministic behavior over micro-optimizations.
 - Do not depend on hash iteration order anywhere that affects physics.
@@ -85,7 +89,7 @@ Hierarchical schedule (V-cycle-ish coarse → fine):
 2) For each hierarchy level (coarse → fine):
    - Expand active prefix to include all nodes up to this level.
    - Initialise per-level caches (neighbors, h, correction matrices, volumes, cached reference deformation).
-   - Run solver iterations.
+   - Run solver iterations (GPU colored Gauss–Seidel).
    - Prolongate parent velocity delta into children (deltas only).
 3) Commit deformation on finest level (level 0).
 4) Integrate positions once.
@@ -109,6 +113,7 @@ Neighborhoods:
 Execution model:
 - Solver is velocity-first; don’t switch to per-iteration position integration.
 - Hot loops must be allocation-free in steady-state.
+- Do not introduce per-step GPU→CPU readback inside solver iterations.
 
 
 ## 6) File map (where to look)
@@ -138,9 +143,19 @@ Debug / tooling:
 - `Assets/Scripts/Physics/DebugData.cs`
 - `Assets/Scripts/Editor/ConstraintDebugWindow.cs`
 
+GPU XPBI solver (this thread):
+- `Assets/Scripts/GPU/Solver/XPBI/XPBISolver.compute`
+  Compute kernels for caching (volumes/h/L/F0/lambda), relax, prolongate, commit deformation, external forces.
+  Colored GS: `RelaxColored` uses `_ColorOrder` + per-color ranges (`_ColorStart`, `_ColorCount`) and writes velocities directly.
+- `Assets/Scripts/GPU/Solver/XPBIGPUSolver.cs`
+  CPU-side driver: binds buffers, runs hierarchical schedule, builds/caches coloring, dispatches `RelaxColored` per color.
+
 GPU Delaunay neighbors:
 - `Assets/Scripts/GPU/Delaunay/DelaunayGPU.cs`
   GPU driver: init/maintain, adjacency rebuild, upload node positions.
+  Neighbor caching/versioning for solver: keep CPU neighbor arrays synchronized on adjacency rebuild and expose an adjacency version counter.
+- `Assets/Scripts/GPU/Delaunay/DelaunayHierarchyGPU.cs`
+  Builds and maintains per-level DTs; adjacency rebuild happens after fix/legalize.
 - `Assets/Scripts/GPU/Delaunay/DTBuilder.cs`
   CPU bootstrap triangulation + half-edge build.
 - `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
@@ -157,25 +172,23 @@ Rendering / debug visualization:
   Bakes per-material sprites into a Texture2DArray for DT visualization.
 
 
-## 7) GPU Delaunay neighbors (in-project notes)
+## 7) GPU solver notes
 
-This subsystem maintains a dynamic 2D triangulation on GPU and extracts a fixed-size neighbor list for real vertices.
+Jacobi vs Gauss–Seidel on GPU:
+- Old path: relax scatters Δv into a buffer using atomics, then applies Δv (Jacobi-style).
+- New path: colored Gauss–Seidel: partition constraint-centers into colors and run colors sequentially; within each color, update velocities directly in parallel.
 
-Key design assumptions:
-- 3 “super” vertices are appended: `VertexCount = RealVertexCount + 3`.
-- Triangles incident to super vertices are kept (not deleted).
-- Predicates may run on normalized coordinates (uniform translate + scale) for conditioning.
-- Maintenance is typically “fix” then “legalize”, then rebuild adjacency/neighbors.
-- Neighbor extraction ignores super vertices.
+Coloring rule:
+- A constraint centered at i writes to i and its neighborhood, so a conservative “2-hop conflict” rule is used for coloring (neighbors + neighbors-of-neighbors) to avoid write overlap within a color.
+- Color count may be high (small per-color batches); treat as correctness-first, tune later.
 
-If you propose changes here, be extra careful about:
-- Allocation-free CPU glue.
-- Stable neighbor list layout and bounds (fixed `_NeighborCount`).
-- Locking / race safety (triangle-local locks / ownership rules).
+No per-step readbacks:
+- Coloring must not call `ComputeBuffer.GetData()` during solve iterations.
+- Use CPU-cached neighbor arrays that are refreshed only when DT adjacency is rebuilt.
 
-Runtime normalization gotcha:
-- If DT normalization bounds are only computed on `Build()` and the object drifts/moves far, real vertices can “escape” the fixed super-triangle domain.
-- Preferred mitigation for long-running sims: auto-renormalize at runtime (recenter + grow) and re-upload positions using the updated `(dtNormCenter, dtNormInvHalfExtent)`, without rebuilding topology unless necessary.
+Per-level coloring cache:
+- Cache per-level color metadata (`colorCount`, `colorStarts[]`, `colorCounts[]`) and the GPU `_ColorOrder` buffer contents.
+- Rebuild only when topology changes (adjacency version changes) or when active prefix size changes for that level.
 
 
 ## 8) Rendering & materials
