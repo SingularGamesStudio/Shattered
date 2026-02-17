@@ -38,8 +38,7 @@ HPBD / hierarchical acceleration:
 - Hierarchical Position-Based Dynamics (HPBD) uses a multilevel / multigrid-like hierarchy to improve convergence under tight iteration budgets.
 
 Neighborhood search motivation:
-- Original XPBI uses grid-based neighbor rebuilds; Shattered targets cases where coarse hierarchy levels become sparse and where tearing/merging makes global rebuilds expensive/unpleasant.
-- For GPU neighbor extraction / proximity queries, Shattered can use a maintained 2D Delaunay triangulation to keep per-node cost predictable.
+- Shattered maintains a 2D Delaunay triangulation on GPU to keep per-node neighbor extraction predictable and to support a hierarchy of DTs.
 
 
 ## 2) Non-negotiables (output + paste safety)
@@ -59,145 +58,125 @@ When proposing code changes:
 If you change any surface API (type, interface, serialized fields, public signatures), call it out in your response text (not in code comments).
 
 
-## 3) Hard constraints (perf + determinism)
+## 3) Hard constraints (perf + sync)
 
 Allocation discipline:
-- Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, NodeBatch init, V-cycle, visualization updates, GPU Delaunay glue.
+- Avoid per-frame allocations in hot paths: solver loops, neighbor loops/queries, hierarchy updates, visualization updates, DT glue.
 
 GPU/CPU sync discipline:
-- Avoid per-step GPU→CPU readbacks in hot paths (solver iterations, per-level relax loops).
-- If readback is needed, do it where topology is rebuilt anyway (DT adjacency rebuild), then reuse cached CPU arrays.
+- Avoid per-step GPU→CPU readbacks inside solver iteration loops.
+- CPU readback of DT adjacency is allowed where DT adjacency is rebuilt anyway (DT rebuild increments an adjacency version and refreshes cached CPU arrays).
 
 Determinism:
-- Prefer stable/deterministic behavior over micro-optimizations.
 - Do not depend on hash iteration order anywhere that affects physics.
-- Neighborhood accumulation order must be deterministic (neighbors angle-sorted).
-
-Math/types:
-- Prefer `Unity.Mathematics` types (`float2`, `float2x2`, etc.) internally.
-- Use `Vector2` only at Unity boundaries if required.
 
 
 ## 4) Core algorithm (what happens each step)
 
 The simulation is velocity-first:
+- External forces modify velocities.
 - Constraints correct velocities (Δv).
 - Positions integrate once per step from corrected velocities.
 
-Hierarchical schedule (V-cycle-ish coarse → fine):
-1) External forces modify velocities.
-2) For each hierarchy level (coarse → fine):
-   - Expand active prefix to include all nodes up to this level.
-   - Initialise per-level caches (neighbors, h, correction matrices, volumes, cached reference deformation).
-   - Run solver iterations (GPU colored Gauss–Seidel).
-   - Prolongate parent velocity delta into children (deltas only).
-3) Commit deformation on finest level (level 0).
-4) Integrate positions once.
-5) Update proximity structure / GPU Delaunay hierarchy after integration (positions upload + maintenance).
-
-Prolongation rule (important):
-- Only propagate parent Δv (current parent vel minus saved parent vel); do not overwrite child velocity with parent velocity.
+Hierarchical schedule (coarse → fine, GPU XPBI):
+1) `SimulationController` advances ticks at `targetTPS` and calls GPU step for each active `Meshless`.
+2) GPU solver uploads node state (pos/vel/invMass/flags/restVolume/parentIndex/F/Fp).
+3) For each hierarchy level `maxLayer..0` (active prefix = `NodeCount(level)`):
+   - Save velocity prefix (`SaveVelPrefix`).
+   - Cache volumes hierarchically: clear active owners then accumulate leaves over total (`ClearCurrentVolume`, `CacheVolumesHierarchical`).
+   - Cache per-node kernel radius `h` from DT neighbors (`CacheKernelH`).
+   - Compute correction matrix `L` (Bonet–Lok style) from DT neighbors + volumes (`ComputeCorrectionL`).
+   - Cache `F0` and reset `lambda` (`CacheF0AndResetLambda`).
+   - Build / reuse 2-hop coloring using DT CPU neighbor arrays and `AdjacencyVersion` and upload `_ColorOrder` buffer if needed.
+   - Run iterations (level 0 uses `Const.Iterations`, coarse levels use `Const.HPBDIterations`) by dispatching `RelaxColored` per color range.
+   - Prolongate parent Δv into children prefix range (`Prolongate`) when `level > 0`.
+   - Commit deformation only on level 0 (`CommitDeformation`).
+4) Solver downloads vel/F/Fp back to `Meshless.nodes`.
+5) CPU integrates positions once and updates DT positions + DT maintenance; DT readback is disabled in the per-tick path (`dtReadback: false`).
+6) Periodically (every `Const.HierarchyRebuildInterval` ticks), `Meshless.BuildHierarchyWithDtReadback()` refreshes DT CPU adjacency and rebuilds `parentIndex`.
 
 
 ## 5) Invariants (do not break)
 
 Hierarchy:
-- Nodes must remain sorted by `maxLayer` descending.
+- Nodes must remain sorted by `maxLayer` descending after `Meshless.Build()`.
 - `levelEndIndex[L]` is a prefix count: nodes with `maxLayer >= L`.
-- `parentIndex` must refer to a valid parent on the next coarser level.
+- `parentIndex` must refer to a valid parent on the next coarser level (or -1 if none).
 
 Neighborhoods:
-- Fixed-k neighborhood size: `Const.NeighborCount`.
-- Neighbor order must be deterministic before any accumulation (angle sort).
+- Fixed-k neighborhood size is `Const.NeighborCount` (DT hierarchy is initialized with it).
 
 Execution model:
 - Solver is velocity-first; don’t switch to per-iteration position integration.
-- Hot loops must be allocation-free in steady-state.
-- Do not introduce per-step GPU→CPU readback inside solver iterations.
+- Keep solve kernels present and named as required by `XPBI/XPBISolver.cs` (`HasAllKernels`).
 
 
 ## 6) File map (where to look)
 
 Orchestration / entry points:
 - `Assets/Scripts/SimulationController.cs`
-  Timing, V-cycle schedule, prolongation, integration, spatial updates.
+  Timing, tick loop, GPU solver ownership/caching, integration, periodic hierarchy rebuild.
 - `Assets/Scripts/Meshless.cs`
-  Nodes container, hierarchy metadata (`levelEndIndex`), parameters, rebuild cadence.
+  Nodes container, hierarchy metadata (`levelEndIndex`), DT normalization, DT hierarchy build/maintenance/readback, parent rebuild.
 - `Assets/Scripts/Node.cs`
-  Node state: pos/vel/invMass/deformation/parentIndex/etc.
+  Node state: pos/vel/originalPos/invMass/isFixed, deformation (`F`, `Fp`), restVolume, `maxLayer`, `parentIndex`, `materialId`.
 
-Physics core:
-- `Assets/Scripts/Physics/NodeBatch.cs`
-  Per-level caches: neighbors, per-node `h`, correction `L`, cached `F0`, lambda, effective volumes, debug.
-- `Assets/Scripts/Physics/Constraints/XPBIConstraint.cs`
-  `Relax`, `CommitDeformation`, gradV-based velocity corrections.
-- `Assets/Scripts/Physics/DeformationUtils.cs`
-  Polar decomposition, Hencky/log strain, plasticity helpers, pseudo-inverse helpers.
-- `Assets/Scripts/Physics/Constraints/SPHKernels.cs`
-  Wendland C2 kernel + gradient (2D).
-- `Assets/Scripts/Physics/Const.cs`
-  Constants: eps, iterations, neighbor count, `KernelHScale`, rebuild cadence.
+GPU XPBI solver:
+- `Assets/Scripts/XPBI/XPBISolver.cs`
+  CPU-side driver: GPU buffers, per-level dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`, upload/download to Meshless.
+- `Assets/Scripts/XPBI/Shaders/Solver.compute`
+  Compute kernels for: forces, caching (volumes/h/L/F0/lambda), relax, prolongate, commit deformation.
+- `Assets/Scripts/XPBI/Shaders/Deformation.hlsl`
+  Deformation utilities used by the compute solver (strain/plasticity helpers, etc.).
+- `Assets/Scripts/XPBI/Shaders/SPH.hlsl`
+  Kernel functions (Wendland C2) and gradients used by the compute solver.
+- `Assets/Scripts/XPBI/Shaders/Atomics.hlsl`
+  Atomic helpers used for scatter-style accumulation and packed float atomics.
+- `Assets/Scripts/XPBI/Shaders/Utils.hlsl`
+  Shared math/utility helpers for the compute solver.
 
-Debug / tooling:
-- `Assets/Scripts/LoopProfiler.cs`
-- `Assets/Scripts/Physics/DebugData.cs`
-- `Assets/Scripts/Editor/ConstraintDebugWindow.cs`
+GPU Delaunay neighbors (hierarchical):
+- `Assets/Scripts/DT/DT.cs`
+  Per-level DT: GPU buffers for half-edge topology + adjacency, maintains adjacency, exposes neighbor buffers and CPU caches, bumps `AdjacencyVersion` on rebuild.
+- `Assets/Scripts/DT/DTHierarchy.cs`
+  Builds and maintains DT per hierarchy level; provides `ReadbackAllLevels()`, `FillNeighbors()`, and `FindNearestCoarseToFine()`.
+- `Assets/Scripts/DT/DTBuilder.cs`
+  CPU bootstrap triangulation + half-edge build routines.
+- `Assets/Scripts/DT/DT.compute`
+  DT compute kernels: fix edges, legalize, build adjacency, build render tri map.
 
-GPU XPBI solver (this thread):
-- `Assets/Scripts/GPU/Solver/XPBI/XPBISolver.compute`
-  Compute kernels for caching (volumes/h/L/F0/lambda), relax, prolongate, commit deformation, external forces.
-  Colored GS: `RelaxColored` uses `_ColorOrder` + per-color ranges (`_ColorStart`, `_ColorCount`) and writes velocities directly.
-- `Assets/Scripts/GPU/Solver/XPBIGPUSolver.cs`
-  CPU-side driver: binds buffers, runs hierarchical schedule, builds/caches coloring, dispatches `RelaxColored` per color.
+Rendering / materials:
+- `Assets/Scripts/Renderer.cs`
+  Procedural draw of DT triangles (fill level 0; wire for all/selected levels), uses per-node material ids and rest positions in normalized DT space for UV anchoring.
+- `Assets/Scripts/Material/MaterialLibrary.cs`
+  Builds `Texture2DArray` for albedo visualization and a GPU buffer for physical params; maps `MaterialDef` to index.
+- `Assets/Scripts/Material/MaterialDef.cs`
+  Scriptable material definition: sprite + physical parameters.
 
-GPU Delaunay neighbors:
-- `Assets/Scripts/GPU/Delaunay/DT.cs`
-  GPU driver: init/maintain, adjacency rebuild, upload node positions.
-  Neighbor caching/versioning for solver: keep CPU neighbor arrays synchronized on adjacency rebuild and expose an adjacency version counter.
-- `Assets/Scripts/GPU/Delaunay/DelaunayHierarchyGPU.cs`
-  Builds and maintains per-level DTs; adjacency rebuild happens after fix/legalize.
-- `Assets/Scripts/GPU/Delaunay/DTBuilder.cs`
-  CPU bootstrap triangulation + half-edge build.
-- `Assets/Scripts/GPU/Delaunay/DelaunayTriangulation.compute`
-  Kernels: fix edges, legalize, build neighbors.
-
-Rendering / debug visualization:
-- `Assets/Scripts/MeshlessTriangulationRenderer.cs`
-  Procedural DT debug draw (fill + wire).
-- `Assets/Shaders/MeshlessTriangulation.shader`
-  DT fill shader (samples material texture array).
-- `Assets/Shaders/MeshlessTriangulationWire.shader`
-  DT wire-only overlay shader.
-- `Assets/Scripts/MeshlessMaterialLibrary.cs`
-  Bakes per-material sprites into a Texture2DArray for DT visualization.
+Utilities:
+- `Assets/Scripts/Const.cs`
+  Simulation constants (iterations, neighbor count, rebuild cadence, eps, etc.).
 
 
 ## 7) GPU solver notes
 
-Jacobi vs Gauss–Seidel on GPU:
-- Old path: relax scatters Δv into a buffer using atomics, then applies Δv (Jacobi-style).
-- New path: colored Gauss–Seidel: partition constraint-centers into colors and run colors sequentially; within each color, update velocities directly in parallel.
+Colored Gauss–Seidel:
+- Solve uses per-level 2-hop coloring and dispatches `RelaxColored` per color; within each color, constraints update velocities directly without overlap.
+- Coloring is rebuilt only when DT adjacency changes (`DT.AdjacencyVersion`) or when active prefix size changes.
 
-Coloring rule:
-- A constraint centered at i writes to i and its neighborhood, so a conservative “2-hop conflict” rule is used for coloring (neighbors + neighbors-of-neighbors) to avoid write overlap within a color.
-- Color count may be high (small per-color batches); treat as correctness-first, tune later.
+Adjacency readback boundary:
+- DT rebuilds adjacency on GPU and immediately reads neighbors + counts to CPU, and increments `AdjacencyVersion`.
+- The XPBI solver relies on `NeighborsCpu` / `NeighborCountsCpu` for coloring, so ensure DT adjacency readback is performed whenever topology changes (currently handled by `DT.Maintain()` calling `RebuildVertexAdjacencyAndTriMap()`).
 
-No per-step readbacks:
-- Coloring must not call `ComputeBuffer.GetData()` during solve iterations.
-- Use CPU-cached neighbor arrays that are refreshed only when DT adjacency is rebuilt.
-
-Per-level coloring cache:
-- Cache per-level color metadata (`colorCount`, `colorStarts[]`, `colorCounts[]`) and the GPU `_ColorOrder` buffer contents.
-- Rebuild only when topology changes (adjacency version changes) or when active prefix size changes for that level.
+Kernel presence:
+- If the compute shader is missing kernels, solver logs an error and returns early; keep kernel names stable when editing `Solver.compute`.
 
 
 ## 8) Rendering & materials
 
-- Texture baking: sprite → Texture2DArray baking should not rely on `Graphics.CopyTexture` because format conversions/cropping can fail; prefer a bake path that supports conversion and cropping.
-- Procedural draw: `Graphics.DrawProcedural` does not select shader passes; the `layer` argument is a Unity render layer. If you need “fill-only” vs “wire-only”, use separate shaders/materials.
-- Coarse levels: higher DT levels are for wireframe visualization only; do not draw textured fill for them.
-- Wireframe: render wire as an overlay (`ZWrite Off`), and keep thickness in pixel units to avoid “level 0 is huge” artifacts; if shared edges get darker, avoid alpha blending for the wire overlay.
-- UV anchoring: to make the texture move with the object (stable under deformation), compute UVs from stored rest positions (rest in normalized DT space) rather than current/world positions.
+- The renderer uses “rest in normalized DT space” for UV anchoring (`Node.originalPos` normalized by `Meshless.DtNormCenter` / `DtNormInvHalfExtent`).
+- Material sprites are baked into a `Texture2DArray` using a Blit→ReadPixels path in `MaterialLibrary.Rebuild()` to avoid format conversion issues.
+- Coarse levels are wireframe-only (fill is drawn only for level 0).
 
 
 ## 9) References (primary)
