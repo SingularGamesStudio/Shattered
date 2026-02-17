@@ -66,7 +66,6 @@ public class Meshless : MonoBehaviour {
         return dt != null;
     }
 
-
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
         nodes[nodeIdx].invMass = 0.0f;
@@ -139,6 +138,10 @@ public class Meshless : MonoBehaviour {
     }
 
     public void UpdateDelaunayAfterIntegration() {
+        UpdateDelaunayAfterIntegration(readback: true);
+    }
+
+    public void UpdateDelaunayAfterIntegration(bool readback) {
 
         if (dtAutoNormalizeAtRuntime) {
             bool changed = UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);
@@ -150,7 +153,15 @@ public class Meshless : MonoBehaviour {
 
         delaunayHierarchy.UpdatePositionsFromNodesAllLevels(nodes, dtNormCenter, dtNormInvHalfExtent);
         delaunayHierarchy.MaintainAllLevels(dtFixIterationsPerTick, dtLegalizeIterationsPerTick);
+
+        if (readback)
+            delaunayHierarchy.ReadbackAllLevels();
+    }
+
+    public void BuildHierarchyWithDtReadback() {
+        if (delaunayHierarchy == null) return;
         delaunayHierarchy.ReadbackAllLevels();
+        BuildHierarchy();
     }
 
     public void GetNeighborsForLevel(int level, int nodeIndex, List<int> dst) {
@@ -258,7 +269,6 @@ public class Meshless : MonoBehaviour {
             dtWarmupLegalizeIterations
         );
     }
-
 
     void ComputeRestVolumesFromDelaunayTriangles() {
         int n = nodes.Count;

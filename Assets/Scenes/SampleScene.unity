@@ -160,6 +160,8 @@ MonoBehaviour:
   useUnscaledTime: 0
   forceTPSToFPS: 0
   useHierarchicalSolver: 0
+  useGpuXpbiSolver: 1
+  gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   enableLoopProfiling: 1
   profileTicks: 20
   profileWarmupTicks: 0
@@ -342,13 +344,16 @@ MonoBehaviour:
   gravity: -0.01
   compliance: 1
   levelEndIndex: 
-  useDelaunayHierarchy: 1
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   dtFixIterationsPerTick: 1
   dtLegalizeIterationsPerTick: 1
   dtWarmupFixIterations: 64
   dtWarmupLegalizeIterations: 128
   dtNormalizePadding: 2
+  dtAutoNormalizeAtRuntime: 1
+  dtAutoNormalizeGrowFactor: 1.15
+  dtAutoNormalizeRecenterThreshold: 0.25
+  dtAutoNormalizeIncludeCamera: 1
   baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   center:
     x: -1

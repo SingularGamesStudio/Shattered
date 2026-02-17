@@ -63,6 +63,9 @@ namespace GPU.Delaunay {
         public ComputeBuffer HalfEdgesBuffer => halfEdges;
         public ComputeBuffer TriToHEBuffer => triToHE;
 
+        public ComputeBuffer NeighborsBuffer => neighbors;
+        public ComputeBuffer NeighborCountsBuffer => neighborCounts;
+
         public DelaunayGpu(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
 

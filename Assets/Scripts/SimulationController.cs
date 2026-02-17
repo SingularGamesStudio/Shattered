@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using GPU.Solver;
 using Physics;
 using Unity.Mathematics;
 using UnityEngine;
@@ -28,6 +29,13 @@ public sealed class SimulationController : MonoBehaviour {
     [Header("Hierarchy")]
     public bool useHierarchicalSolver = true;
 
+    [Header("GPU XPBI (experimental)")]
+    [Tooltip("Runs XPBI solve on GPU (hierarchical), non-deterministic scatter. Integration stays on CPU; DT update runs without DT neighbor readback.")]
+    public bool useGpuXpbiSolver = false;
+
+    [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
+    public ComputeShader gpuXpbiSolverShader;
+
     [Header("Profiling")]
     public bool enableLoopProfiling = false;
     [Min(1)] public int profileTicks = 2000;
@@ -43,6 +51,8 @@ public sealed class SimulationController : MonoBehaviour {
     readonly Dictionary<Meshless, float2[]> savedVelocitiesCache = new Dictionary<Meshless, float2[]>();
     readonly Dictionary<Meshless, NodeBatch> batchCache = new Dictionary<Meshless, NodeBatch>();
 
+    readonly Dictionary<Meshless, XPBIGpuSolver> gpuSolverCache = new Dictionary<Meshless, XPBIGpuSolver>();
+
     float accumulator;
     float keyHeldTime;
 
@@ -53,6 +63,10 @@ public sealed class SimulationController : MonoBehaviour {
 
     void OnDestroy() {
         if (Instance == this) Instance = null;
+
+        foreach (var kv in gpuSolverCache)
+            kv.Value?.Dispose();
+        gpuSolverCache.Clear();
     }
 
     public void Register(Meshless m) {
@@ -70,6 +84,11 @@ public sealed class SimulationController : MonoBehaviour {
             frameCounters.Remove(m);
             savedVelocitiesCache.Remove(m);
             batchCache.Remove(m);
+
+            if (gpuSolverCache.TryGetValue(m, out XPBIGpuSolver solver)) {
+                solver.Dispose();
+                gpuSolverCache.Remove(m);
+            }
         }
     }
 
@@ -152,15 +171,50 @@ public sealed class SimulationController : MonoBehaviour {
                     frameCounters.Remove(m);
                     savedVelocitiesCache.Remove(m);
                     batchCache.Remove(m);
+
+                    if (gpuSolverCache.TryGetValue(m, out XPBIGpuSolver solver)) {
+                        solver.Dispose();
+                        gpuSolverCache.Remove(m);
+                    }
                 }
                 continue;
             }
 
-            StepMeshless(m, dt * simulationSpeed);
+            if (useGpuXpbiSolver && gpuXpbiSolverShader && m.delaunayHierarchy != null) {
+                StepMeshlessGpu(m, dt * simulationSpeed);
+            } else {
+                StepMeshless(m, dt * simulationSpeed);
+            }
         }
 
         LoopProfiler.Add(LoopProfiler.Section.TickTotal, tickStart);
         LoopProfiler.EndTick();
+    }
+
+    void StepMeshlessGpu(Meshless meshless, float dt) {
+        if (!gpuSolverCache.TryGetValue(meshless, out XPBIGpuSolver solver) || solver == null) {
+            solver = new XPBIGpuSolver(gpuXpbiSolverShader);
+            gpuSolverCache[meshless] = solver;
+        }
+
+        long t = LoopProfiler.Stamp();
+        solver.UploadFromMeshless(meshless);
+        solver.SolveHierarchical(meshless, dt, useHierarchicalSolver);
+        solver.DownloadToMeshless(meshless);
+        LoopProfiler.Add(LoopProfiler.Section.SolveTotal, t);
+
+        t = LoopProfiler.Stamp();
+        IntegrateAndUpdate(meshless, dt, dtReadback: false);
+        LoopProfiler.Add(LoopProfiler.Section.IntegrateAndUpdate, t);
+
+        if (!frameCounters.ContainsKey(meshless)) frameCounters[meshless] = 0;
+        frameCounters[meshless]++;
+
+        if (frameCounters[meshless] % Const.HierarchyRebuildInterval == 0) {
+            t = LoopProfiler.Stamp();
+            meshless.BuildHierarchyWithDtReadback();
+            LoopProfiler.Add(LoopProfiler.Section.HierarchyRebuild, t);
+        }
     }
 
     private void StepMeshless(Meshless meshless, float dt) {
@@ -173,7 +227,7 @@ public sealed class SimulationController : MonoBehaviour {
         LoopProfiler.Add(LoopProfiler.Section.SolveTotal, t);
 
         t = LoopProfiler.Stamp();
-        IntegrateAndUpdate(meshless, dt);
+        IntegrateAndUpdate(meshless, dt, dtReadback: true);
         LoopProfiler.Add(LoopProfiler.Section.IntegrateAndUpdate, t);
 
         if (!frameCounters.ContainsKey(meshless)) frameCounters[meshless] = 0;
@@ -259,7 +313,7 @@ public sealed class SimulationController : MonoBehaviour {
         }
     }
 
-    private void IntegrateAndUpdate(Meshless meshless, float dt) {
+    private void IntegrateAndUpdate(Meshless meshless, float dt, bool dtReadback) {
         for (int i = 0; i < meshless.nodes.Count; i++) {
             if (meshless.nodes[i].isFixed) continue;
 
@@ -271,6 +325,6 @@ public sealed class SimulationController : MonoBehaviour {
             meshless.nodes[i].pos += meshless.nodes[i].vel * dt;
         }
 
-        meshless.UpdateDelaunayAfterIntegration();
+        meshless.UpdateDelaunayAfterIntegration(dtReadback);
     }
 }
