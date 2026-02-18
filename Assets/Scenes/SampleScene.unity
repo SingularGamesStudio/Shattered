@@ -155,8 +155,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   targetTPS: 500
   simulationSpeed: 10
+  targetFPS: 30
   manual: 1
-  maxTicksPerFrame: 1000000
   showTpsOverlay: 1
   tpsOverlayPos: {x: 10, y: 10}
   useUnscaledTime: 0

@@ -81,8 +81,10 @@ public class Meshless : MonoBehaviour {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
         maxLayer = -1;
-        for (int i = 0; i < nodes.Count; i++)
+        for (int i = 0; i < nodes.Count; i++) {
             maxLayer = math.max(maxLayer, nodes[i].maxLayer);
+            nodes[i].parentIndex = -1;
+        }
 
         BuildLevelEndIndex();
 
@@ -92,8 +94,6 @@ public class Meshless : MonoBehaviour {
         BuildDelaunayHierarchy();
 
         ComputeRestVolumesFromDelaunayTriangles();
-
-        BuildHierarchy();
     }
 
     void BuildLevelEndIndex() {
@@ -107,62 +107,22 @@ public class Meshless : MonoBehaviour {
         }
     }
 
-    public void BuildHierarchy() {
-        if (maxLayer < 0) return;
-        if (levelEndIndex == null || levelEndIndex.Length != maxLayer + 1)
-            BuildLevelEndIndex();
-
-        for (int i = 0; i < nodes.Count; i++) {
-            BuildParentRelationship(i);
-        }
-    }
-
-    void BuildParentRelationship(int nodeIdx) {
-        Node node = nodes[nodeIdx];
-        int parentLevel = node.maxLayer + 1;
-
-        if (parentLevel > maxLayer) {
-            node.parentIndex = -1;
-            return;
-        }
-
-        node.parentIndex = delaunayHierarchy.FindNearestCoarseToFine(parentLevel, node.pos, nodes);
-    }
-
     public int NodeCount(int level) {
         if (levelEndIndex == null || level < 0 || level > maxLayer) return 0;
         return levelEndIndex[level];
     }
 
     public void UpdateDelaunayAfterIntegration() {
-        UpdateDelaunayAfterIntegration(readback: true);
+        UpdateDelaunayAfterIntegration(readback: false);
     }
 
     public void UpdateDelaunayAfterIntegration(bool readback) {
-
         if (dtAutoNormalizeAtRuntime) {
-            bool changed = UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);
-            if (changed) {
-                // No rebuild needed: translation + uniform scale keeps DT topology valid,
-                // we only need to update positions with the new normalization.
-            }
+            UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);
         }
 
         delaunayHierarchy.UpdatePositionsFromNodesAllLevels(nodes, dtNormCenter, dtNormInvHalfExtent);
         delaunayHierarchy.MaintainAllLevels(dtFixIterationsPerTick, dtLegalizeIterationsPerTick);
-
-        if (readback)
-            delaunayHierarchy.ReadbackAllLevels();
-    }
-
-    public void BuildHierarchyWithDtReadback() {
-        if (delaunayHierarchy == null) return;
-        delaunayHierarchy.ReadbackAllLevels();
-        BuildHierarchy();
-    }
-
-    public void GetNeighborsForLevel(int level, int nodeIndex, List<int> dst) {
-        delaunayHierarchy?.FillNeighbors(level, nodeIndex, dst);
     }
 
     bool UpdateDelaunayNormalizationIfNeeded(Camera cam) {

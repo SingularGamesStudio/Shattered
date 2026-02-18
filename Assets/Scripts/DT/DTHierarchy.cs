@@ -13,9 +13,6 @@ namespace GPU.Delaunay {
 
         int neighborCount;
 
-        int[][] neighborsCpu;
-        int[][] neighborCountsCpu;
-
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
         readonly List<int> bad = new List<int>(128);
         readonly HashSet<DirEdge> boundary = new HashSet<DirEdge>(2048);
@@ -101,9 +98,6 @@ namespace GPU.Delaunay {
 
                 levels[level] = dt;
             }
-
-            EnsureReadbackStorage();
-            ReadbackAllLevels();
         }
 
         public void UpdatePositionsFromNodesAllLevels(List<Node> nodes, float2 normCenter, float normInvHalfExtent) {
@@ -126,118 +120,6 @@ namespace GPU.Delaunay {
             }
         }
 
-        public void ReadbackAllLevels() {
-            if (levels == null) return;
-
-            EnsureReadbackStorage();
-
-            for (int level = 0; level < levels.Length; level++) {
-                var dt = levels[level];
-                if (dt == null) continue;
-
-                int n = levelEndIndex[level];
-
-                int[] neigh = neighborsCpu[level];
-                int[] counts = neighborCountsCpu[level];
-
-                if (neigh == null || neigh.Length != n * neighborCount)
-                    neigh = neighborsCpu[level] = new int[n * neighborCount];
-
-                if (counts == null || counts.Length != n)
-                    counts = neighborCountsCpu[level] = new int[n];
-
-                dt.GetNeighbors(neigh);
-                dt.GetNeighborCounts(counts);
-            }
-        }
-
-        public void FillNeighbors(int level, int v, List<int> dst) {
-            if (dst == null) throw new ArgumentNullException(nameof(dst));
-            dst.Clear();
-
-            if (levels == null) return;
-            if ((uint)level >= (uint)levels.Length) return;
-            if (levels[level] == null) return;
-
-            int n = levelEndIndex[level];
-            if ((uint)v >= (uint)n) return;
-
-            int[] neigh = neighborsCpu[level];
-            int[] counts = neighborCountsCpu[level];
-            if (neigh == null || counts == null) return;
-
-            int count = counts[v];
-            if (count <= 0) return;
-
-            int baseIdx = v * neighborCount;
-            for (int i = 0; i < count; i++) {
-                int j = neigh[baseIdx + i];
-                if ((uint)j >= (uint)n) continue;
-                if (j < 0) continue;
-                dst.Add(j);
-            }
-        }
-
-        public int FindNearestCoarseToFine(int targetLevel, float2 queryWorld, List<Node> nodes) {
-            if (levels == null) return -1;
-            if ((uint)targetLevel >= (uint)levels.Length) return -1;
-            if (levels[targetLevel] == null) return -1;
-
-            int seed = 0;
-            for (int level = maxLevel; level >= targetLevel; level--) {
-                if (levels[level] == null) continue;
-
-                int n = levelEndIndex[level];
-                if (n <= 0) continue;
-
-                if ((uint)seed >= (uint)n) seed = 0;
-
-                seed = GreedyNearestAtLevel(level, seed, queryWorld, nodes);
-            }
-
-            int limit = levelEndIndex[targetLevel];
-            return (uint)seed < (uint)limit ? seed : -1;
-        }
-
-        int GreedyNearestAtLevel(int level, int seed, float2 queryWorld, List<Node> nodes) {
-            int n = levelEndIndex[level];
-            int[] neigh = neighborsCpu[level];
-            int[] counts = neighborCountsCpu[level];
-
-            if (neigh == null || counts == null) return seed;
-            if ((uint)seed >= (uint)n) return 0;
-
-            int cur = seed;
-            float best = math.distancesq(nodes[cur].pos, queryWorld);
-
-            for (int iter = 0; iter < 64; iter++) {
-                int baseIdx = cur * neighborCount;
-                int cnt = counts[cur];
-
-                int bestNext = cur;
-                float bestNextDist = best;
-
-                for (int i = 0; i < cnt; i++) {
-                    int j = neigh[baseIdx + i];
-                    if ((uint)j >= (uint)n) continue;
-                    if (j < 0) continue;
-
-                    float d = math.distancesq(nodes[j].pos, queryWorld);
-                    if (d < bestNextDist) {
-                        bestNextDist = d;
-                        bestNext = j;
-                    }
-                }
-
-                if (bestNext == cur) break;
-
-                cur = bestNext;
-                best = bestNextDist;
-            }
-
-            return cur;
-        }
-
         public void GetHalfEdges(int level, DT.HalfEdge[] dst) {
             if ((uint)level >= (uint)LevelCount) throw new ArgumentOutOfRangeException(nameof(level));
             if (levels[level] == null) throw new InvalidOperationException("Level DT is not initialized (too few vertices).");
@@ -250,8 +132,6 @@ namespace GPU.Delaunay {
             levelEndIndex = null;
             maxLevel = 0;
             gpuAllScratch = null;
-            neighborsCpu = null;
-            neighborCountsCpu = null;
         }
 
         void DisposeLevels() {
@@ -265,15 +145,6 @@ namespace GPU.Delaunay {
         void EnsureScratch(int count) {
             if (gpuAllScratch == null || gpuAllScratch.Length != count)
                 gpuAllScratch = new float2[count];
-        }
-
-        void EnsureReadbackStorage() {
-            int lvlCount = maxLevel + 1;
-            if (neighborsCpu == null || neighborsCpu.Length != lvlCount)
-                neighborsCpu = new int[lvlCount][];
-
-            if (neighborCountsCpu == null || neighborCountsCpu.Length != lvlCount)
-                neighborCountsCpu = new int[lvlCount][];
         }
 
         static void ComputeLevelEndIndex(List<Node> nodes, out int maxLevel, out int[] levelEndIndex) {

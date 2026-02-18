@@ -38,8 +38,6 @@ namespace GPU.Delaunay {
         float2[] superPoints;
         readonly uint[] flipScratch = { 0u };
 
-        int[] neighborsCpu;
-        int[] neighborCountsCpu;
         uint adjacencyVersion;
 
         int vertexCount;
@@ -64,9 +62,6 @@ namespace GPU.Delaunay {
         public int NeighborCount { get; private set; }
 
         public uint AdjacencyVersion => adjacencyVersion;
-
-        public int[] NeighborsCpu => neighborsCpu;
-        public int[] NeighborCountsCpu => neighborCountsCpu;
 
         public ComputeBuffer PositionsBuffer => positions;
         public ComputeBuffer HalfEdgesBuffer => halfEdges;
@@ -164,7 +159,7 @@ namespace GPU.Delaunay {
 
             BindCommon();
             DispatchClearTriLocks();
-            RebuildVertexAdjacencyAndTriMap(readback: true);
+            RebuildVertexAdjacencyAndTriMap();
         }
 
         void BindCommon() {
@@ -251,7 +246,7 @@ namespace GPU.Delaunay {
             return flipScratch[0];
         }
 
-        public void Maintain(int fixIterations, int legalizeIterations, bool readback = true) {
+        public void Maintain(int fixIterations, int legalizeIterations) {
             int groups = (halfEdgeCount + 255) / 256;
 
             for (int i = 0; i < fixIterations; i++) {
@@ -268,32 +263,16 @@ namespace GPU.Delaunay {
                 shader.Dispatch(kLegalizeHalfEdges, groups, 1, 1);
             }
 
-            RebuildVertexAdjacencyAndTriMap(readback);
+            RebuildVertexAdjacencyAndTriMap();
         }
 
-        void EnsureNeighborCpuCache() {
-            int expectedNeighbors = realVertexCount * NeighborCount;
-
-            if (neighborsCpu == null || neighborsCpu.Length != expectedNeighbors)
-                neighborsCpu = new int[expectedNeighbors];
-
-            if (neighborCountsCpu == null || neighborCountsCpu.Length != realVertexCount)
-                neighborCountsCpu = new int[realVertexCount];
-        }
-
-        public void RebuildVertexAdjacencyAndTriMap(bool readback = true) {
+        public void RebuildVertexAdjacencyAndTriMap() {
             shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
 
             shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
-
-            if (readback) {
-                EnsureNeighborCpuCache();
-                neighbors.GetData(neighborsCpu);
-                neighborCounts.GetData(neighborCountsCpu);
-            }
 
             adjacencyVersion++;
         }
@@ -306,19 +285,6 @@ namespace GPU.Delaunay {
             if (dst == null) throw new ArgumentNullException(nameof(dst));
             if (dst.Length != halfEdgeCount) throw new ArgumentException("Wrong destination length.", nameof(dst));
             halfEdges.GetData(dst);
-        }
-
-        public void GetNeighbors(int[] dst) {
-            if (dst == null) throw new ArgumentNullException(nameof(dst));
-            int expected = realVertexCount * NeighborCount;
-            if (dst.Length != expected) throw new ArgumentException($"Wrong destination length (expected {expected}).", nameof(dst));
-            neighbors.GetData(dst);
-        }
-
-        public void GetNeighborCounts(int[] dst) {
-            if (dst == null) throw new ArgumentNullException(nameof(dst));
-            if (dst.Length != realVertexCount) throw new ArgumentException($"Wrong destination length (expected {realVertexCount}).", nameof(dst));
-            neighborCounts.GetData(dst);
         }
 
         public void Dispose() {
@@ -341,8 +307,6 @@ namespace GPU.Delaunay {
             positionScratch = null;
             superPoints = null;
 
-            neighborsCpu = null;
-            neighborCountsCpu = null;
             adjacencyVersion = 0;
 
             vertexCount = 0;

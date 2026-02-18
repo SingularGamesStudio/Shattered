@@ -69,6 +69,8 @@ namespace GPU.Solver {
         bool initialized;
         int initializedCount = -1;
 
+        bool parentsBuilt;
+
         public ComputeBuffer PositionBuffer => pos;
 
         public XPBISolver(ComputeShader shader) {
@@ -132,6 +134,7 @@ namespace GPU.Solver {
 
             initialized = false;
             initializedCount = -1;
+            parentsBuilt = false;
         }
 
         void EnsureForceEventCapacity(int n) {
@@ -158,7 +161,7 @@ namespace GPU.Solver {
                 invMassCpu[i] = node.invMass;
                 flagsCpu[i] = node.isFixed || node.invMass <= 0f ? FixedFlag : 0u;
                 restVolumeCpu[i] = node.restVolume;
-                parentIndexCpu[i] = node.parentIndex;
+                parentIndexCpu[i] = -1;
                 FCpu[i] = new float4(node.F.c0, node.F.c1);
                 FpCpu[i] = new float4(node.Fp.c0, node.Fp.c1);
             }
@@ -174,6 +177,7 @@ namespace GPU.Solver {
 
             initialized = true;
             initializedCount = n;
+            parentsBuilt = false;
         }
 
         public void SetGameplayForces(ForceEvent[] events, int count) {
@@ -316,13 +320,13 @@ namespace GPU.Solver {
         }
 
         public void StepGpuTruth(
-    Meshless m,
-    float dt,
-    bool useHierarchical,
-    int dtFixIterations,
-    int dtLegalizeIterations,
-    bool rebuildParents
-) {
+            Meshless m,
+            float dt,
+            bool useHierarchical,
+            int dtFixIterations,
+            int dtLegalizeIterations,
+            bool rebuildParents
+        ) {
             if (!HasAllKernels()) {
                 if (!loggedKernelError) {
                     loggedKernelError = true;
@@ -374,6 +378,34 @@ namespace GPU.Solver {
             shader.SetFloat("_Gravity", m.gravity);
             shader.SetFloat("_Compliance", m.compliance);
 
+            bool rebuildAllParents = useHierarchical && m.maxLayer > 0 && (rebuildParents || !parentsBuilt);
+            if (rebuildAllParents) {
+                for (int level = m.maxLayer; level >= 1; level--) {
+                    if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                        continue;
+
+                    int activeCount = m.NodeCount(level);
+                    int fineCount = level > 1 ? m.NodeCount(level - 1) : total;
+                    if (fineCount <= activeCount)
+                        continue;
+
+                    shader.SetInt("_DtNeighborCount", dtLevel.NeighborCount);
+
+                    shader.SetInt("_ParentRangeStart", activeCount);
+                    shader.SetInt("_ParentRangeEnd", fineCount);
+                    shader.SetInt("_ParentCoarseCount", activeCount);
+
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_Pos", pos);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+                    shader.Dispatch(kRebuildParentsAtLevel, ((fineCount - activeCount) + 255) / 256, 1, 1);
+                }
+
+                parentsBuilt = true;
+            }
+
             // Force stage.
             shader.SetBuffer(kApplyGameplayForces, "_Vel", vel);
             shader.SetBuffer(kApplyGameplayForces, "_InvMass", invMass);
@@ -394,7 +426,6 @@ namespace GPU.Solver {
 
             shader.Dispatch(kExternalForces, (total + 255) / 256, 1, 1);
 
-            // Solve levels: only what the solver needs.
             int maxSolveLevel = (useHierarchical && m.levelEndIndex != null) ? m.maxLayer : 0;
             EnsurePerLevelCaches(maxSolveLevel + 1);
 
@@ -592,14 +623,12 @@ namespace GPU.Solver {
                 }
             }
 
-            // Integrate on GPU.
             shader.SetBuffer(kIntegratePositions, "_Pos", pos);
             shader.SetBuffer(kIntegratePositions, "_Vel", vel);
             shader.SetBuffer(kIntegratePositions, "_InvMass", invMass);
             shader.SetBuffer(kIntegratePositions, "_Flags", flags);
             shader.Dispatch(kIntegratePositions, (total + 255) / 256, 1, 1);
 
-            // DT update levels: always update all DT levels for rendering.
             int maxDtLevel = m.maxLayer;
             for (int level = maxDtLevel; level >= 0; level--) {
                 if (!m.TryGetLevelDt(level, out DT dtLevel))
@@ -620,24 +649,9 @@ namespace GPU.Solver {
                 shader.SetFloat("_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
                 shader.Dispatch(kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
 
-                dtLevel.Maintain(dtFixIterations, dtLegalizeIterations, readback: false);
-
-                if (rebuildParents && useHierarchical && level > 0 && fineCount > activeCount) {
-                    shader.SetInt("_ParentRangeStart", activeCount);
-                    shader.SetInt("_ParentRangeEnd", fineCount);
-                    shader.SetInt("_ParentCoarseCount", activeCount);
-
-                    shader.SetBuffer(kRebuildParentsAtLevel, "_Pos", pos);
-                    shader.SetBuffer(kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
-                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
-
-                    shader.Dispatch(kRebuildParentsAtLevel, ((fineCount - activeCount) + 255) / 256, 1, 1);
-                }
+                dtLevel.Maintain(dtFixIterations, dtLegalizeIterations);
             }
         }
-
-
 
         void ReleaseBuffers() {
             pos?.Dispose(); pos = null;
@@ -706,6 +720,7 @@ namespace GPU.Solver {
 
             initialized = false;
             initializedCount = -1;
+            parentsBuilt = false;
         }
 
         void Release() {
