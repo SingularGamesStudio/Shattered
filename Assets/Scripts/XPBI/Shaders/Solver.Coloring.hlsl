@@ -13,7 +13,7 @@ RWStructuredBuffer<int> _ColoringStarts;
 RWStructuredBuffer<int> _ColoringWrite;
 RWStructuredBuffer<int> _ColoringOrderOut;
 
-RWStructuredBuffer<int> _ColoringStats; // [0]=uncoloredCount, [1]=changedFlag
+RWStructuredBuffer<uint> _RelaxArgs;
 
 int _ColoringActiveCount;
 int _ColoringDtNeighborCount;
@@ -65,34 +65,97 @@ bool IsUsed(uint2 used, int c)
     return true;
 }
 
+bool HasHigherPrioSameColor2Hop(int i, int myC, uint myP)
+{
+    int baseI = i * _ColoringDtNeighborCount;
+    int nI = ClampNeighborCount(_ColoringDtNeighborCounts[i]);
+
+    for (int a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if ((uint)na >= (uint)_ColoringActiveCount)
+            continue;
+
+        if (_ColoringColor[na] == myC)
+        {
+            uint p = _ColoringPrio[na];
+            if (p > myP || (p == myP && na < i))
+                return true;
+        }
+    }
+
+    for (int a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if ((uint)na >= (uint)_ColoringActiveCount)
+            continue;
+
+        int baseA = na * _ColoringDtNeighborCount;
+        int nA = ClampNeighborCount(_ColoringDtNeighborCounts[na]);
+
+        for (int b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if ((uint)nb >= (uint)_ColoringActiveCount)
+                continue;
+            if (nb == i)
+                continue;
+
+            if (_ColoringColor[nb] == myC)
+            {
+                uint p = _ColoringPrio[nb];
+                if (p > myP || (p == myP && nb < i))
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 [numthreads(256, 1, 1)] void ColoringInit(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= (uint)_ColoringActiveCount)
         return;
 
-    _ColoringColor[i] = -1;
-    _ColoringProposed[i] = -1;
     _ColoringPrio[i] = GetPrio(i);
+    _ColoringColor[i] = (int)(i & 63u);
+    _ColoringProposed[i] = _ColoringColor[i];
 }
 
-    [numthreads(1, 1, 1)] void ColoringClearChanged(uint3 id : SV_DispatchThreadID)
-{
-    _ColoringStats[1] = 0;
-}
-
-[numthreads(1, 1, 1)] void ColoringClearUncolored(uint3 id : SV_DispatchThreadID)
-{
-    _ColoringStats[0] = 0;
-}
-
-    [numthreads(256, 1, 1)] void ColoringPropose(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)] void ColoringDetectConflicts(uint3 id : SV_DispatchThreadID)
 {
     int i = (int)id.x;
     if ((uint)i >= (uint)_ColoringActiveCount)
         return;
-    if (_ColoringColor[i] >= 0)
+
+    int myC = _ColoringColor[i];
+    if (myC < 0)
+    {
+        _ColoringProposed[i] = -1;
         return;
+    }
+
+    uint myP = _ColoringPrio[i];
+
+    if (HasHigherPrioSameColor2Hop(i, myC, myP))
+        _ColoringProposed[i] = -1;
+    else
+        _ColoringProposed[i] = myC;
+}
+
+[numthreads(256, 1, 1)] void ColoringChoose(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if ((uint)i >= (uint)_ColoringActiveCount)
+        return;
+
+    if (_ColoringColor[i] >= 0)
+    {
+        _ColoringProposed[i] = _ColoringColor[i];
+        return;
+    }
 
     uint2 used = uint2(0u, 0u);
 
@@ -144,77 +207,13 @@ bool IsUsed(uint2 used, int c)
     _ColoringProposed[i] = chosen;
 }
 
-[numthreads(256, 1, 1)] void ColoringResolve(uint3 id : SV_DispatchThreadID)
-{
-    int i = (int)id.x;
-    if ((uint)i >= (uint)_ColoringActiveCount)
-        return;
-    if (_ColoringColor[i] >= 0)
-        return;
-
-    int myC = _ColoringProposed[i];
-    if (myC < 0)
-        return;
-
-    uint myP = _ColoringPrio[i];
-
-    int baseI = i * _ColoringDtNeighborCount;
-    int nI = ClampNeighborCount(_ColoringDtNeighborCounts[i]);
-
-    for (int a = 0; a < nI; a++)
-    {
-        int na = _ColoringDtNeighbors[baseI + a];
-        if ((uint)na >= (uint)_ColoringActiveCount)
-            continue;
-
-        if (_ColoringColor[na] < 0 && _ColoringProposed[na] == myC)
-        {
-            uint p = _ColoringPrio[na];
-            if (p > myP || (p == myP && na < i))
-                return;
-        }
-    }
-
-    for (int a = 0; a < nI; a++)
-    {
-        int na = _ColoringDtNeighbors[baseI + a];
-        if ((uint)na >= (uint)_ColoringActiveCount)
-            continue;
-
-        int baseA = na * _ColoringDtNeighborCount;
-        int nA = ClampNeighborCount(_ColoringDtNeighborCounts[na]);
-
-        for (int b = 0; b < nA; b++)
-        {
-            int nb = _ColoringDtNeighbors[baseA + b];
-            if ((uint)nb >= (uint)_ColoringActiveCount)
-                continue;
-
-            if (_ColoringColor[nb] < 0 && _ColoringProposed[nb] == myC)
-            {
-                uint p = _ColoringPrio[nb];
-                if (p > myP || (p == myP && nb < i))
-                    return;
-            }
-        }
-    }
-
-    _ColoringColor[i] = myC;
-
-    int original;
-    InterlockedOr(_ColoringStats[1], 1, original);
-}
-
-    [numthreads(256, 1, 1)] void ColoringCountUncolored(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)] void ColoringApply(uint3 id : SV_DispatchThreadID)
 {
     int i = (int)id.x;
     if ((uint)i >= (uint)_ColoringActiveCount)
         return;
 
-    if (_ColoringColor[i] < 0)
-    {
-        InterlockedAdd(_ColoringStats[0], 1);
-    }
+    _ColoringColor[i] = _ColoringProposed[i];
 }
 
 [numthreads(256, 1, 1)] void ColoringClearMeta(uint3 id : SV_DispatchThreadID)
@@ -279,6 +278,20 @@ bool IsUsed(uint2 used, int c)
     int dst;
     InterlockedAdd(_ColoringWrite[c], 1, dst);
     _ColoringOrderOut[dst] = i;
+}
+
+[numthreads(64, 1, 1)] void ColoringBuildRelaxArgs(uint3 id : SV_DispatchThreadID)
+{
+    int c = (int)id.x;
+    if (c >= _ColoringMaxColors)
+        return;
+
+    uint count = (uint)max(_ColoringCounts[c], 0);
+    uint groupsX = (count + 255u) / 256u;
+
+    _RelaxArgs[c * 3 + 0] = groupsX;
+    _RelaxArgs[c * 3 + 1] = 1u;
+    _RelaxArgs[c * 3 + 2] = 1u;
 }
 
 #endif

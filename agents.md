@@ -66,7 +66,7 @@ Allocation discipline:
 GPU/CPU sync discipline:
 - Avoid per-step GPU→CPU readbacks inside solver iteration loops.
 - CPU readback of DT adjacency is allowed where DT adjacency is rebuilt anyway (DT rebuild increments an adjacency version and refreshes cached CPU arrays).
-- Tiny readbacks for orchestration metadata (e.g. a few ints for rebuild-time scheduling) are acceptable, but should not occur per-iteration.
+- Avoid per-step `ComputeBuffer.GetData` and avoid `AsyncGPUReadback` for solver scheduling; both are unsuitable for high-TPS solver loops.
 
 Determinism:
 - Do not depend on hash iteration order anywhere that affects physics.
@@ -88,8 +88,11 @@ Hierarchical schedule (coarse → fine, GPU XPBI):
    - Cache per-node kernel radius `h` from DT neighbors (`CacheKernelH`).
    - Compute correction matrix `L` (Bonet–Lok style) from DT neighbors + volumes (`ComputeCorrectionL`).
    - Cache `F0` and reset `lambda` (`CacheF0AndResetLambda`).
-   - Build / reuse 2-hop coloring on GPU from DT neighbor buffers and build `_ColorOrder` (plus per-color ranges) when needed.
-   - Run iterations (level 0 uses `Const.Iterations`, coarse levels use `Const.HPBDIterations`) by dispatching `RelaxColored` per color range.
+   - Build / reuse 2-hop coloring on GPU when needed (keyed by `DT.AdjacencyVersion` + active prefix).
+     - Coloring uses conflict-detection recoloring: speculative colors, conflict detection (2-hop), clear losers by priority, then recolor cleared vertices.
+     - Builds `_ColorOrder`, `_ColorCounts`, `_ColorStarts` on GPU.
+     - Builds per-color `DispatchIndirect` args on GPU (3 uints per color).
+   - Run iterations (level 0 uses `Const.Iterations`, coarse levels use `Const.HPBDIterations`) by dispatching `RelaxColored` with `DispatchIndirect` per color (no readbacks for scheduling).
    - Prolongate parent Δv into children prefix range (`Prolongate`) when `level > 0`.
    - Commit deformation only on level 0 (`CommitDeformation`).
 4) Solver downloads vel/F/Fp back to `Meshless.nodes`.
@@ -124,13 +127,13 @@ Orchestration / entry points:
 
 GPU XPBI solver:
 - `Assets/Scripts/XPBI/XPBISolver.cs`
-  CPU-side driver: GPU buffers, per-level dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`, upload/download to Meshless.
+  CPU-side driver: GPU buffers, per-level dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`.
 - `Assets/Scripts/XPBI/Shaders/Solver.compute`
   Compute kernel entrypoints; includes shared code in:
   - `Solver.Shared.hlsl`
   - `Solver.Cache.hlsl`
   - `Solver.Relax.hlsl`
-  - `Solver.Coloring.hlsl`
+  - `Solver.Coloring.hlsl` (GPU coloring + indirect args build)
 - `Assets/Scripts/XPBI/Shaders/Deformation.hlsl`
   Deformation utilities used by the compute solver (strain/plasticity helpers, etc.).
 - `Assets/Scripts/XPBI/Shaders/Utils.hlsl`
@@ -164,10 +167,7 @@ Utilities:
 Colored Gauss–Seidel:
 - Solve uses per-level 2-hop coloring and dispatches `RelaxColored` per color; within each color, constraints update velocities directly without overlap.
 - Coloring is rebuilt only when DT adjacency changes (`DT.AdjacencyVersion`) or when active prefix size changes.
-
-GPU coloring implementation:
-- Coloring and `_ColorOrder` construction are performed on GPU using the DT neighbor buffers (`NeighborsBuffer`, `NeighborCountsBuffer`).
-- The solver may read back small rebuild-time metadata (e.g. color counts / starts) for CPU-side dispatch scheduling, but does not require reading back DT neighbor sets for coloring.
+- Per-color scheduling does not use GPU→CPU readbacks; `DispatchIndirect` uses GPU-built args buffers.
 
 Adjacency readback boundary:
 - DT rebuilds adjacency on GPU and may read neighbors + counts to CPU for CPU-side features/debug, and increments `AdjacencyVersion`.

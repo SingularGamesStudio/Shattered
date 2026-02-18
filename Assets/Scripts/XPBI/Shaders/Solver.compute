@@ -13,16 +13,14 @@
 #pragma kernel RelaxColored
 
 #pragma kernel ColoringInit
-
-#pragma kernel ColoringClearChanged
-#pragma kernel ColoringClearUncolored
-#pragma kernel ColoringPropose
-#pragma kernel ColoringResolve
-#pragma kernel ColoringCountUncolored
+#pragma kernel ColoringDetectConflicts
+#pragma kernel ColoringApply
+#pragma kernel ColoringChoose
 #pragma kernel ColoringClearMeta
 #pragma kernel ColoringBuildCounts
 #pragma kernel ColoringBuildStarts
 #pragma kernel ColoringScatterOrder
+#pragma kernel ColoringBuildRelaxArgs
 
 #include "Solver.Shared.hlsl"
 #include "Solver.Cache.hlsl"

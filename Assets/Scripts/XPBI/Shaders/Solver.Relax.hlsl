@@ -247,10 +247,14 @@ static XPBI_Mat2 EstimateVelocityGradient(int gi, float2 xi, float2 vi, XPBI_Mat
 [numthreads(256, 1, 1)] void RelaxColored(uint3 id : SV_DispatchThreadID)
 {
     int idx = (int)id.x;
-    if (idx >= _ColorCount)
+
+    int count = _ColorCounts[_ColorIndex];
+    if (idx >= count)
         return;
 
-    int li = _ColorOrder[_ColorStart + idx];
+    int start = _ColorStarts[_ColorIndex];
+
+    int li = _ColorOrder[start + idx];
     if (li < 0 || li >= _ActiveCount)
         return;
 

@@ -28,9 +28,11 @@ RWStructuredBuffer<uint> _VelDeltaBits;
 
 StructuredBuffer<int> _DtNeighbors;
 StructuredBuffer<int> _DtNeighborCounts;
+
 StructuredBuffer<int> _ColorOrder;
-int _ColorStart;
-int _ColorCount;
+StructuredBuffer<int> _ColorCounts;
+StructuredBuffer<int> _ColorStarts;
+int _ColorIndex;
 
 int _DtNeighborCount;
 
