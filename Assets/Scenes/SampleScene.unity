@@ -154,8 +154,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetTPS: 500
+  targetFPS: 60
   simulationSpeed: 10
-  targetFPS: 30
   manual: 1
   showTpsOverlay: 1
   tpsOverlayPos: {x: 10, y: 10}

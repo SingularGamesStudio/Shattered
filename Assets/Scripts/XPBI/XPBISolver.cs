@@ -644,12 +644,14 @@ namespace GPU.Solver {
                 shader.SetInt("_DtNeighborCount", dtLevel.NeighborCount);
 
                 shader.SetBuffer(kUpdateDtPositions, "_Pos", pos);
-                shader.SetBuffer(kUpdateDtPositions, "_DtPositions", dtLevel.PositionsBuffer);
+                shader.SetBuffer(kUpdateDtPositions, "_DtPositions", dtLevel.PositionsWriteBuffer);
                 shader.SetVector("_DtNormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
                 shader.SetFloat("_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
                 shader.Dispatch(kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
 
+                dtLevel.BindPositionsForMaintain(dtLevel.PositionsWriteBuffer);
                 dtLevel.Maintain(dtFixIterations, dtLegalizeIterations);
+                dtLevel.SwapPositionsAfterTick();
             }
         }
 

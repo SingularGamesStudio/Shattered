@@ -10,14 +10,12 @@ public sealed class SimulationController : MonoBehaviour {
 
     [Header("Rate")]
     [Min(1f)] public float targetTPS = 1000f;
+    [Min(1f)] public float targetFPS = 60f;
     public float simulationSpeed = 1f;
 
     [Header("Mode")]
     [Tooltip("When enabled, simulation advances only via the T key (tap = 1 tick, hold = continuous).")]
     public bool manual = true;
-
-    [Header("Catch-up / throttling")]
-    [Min(1)] public int maxTicksPerFrame = 8;
 
     [Header("UI")]
     public bool showTpsOverlay = true;
@@ -54,6 +52,9 @@ public sealed class SimulationController : MonoBehaviour {
 
     int lastFrameTicks;
     float tpsSmoothed;
+
+    float renderAlpha;
+    public float RenderAlpha => renderAlpha;
 
     void Awake() {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
@@ -110,41 +111,50 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void Update() {
+        if (targetTPS <= 0f)
+            return;
+
         float frameDt = useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
-        if (targetTPS <= 0f || frameDt <= 0f) return;
+        if (frameDt < 0f) frameDt = 0f;
 
         float tickDt = 1f / targetTPS;
 
+        float clampedFps = Mathf.Max(1f, targetFPS);
+        float budgetSeconds = (1f / clampedFps);
+        float frameEndTime = Time.realtimeSinceStartup + budgetSeconds;
+
         lastFrameTicks = 0;
 
-        if (manual) ManualUpdate(frameDt, tickDt);
-        else AutoUpdate(frameDt, tickDt);
+        if (manual) ManualUpdate(frameDt, tickDt, frameEndTime);
+        else AutoUpdate(frameDt, tickDt, frameEndTime);
+
+        renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
 
         ProcessReadbacks();
         UpdateTpsDisplay(frameDt);
     }
 
-    void AutoUpdate(float frameDt, float tickDt) {
-        // Drop-backlog model:
-        // - Accumulate time, but cap it to what we can simulate this frame.
-        // - If we can't keep up, we discard remaining lag => sim slows down instead of trying to catch up.
-        float cap = tickDt * maxTicksPerFrame;
-        accumulator = Mathf.Min(accumulator + frameDt, cap);
+    void AutoUpdate(float frameDt, float tickDt, float frameEndTime) {
+        accumulator += frameDt;
 
         int ticks = 0;
-        while (accumulator >= tickDt && ticks < maxTicksPerFrame) {
+        float now = Time.realtimeSinceStartup;
+
+        while (accumulator >= tickDt && now <= frameEndTime) {
             Tick(tickDt);
             accumulator -= tickDt;
             ticks++;
+            now = Time.realtimeSinceStartup;
         }
 
-        if (ticks == maxTicksPerFrame && accumulator >= tickDt)
+        if (accumulator >= tickDt && now > frameEndTime)
             accumulator = 0f;
 
         lastFrameTicks += ticks;
     }
 
-    void ManualUpdate(float frameDt, float tickDt) {
+
+    void ManualUpdate(float frameDt, float tickDt, float frameEndTime) {
         if (Input.GetKeyDown(KeyCode.T)) {
             keyHeldTime = 0f;
             accumulator = 0f;
@@ -152,7 +162,22 @@ public sealed class SimulationController : MonoBehaviour {
 
         if (Input.GetKey(KeyCode.T)) {
             keyHeldTime += frameDt;
-            if (keyHeldTime >= holdThreshold) AutoUpdate(frameDt, tickDt);
+
+            if (keyHeldTime >= holdThreshold) {
+                accumulator += frameDt;
+
+                int ticks = 0;
+                float now = Time.realtimeSinceStartup;
+
+                while (accumulator >= tickDt && now <= frameEndTime) {
+                    Tick(tickDt);
+                    accumulator -= tickDt;
+                    ticks++;
+                    now = Time.realtimeSinceStartup;
+                }
+
+                lastFrameTicks += ticks;
+            }
         }
 
         if (Input.GetKeyUp(KeyCode.T)) {

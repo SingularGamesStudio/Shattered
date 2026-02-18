@@ -84,7 +84,6 @@ public sealed class Renderer : MonoBehaviour {
             int maxLevel = m.maxLayer;
             Bounds bounds = ComputeBounds(m);
 
-            // Fill: only level 0.
             if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
                 SetupCommon(m, dt0, lib, m.NodeCount(0));
 
@@ -135,7 +134,8 @@ public sealed class Renderer : MonoBehaviour {
         }
 
         int n = m.nodes.Count;
-        if (st.capacity != n || st.materialIds == null || st.restNorm == null) {
+        bool reallocated = st.capacity != n || st.materialIds == null || st.restNorm == null;
+        if (reallocated) {
             st.materialIds?.Dispose();
             st.restNorm?.Dispose();
 
@@ -150,11 +150,17 @@ public sealed class Renderer : MonoBehaviour {
             st.lastInvHalfExtent = float.NaN;
         }
 
-        for (int i = 0; i < n; i++)
-            st.materialIdsCpu[i] = m.nodes[i].materialId;
-        st.materialIds.SetData(st.materialIdsCpu);
+        bool materialIdsChanged = reallocated;
+        for (int i = 0; i < n; i++) {
+            int id = m.nodes[i].materialId;
+            if (st.materialIdsCpu[i] != id) {
+                st.materialIdsCpu[i] = id;
+                materialIdsChanged = true;
+            }
+        }
+        if (materialIdsChanged)
+            st.materialIds.SetData(st.materialIdsCpu);
 
-        // Rest in normalized DT space.
         float2 center = m.DtNormCenter;
         float inv = m.DtNormInvHalfExtent;
         if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv) {
@@ -173,10 +179,23 @@ public sealed class Renderer : MonoBehaviour {
     void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount) {
         if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
 
+        float alpha = 0f;
+        var sc = SimulationController.Instance;
+        if (sc != null) alpha = sc.RenderAlpha;
+
         mpb.Clear();
         mpb.SetTexture("_AlbedoArray", lib.AlbedoArray);
 
-        mpb.SetBuffer("_Positions", dt.PositionsBuffer);
+        var posPrev = dt.PositionsPrevBuffer ?? dt.PositionsBuffer;
+        var posCurr = dt.PositionsCurrBuffer ?? dt.PositionsBuffer;
+
+        mpb.SetBuffer("_PositionsPrev", posPrev);
+        mpb.SetBuffer("_PositionsCurr", posCurr);
+        mpb.SetFloat("_RenderAlpha", alpha);
+
+        // Back-compat binding for any other debug shaders still using _Positions.
+        mpb.SetBuffer("_Positions", posCurr);
+
         mpb.SetBuffer("_HalfEdges", dt.HalfEdgesBuffer);
         mpb.SetBuffer("_TriToHE", dt.TriToHEBuffer);
 

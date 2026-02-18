@@ -10,7 +10,7 @@ Shader "Unlit/Wireframe"
         Pass
         {
             ZWrite Off
-                ZTest Always
+                ZTest LEqual
                     Cull Off
                         Blend Off
 
@@ -27,7 +27,10 @@ Shader "Unlit/Wireframe"
                 int t;
             };
 
-            StructuredBuffer<float2> _Positions;
+            StructuredBuffer<float2> _PositionsPrev;
+            StructuredBuffer<float2> _PositionsCurr;
+            float _RenderAlpha;
+
             StructuredBuffer<HalfEdge> _HalfEdges;
             StructuredBuffer<int> _TriToHE;
 
@@ -81,7 +84,9 @@ Shader "Unlit/Wireframe"
 
                 int v = (corner == 0) ? v0 : (corner == 1 ? v1 : v2);
 
-                float2 pW = GpuToWorld(_Positions[v]);
+                float a = saturate(_RenderAlpha);
+                float2 p = lerp(_PositionsPrev[v], _PositionsCurr[v], a);
+                float2 pW = GpuToWorld(p);
                 o.pos = mul(UNITY_MATRIX_VP, float4(pW.x, pW.y, 0.0, 1.0));
 
                 o.bary = (corner == 0) ? float3(1, 0, 0) : (corner == 1 ? float3(0, 1, 0) : float3(0, 0, 1));

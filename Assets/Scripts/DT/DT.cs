@@ -21,7 +21,10 @@ namespace GPU.Delaunay {
         readonly ComputeShader shader;
         readonly bool ownsShaderInstance;
 
-        ComputeBuffer positions;
+        ComputeBuffer positionsA;
+        ComputeBuffer positionsB;
+        bool positionsAIsCurrent = true;
+
         ComputeBuffer halfEdges;
         ComputeBuffer triLocks;
 
@@ -63,7 +66,13 @@ namespace GPU.Delaunay {
 
         public uint AdjacencyVersion => adjacencyVersion;
 
-        public ComputeBuffer PositionsBuffer => positions;
+        public ComputeBuffer PositionsCurrBuffer => positionsAIsCurrent ? positionsA : positionsB;
+        public ComputeBuffer PositionsPrevBuffer => positionsAIsCurrent ? positionsB : positionsA;
+        public ComputeBuffer PositionsWriteBuffer => PositionsPrevBuffer;
+
+        // Back-compat: treat "PositionsBuffer" as "current".
+        public ComputeBuffer PositionsBuffer => PositionsCurrBuffer;
+
         public ComputeBuffer HalfEdgesBuffer => halfEdges;
         public ComputeBuffer TriToHEBuffer => triToHE;
 
@@ -129,7 +138,10 @@ namespace GPU.Delaunay {
                 allPoints[realVertexCount + 2],
             };
 
-            positions = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
+            positionsA = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
+            positionsB = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
+            positionsAIsCurrent = true;
+
             halfEdges = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
             triLocks = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
 
@@ -144,7 +156,8 @@ namespace GPU.Delaunay {
             for (int i = 0; i < vertexCount; i++)
                 positionScratch[i] = allPoints[i];
 
-            positions.SetData(positionScratch);
+            positionsA.SetData(positionScratch);
+            positionsB.SetData(positionScratch);
 
             var he = new HalfEdge[halfEdgeCount];
             for (int i = 0; i < halfEdgeCount; i++) {
@@ -181,12 +194,12 @@ namespace GPU.Delaunay {
             shader.SetBuffer(kBuildNeighbors, "_Neighbors", neighbors);
             shader.SetBuffer(kBuildNeighbors, "_NeighborCounts", neighborCounts);
 
-            shader.SetBuffer(kFixHalfEdges, "_Positions", positions);
+            BindPositionsForMaintain(PositionsCurrBuffer);
+
             shader.SetBuffer(kFixHalfEdges, "_HalfEdges", halfEdges);
             shader.SetBuffer(kFixHalfEdges, "_TriLocks", triLocks);
             shader.SetBuffer(kFixHalfEdges, "_FlipCount", flipCount);
 
-            shader.SetBuffer(kLegalizeHalfEdges, "_Positions", positions);
             shader.SetBuffer(kLegalizeHalfEdges, "_HalfEdges", halfEdges);
             shader.SetBuffer(kLegalizeHalfEdges, "_TriLocks", triLocks);
             shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", flipCount);
@@ -195,6 +208,16 @@ namespace GPU.Delaunay {
 
             shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", halfEdges);
             shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", triToHE);
+        }
+
+        public void BindPositionsForMaintain(ComputeBuffer pos) {
+            shader.SetBuffer(kFixHalfEdges, "_Positions", pos);
+            shader.SetBuffer(kLegalizeHalfEdges, "_Positions", pos);
+        }
+
+        public void SwapPositionsAfterTick() {
+            positionsAIsCurrent = !positionsAIsCurrent;
+            BindPositionsForMaintain(PositionsCurrBuffer);
         }
 
         public void UpdatePositionsFromNodes(List<Node> nodes) {
@@ -208,7 +231,10 @@ namespace GPU.Delaunay {
             positionScratch[realVertexCount + 1] = superPoints[1];
             positionScratch[realVertexCount + 2] = superPoints[2];
 
-            positions.SetData(positionScratch);
+            positionsA.SetData(positionScratch);
+            positionsB.SetData(positionScratch);
+            positionsAIsCurrent = true;
+            BindPositionsForMaintain(PositionsCurrBuffer);
         }
 
         public void UpdatePositionsFromNodes(List<Node> nodes, float2 center, float invHalfExtent) {
@@ -222,7 +248,10 @@ namespace GPU.Delaunay {
             positionScratch[realVertexCount + 1] = superPoints[1];
             positionScratch[realVertexCount + 2] = superPoints[2];
 
-            positions.SetData(positionScratch);
+            positionsA.SetData(positionScratch);
+            positionsB.SetData(positionScratch);
+            positionsAIsCurrent = true;
+            BindPositionsForMaintain(PositionsCurrBuffer);
         }
 
         // Used by the hierarchy: the DT only owns the prefix [0..RealVertexCount).
@@ -237,7 +266,10 @@ namespace GPU.Delaunay {
             positionScratch[realVertexCount + 1] = superPoints[1];
             positionScratch[realVertexCount + 2] = superPoints[2];
 
-            positions.SetData(positionScratch);
+            positionsA.SetData(positionScratch);
+            positionsB.SetData(positionScratch);
+            positionsAIsCurrent = true;
+            BindPositionsForMaintain(PositionsCurrBuffer);
         }
 
         public uint GetLastFlipCount() {
@@ -295,7 +327,9 @@ namespace GPU.Delaunay {
         }
 
         void DisposeBuffers() {
-            positions?.Dispose(); positions = null;
+            positionsA?.Dispose(); positionsA = null;
+            positionsB?.Dispose(); positionsB = null;
+
             halfEdges?.Dispose(); halfEdges = null;
             triLocks?.Dispose(); triLocks = null;
             vToE?.Dispose(); vToE = null;
@@ -313,6 +347,7 @@ namespace GPU.Delaunay {
             realVertexCount = 0;
             halfEdgeCount = 0;
             triCount = 0;
+            positionsAIsCurrent = true;
         }
     }
 }
