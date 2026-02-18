@@ -125,13 +125,9 @@ GPU XPBI solver:
 - `Assets/Scripts/XPBI/XPBISolver.cs`
   CPU-side driver: GPU buffers, per-level dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`, upload/download to Meshless.
 - `Assets/Scripts/XPBI/Shaders/Solver.compute`
-  Compute kernels for: forces, caching (volumes/h/L/F0/lambda), relax, prolongate, commit deformation.
+  Compute kernels for: forces, caching (volumes/h/L/F0/lambda), relax, prolongate, commit deformation. Only includes files, actual code is in `Solver.Relax.hlsl`, `Solver.Shared.hlsl`, `Solver.Cache.hlsl`
 - `Assets/Scripts/XPBI/Shaders/Deformation.hlsl`
   Deformation utilities used by the compute solver (strain/plasticity helpers, etc.).
-- `Assets/Scripts/XPBI/Shaders/SPH.hlsl`
-  Kernel functions (Wendland C2) and gradients used by the compute solver.
-- `Assets/Scripts/XPBI/Shaders/Atomics.hlsl`
-  Atomic helpers used for scatter-style accumulation and packed float atomics.
 - `Assets/Scripts/XPBI/Shaders/Utils.hlsl`
   Shared math/utility helpers for the compute solver.
 

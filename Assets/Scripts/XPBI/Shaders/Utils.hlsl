@@ -120,4 +120,21 @@ static XPBI_Mat2 XPBI_PseudoInverseMat2(XPBI_Mat2 A, float stretchEps, float eig
     return XPBI_MulMat2(VSinv, XPBI_TransposeMat2(U));
 }
 
+static void XPBI_AtomicAddFloatBits(RWStructuredBuffer<uint> buf, uint idx, float add)
+{
+    uint expected;
+    uint original;
+
+    [loop] for (int it = 0; it < 64; it++)
+    {
+        expected = buf[idx];
+        float cur = asfloat(expected);
+        uint desired = asuint(cur + add);
+
+        InterlockedCompareExchange(buf[idx], expected, desired, original);
+        if (original == expected)
+            return;
+    }
+}
+
 #endif
