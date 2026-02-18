@@ -7,6 +7,10 @@ namespace GPU.Solver {
     public sealed class XPBISolver : IDisposable {
         const uint FixedFlag = 1u;
 
+        const int ColoringMaxColors = 64;
+        const int ColoringBatchRounds = 8;
+        const int ColoringMaxBatches = 32;
+
         readonly ComputeShader shader;
 
         ComputeBuffer pos;
@@ -29,6 +33,19 @@ namespace GPU.Solver {
 
         ComputeBuffer[] colorOrders;
 
+        ComputeBuffer coloringColor;
+        ComputeBuffer coloringProposed;
+        ComputeBuffer coloringPrio;
+
+        ComputeBuffer coloringCountsGpu;
+        ComputeBuffer coloringStartsGpu;
+        ComputeBuffer coloringWriteGpu;
+        ComputeBuffer coloringStatsGpu;
+
+        int[] coloringCountsCpu;
+        int[] coloringStartsCpu;
+        int[] coloringStatsCpu;
+
         float2[] posCpu;
         float2[] velCpu;
         float[] invMassCpu;
@@ -38,13 +55,6 @@ namespace GPU.Solver {
         float4[] FCpu;
         float4[] FpCpu;
 
-        int[] colorsCpu;
-        int[] colorOrderCpu;
-
-        int[] colorCounts;
-        int[] colorStarts;
-        int[] colorWrite;
-
         int[][] cachedColorCountsByLevel;
         int[][] cachedColorStartsByLevel;
         int[] cachedColorCountByLevel;
@@ -52,7 +62,6 @@ namespace GPU.Solver {
         uint[] cachedAdjacencyVersionByLevel;
 
         int capacity;
-        int coloringCapacity;
 
         bool loggedKernelError;
 
@@ -91,6 +100,19 @@ namespace GPU.Solver {
             savedVelPrefix = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
 
+            coloringColor = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
+            coloringProposed = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
+            coloringPrio = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
+
+            coloringCountsGpu = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            coloringStartsGpu = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            coloringWriteGpu = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            coloringStatsGpu = new ComputeBuffer(2, sizeof(int), ComputeBufferType.Structured);
+
+            coloringCountsCpu = new int[ColoringMaxColors];
+            coloringStartsCpu = new int[ColoringMaxColors];
+            coloringStatsCpu = new int[2];
+
             posCpu = new float2[capacity];
             velCpu = new float2[capacity];
             invMassCpu = new float[capacity];
@@ -99,13 +121,6 @@ namespace GPU.Solver {
             parentIndexCpu = new int[capacity];
             FCpu = new float4[capacity];
             FpCpu = new float4[capacity];
-
-            coloringCapacity = 0;
-            colorsCpu = null;
-            colorOrderCpu = null;
-            colorCounts = null;
-            colorStarts = null;
-            colorWrite = null;
 
             colorOrders = null;
 
@@ -160,22 +175,6 @@ namespace GPU.Solver {
             }
         }
 
-        void EnsureColoringCapacity(int activeCount) {
-            if (activeCount <= 0) return;
-
-            if (coloringCapacity < activeCount) {
-                coloringCapacity = math.max(256, coloringCapacity);
-                while (coloringCapacity < activeCount) coloringCapacity *= 2;
-
-                colorsCpu = new int[coloringCapacity];
-                colorOrderCpu = new int[coloringCapacity];
-
-                colorCounts = new int[coloringCapacity];
-                colorStarts = new int[coloringCapacity];
-                colorWrite = new int[coloringCapacity];
-            }
-        }
-
         void EnsurePerLevelCaches(int levelCount) {
             if (levelCount <= 0) return;
 
@@ -217,75 +216,6 @@ namespace GPU.Solver {
             return buf;
         }
 
-        int ClampNeighborCount(int n, int neighborCount) {
-            if (n < 0) return 0;
-            if (n > neighborCount) return neighborCount;
-            return n;
-        }
-
-        void Build2HopColoring(int[] neighborsCpu, int[] neighborCountsCpu, int activeCount, int neighborCount, out int colorCount) {
-            for (int i = 0; i < activeCount; i++) colorsCpu[i] = -1;
-
-            int usedColors = 0;
-
-            for (int i = 0; i < activeCount; i++) {
-                int stamp = i + 1;
-
-                int baseI = i * neighborCount;
-                int nI = ClampNeighborCount(neighborCountsCpu[i], neighborCount);
-
-                for (int a = 0; a < nI; a++) {
-                    int na = neighborsCpu[baseI + a];
-                    if ((uint)na >= (uint)activeCount) continue;
-
-                    int ci = colorsCpu[na];
-                    if ((uint)ci < (uint)usedColors) colorCounts[ci] = stamp;
-                }
-
-                for (int a = 0; a < nI; a++) {
-                    int na = neighborsCpu[baseI + a];
-                    if ((uint)na >= (uint)activeCount) continue;
-
-                    int baseA = na * neighborCount;
-                    int nA = ClampNeighborCount(neighborCountsCpu[na], neighborCount);
-
-                    for (int b = 0; b < nA; b++) {
-                        int nb = neighborsCpu[baseA + b];
-                        if ((uint)nb >= (uint)activeCount) continue;
-
-                        int ci = colorsCpu[nb];
-                        if ((uint)ci < (uint)usedColors) colorCounts[ci] = stamp;
-                    }
-                }
-
-                int assigned = -1;
-                for (int c = 0; c < usedColors; c++) {
-                    if (colorCounts[c] != stamp) { assigned = c; break; }
-                }
-                if (assigned < 0) assigned = usedColors++;
-
-                colorsCpu[i] = assigned;
-            }
-
-            Array.Clear(colorCounts, 0, usedColors);
-
-            for (int i = 0; i < activeCount; i++) colorCounts[colorsCpu[i]]++;
-
-            int sum = 0;
-            for (int c = 0; c < usedColors; c++) {
-                colorStarts[c] = sum;
-                sum += colorCounts[c];
-                colorWrite[c] = colorStarts[c];
-            }
-
-            for (int i = 0; i < activeCount; i++) {
-                int c = colorsCpu[i];
-                colorOrderCpu[colorWrite[c]++] = i;
-            }
-
-            colorCount = usedColors;
-        }
-
         bool HasAllKernels() {
             return
                 shader.HasKernel("ClearCurrentVolume") &&
@@ -300,7 +230,17 @@ namespace GPU.Solver {
                 shader.HasKernel("ApplyVelDelta") &&
                 shader.HasKernel("Prolongate") &&
                 shader.HasKernel("CommitDeformation") &&
-                shader.HasKernel("ExternalForces");
+                shader.HasKernel("ExternalForces") &&
+                shader.HasKernel("ColoringInit") &&
+                shader.HasKernel("ColoringClearChanged") &&
+                shader.HasKernel("ColoringClearUncolored") &&
+                shader.HasKernel("ColoringPropose") &&
+                shader.HasKernel("ColoringResolve") &&
+                shader.HasKernel("ColoringCountUncolored") &&
+                shader.HasKernel("ColoringClearMeta") &&
+                shader.HasKernel("ColoringBuildCounts") &&
+                shader.HasKernel("ColoringBuildStarts") &&
+                shader.HasKernel("ColoringScatterOrder");
         }
 
         public void SolveHierarchical(Meshless m, float dt, bool useHierarchical) {
@@ -327,6 +267,17 @@ namespace GPU.Solver {
             int kProlongate = shader.FindKernel("Prolongate");
             int kCommitDeformation = shader.FindKernel("CommitDeformation");
             int kExternalForces = shader.FindKernel("ExternalForces");
+
+            int kColoringInit = shader.FindKernel("ColoringInit");
+            int kColoringClearChanged = shader.FindKernel("ColoringClearChanged");
+            int kColoringClearUncolored = shader.FindKernel("ColoringClearUncolored");
+            int kColoringPropose = shader.FindKernel("ColoringPropose");
+            int kColoringResolve = shader.FindKernel("ColoringResolve");
+            int kColoringCountUncolored = shader.FindKernel("ColoringCountUncolored");
+            int kColoringClearMeta = shader.FindKernel("ColoringClearMeta");
+            int kColoringBuildCounts = shader.FindKernel("ColoringBuildCounts");
+            int kColoringBuildStarts = shader.FindKernel("ColoringBuildStarts");
+            int kColoringScatterOrder = shader.FindKernel("ColoringScatterOrder");
 
             int total = m.nodes.Count;
             if (total == 0) return;
@@ -401,6 +352,39 @@ namespace GPU.Solver {
             shader.SetBuffer(kCommitDeformation, "_F", F);
             shader.SetBuffer(kCommitDeformation, "_Fp", Fp);
 
+            shader.SetBuffer(kColoringInit, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringInit, "_ColoringProposed", coloringProposed);
+            shader.SetBuffer(kColoringInit, "_ColoringPrio", coloringPrio);
+
+            shader.SetBuffer(kColoringClearChanged, "_ColoringStats", coloringStatsGpu);
+            shader.SetBuffer(kColoringClearUncolored, "_ColoringStats", coloringStatsGpu);
+
+            shader.SetBuffer(kColoringPropose, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringPropose, "_ColoringProposed", coloringProposed);
+            shader.SetBuffer(kColoringPropose, "_ColoringPrio", coloringPrio);
+
+            shader.SetBuffer(kColoringResolve, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringResolve, "_ColoringProposed", coloringProposed);
+            shader.SetBuffer(kColoringResolve, "_ColoringPrio", coloringPrio);
+            shader.SetBuffer(kColoringResolve, "_ColoringStats", coloringStatsGpu);
+
+            shader.SetBuffer(kColoringCountUncolored, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringCountUncolored, "_ColoringStats", coloringStatsGpu);
+
+            shader.SetBuffer(kColoringClearMeta, "_ColoringCounts", coloringCountsGpu);
+            shader.SetBuffer(kColoringClearMeta, "_ColoringStarts", coloringStartsGpu);
+            shader.SetBuffer(kColoringClearMeta, "_ColoringWrite", coloringWriteGpu);
+
+            shader.SetBuffer(kColoringBuildCounts, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringBuildCounts, "_ColoringCounts", coloringCountsGpu);
+
+            shader.SetBuffer(kColoringBuildStarts, "_ColoringCounts", coloringCountsGpu);
+            shader.SetBuffer(kColoringBuildStarts, "_ColoringStarts", coloringStartsGpu);
+            shader.SetBuffer(kColoringBuildStarts, "_ColoringWrite", coloringWriteGpu);
+
+            shader.SetBuffer(kColoringScatterOrder, "_ColoringColor", coloringColor);
+            shader.SetBuffer(kColoringScatterOrder, "_ColoringWrite", coloringWriteGpu);
+
             shader.SetInt("_Base", 0);
             shader.SetInt("_TotalCount", total);
             shader.SetFloat("_Dt", dt);
@@ -451,8 +435,6 @@ namespace GPU.Solver {
                 shader.Dispatch(kComputeCorrectionL, (activeCount + 255) / 256, 1, 1);
                 shader.Dispatch(kCacheF0AndResetLambda, (activeCount + 255) / 256, 1, 1);
 
-                EnsureColoringCapacity(activeCount);
-
                 uint adjacencyVersion = dtLevel.AdjacencyVersion;
                 bool rebuildColors =
                     cachedColorCountByLevel[level] <= 0 ||
@@ -462,38 +444,101 @@ namespace GPU.Solver {
                     cachedColorStartsByLevel[level] == null;
 
                 if (rebuildColors) {
-                    int[] neigh = dtLevel.NeighborsCpu;
-                    int[] counts = dtLevel.NeighborCountsCpu;
-                    if (neigh == null || counts == null) {
+                    var orderBuf = EnsureColorOrderBufferForLevel(level);
+
+                    if (cachedColorCountsByLevel[level] == null || cachedColorCountsByLevel[level].Length != ColoringMaxColors)
+                        cachedColorCountsByLevel[level] = new int[ColoringMaxColors];
+
+                    if (cachedColorStartsByLevel[level] == null || cachedColorStartsByLevel[level].Length != ColoringMaxColors)
+                        cachedColorStartsByLevel[level] = new int[ColoringMaxColors];
+
+                    uint seed = adjacencyVersion ^ (uint)(level * 2654435761);
+
+                    shader.SetInt("_ColoringActiveCount", activeCount);
+                    shader.SetInt("_ColoringDtNeighborCount", neighborCount);
+                    shader.SetInt("_ColoringMaxColors", ColoringMaxColors);
+                    shader.SetInt("_ColoringSeed", unchecked((int)seed));
+
+                    shader.SetBuffer(kColoringInit, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+                    shader.SetBuffer(kColoringInit, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+                    shader.SetBuffer(kColoringPropose, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+                    shader.SetBuffer(kColoringPropose, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+                    shader.SetBuffer(kColoringResolve, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+                    shader.SetBuffer(kColoringResolve, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+                    shader.SetBuffer(kColoringScatterOrder, "_ColoringOrderOut", orderBuf);
+
+                    shader.Dispatch(kColoringInit, (activeCount + 255) / 256, 1, 1);
+
+                    bool coloredOk = false;
+
+                    for (int batch = 0; batch < ColoringMaxBatches; batch++) {
+                        for (int r = 0; r < ColoringBatchRounds; r++) {
+                            shader.Dispatch(kColoringClearChanged, 1, 1, 1);
+                            shader.Dispatch(kColoringPropose, (activeCount + 255) / 256, 1, 1);
+                            shader.Dispatch(kColoringResolve, (activeCount + 255) / 256, 1, 1);
+                        }
+
+                        shader.Dispatch(kColoringClearUncolored, 1, 1, 1);
+                        shader.Dispatch(kColoringCountUncolored, (activeCount + 255) / 256, 1, 1);
+
+                        coloringStatsGpu.GetData(coloringStatsCpu, 0, 0, 2);
+                        int uncolored = coloringStatsCpu[0];
+                        int changed = coloringStatsCpu[1];
+
+                        if (uncolored == 0) {
+                            coloredOk = true;
+                            break;
+                        }
+
+                        if (changed == 0) {
+                            break;
+                        }
+                    }
+
+                    if (!coloredOk) {
+                        Debug.LogError($"XPBISolver: GPU 2-hop coloring did not converge (level={level}, activeCount={activeCount}, adjacencyVersion={adjacencyVersion}).");
+                        cachedColorCountByLevel[level] = 0;
+                        cachedActiveCountByLevel[level] = activeCount;
+                        cachedAdjacencyVersionByLevel[level] = adjacencyVersion;
                         continue;
                     }
 
-                    Build2HopColoring(neigh, counts, activeCount, neighborCount, out int colorCount);
+                    shader.Dispatch(kColoringClearMeta, 1, 1, 1);
+                    shader.Dispatch(kColoringBuildCounts, (activeCount + 255) / 256, 1, 1);
+                    shader.Dispatch(kColoringBuildStarts, 1, 1, 1);
+                    shader.Dispatch(kColoringScatterOrder, (activeCount + 255) / 256, 1, 1);
 
-                    var levelCounts = cachedColorCountsByLevel[level];
-                    if (levelCounts == null || levelCounts.Length != activeCount)
-                        levelCounts = cachedColorCountsByLevel[level] = new int[activeCount];
+                    coloringCountsGpu.GetData(coloringCountsCpu, 0, 0, ColoringMaxColors);
+                    coloringStartsGpu.GetData(coloringStartsCpu, 0, 0, ColoringMaxColors);
 
-                    var levelStarts = cachedColorStartsByLevel[level];
-                    if (levelStarts == null || levelStarts.Length != activeCount)
-                        levelStarts = cachedColorStartsByLevel[level] = new int[activeCount];
+                    int colorCount = 0;
+                    for (int c = 0; c < ColoringMaxColors; c++) {
+                        if (coloringCountsCpu[c] > 0) colorCount = c + 1;
+                    }
 
-                    Array.Copy(colorCounts, 0, levelCounts, 0, colorCount);
-                    Array.Copy(colorStarts, 0, levelStarts, 0, colorCount);
+                    if (colorCount <= 0) {
+                        cachedColorCountByLevel[level] = 0;
+                        cachedActiveCountByLevel[level] = activeCount;
+                        cachedAdjacencyVersionByLevel[level] = adjacencyVersion;
+                        continue;
+                    }
+
+                    Array.Copy(coloringCountsCpu, 0, cachedColorCountsByLevel[level], 0, ColoringMaxColors);
+                    Array.Copy(coloringStartsCpu, 0, cachedColorStartsByLevel[level], 0, ColoringMaxColors);
 
                     cachedColorCountByLevel[level] = colorCount;
                     cachedActiveCountByLevel[level] = activeCount;
                     cachedAdjacencyVersionByLevel[level] = adjacencyVersion;
-
-                    var orderBuf = EnsureColorOrderBufferForLevel(level);
-                    orderBuf.SetData(colorOrderCpu, 0, 0, activeCount);
                 }
 
                 int cachedColorCount = cachedColorCountByLevel[level];
                 if (cachedColorCount <= 0) continue;
 
-                var colorBuf2 = EnsureColorOrderBufferForLevel(level);
-                shader.SetBuffer(kRelaxColored, "_ColorOrder", colorBuf2);
+                var colorOrderBuf = EnsureColorOrderBufferForLevel(level);
+                shader.SetBuffer(kRelaxColored, "_ColorOrder", colorOrderBuf);
 
                 int iterations = level == 0 ? Const.Iterations : Const.HPBDIterations;
                 int[] levelColorCounts2 = cachedColorCountsByLevel[level];
@@ -540,6 +585,15 @@ namespace GPU.Solver {
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;
 
+            coloringColor?.Dispose(); coloringColor = null;
+            coloringProposed?.Dispose(); coloringProposed = null;
+            coloringPrio?.Dispose(); coloringPrio = null;
+
+            coloringCountsGpu?.Dispose(); coloringCountsGpu = null;
+            coloringStartsGpu?.Dispose(); coloringStartsGpu = null;
+            coloringWriteGpu?.Dispose(); coloringWriteGpu = null;
+            coloringStatsGpu?.Dispose(); coloringStatsGpu = null;
+
             if (colorOrders != null) {
                 for (int i = 0; i < colorOrders.Length; i++) {
                     colorOrders[i]?.Dispose();
@@ -562,12 +616,9 @@ namespace GPU.Solver {
             FCpu = null;
             FpCpu = null;
 
-            coloringCapacity = 0;
-            colorsCpu = null;
-            colorOrderCpu = null;
-            colorCounts = null;
-            colorStarts = null;
-            colorWrite = null;
+            coloringCountsCpu = null;
+            coloringStartsCpu = null;
+            coloringStatsCpu = null;
 
             cachedColorCountsByLevel = null;
             cachedColorStartsByLevel = null;
