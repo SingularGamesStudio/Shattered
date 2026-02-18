@@ -153,21 +153,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  targetTPS: 100
+  targetTPS: 500
   simulationSpeed: 10
   manual: 1
   maxTicksPerFrame: 1000000
+  showTpsOverlay: 1
+  tpsOverlayPos: {x: 10, y: 10}
   useUnscaledTime: 0
-  forceTPSToFPS: 0
   useHierarchicalSolver: 0
-  useGpuXpbiSolver: 1
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
-  enableLoopProfiling: 1
-  profileTicks: 20
-  profileWarmupTicks: 0
-  profileScenario: default
-  profileStartKey: 112
-  profileOutputDirectory: Profiles
+  snapshotEveryTicks: 10
 --- !u!4 &86236646
 Transform:
   m_ObjectHideFlags: 0
@@ -219,6 +214,7 @@ MonoBehaviour:
   wireWidthPixels: 0.74
   drawLevel0Fill: 1
   drawCoarseLevels: 1
+  preferGpuSnapshotBounds: 1
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -361,7 +357,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 20
+  pointCount: 100
   generateOnStart: 1
 --- !u!4 &961765557
 Transform:

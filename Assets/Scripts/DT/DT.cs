@@ -164,7 +164,7 @@ namespace GPU.Delaunay {
 
             BindCommon();
             DispatchClearTriLocks();
-            RebuildVertexAdjacencyAndTriMap();
+            RebuildVertexAdjacencyAndTriMap(readback: true);
         }
 
         void BindCommon() {
@@ -251,7 +251,7 @@ namespace GPU.Delaunay {
             return flipScratch[0];
         }
 
-        public void Maintain(int fixIterations, int legalizeIterations) {
+        public void Maintain(int fixIterations, int legalizeIterations, bool readback = true) {
             int groups = (halfEdgeCount + 255) / 256;
 
             for (int i = 0; i < fixIterations; i++) {
@@ -268,7 +268,7 @@ namespace GPU.Delaunay {
                 shader.Dispatch(kLegalizeHalfEdges, groups, 1, 1);
             }
 
-            RebuildVertexAdjacencyAndTriMap();
+            RebuildVertexAdjacencyAndTriMap(readback);
         }
 
         void EnsureNeighborCpuCache() {
@@ -281,7 +281,7 @@ namespace GPU.Delaunay {
                 neighborCountsCpu = new int[realVertexCount];
         }
 
-        public void RebuildVertexAdjacencyAndTriMap() {
+        public void RebuildVertexAdjacencyAndTriMap(bool readback = true) {
             shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
@@ -289,9 +289,12 @@ namespace GPU.Delaunay {
             shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
             shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
 
-            EnsureNeighborCpuCache();
-            neighbors.GetData(neighborsCpu);
-            neighborCounts.GetData(neighborCountsCpu);
+            if (readback) {
+                EnsureNeighborCpuCache();
+                neighbors.GetData(neighborsCpu);
+                neighborCounts.GetData(neighborCountsCpu);
+            }
+
             adjacencyVersion++;
         }
 

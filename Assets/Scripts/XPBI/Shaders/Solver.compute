@@ -12,6 +12,11 @@
 #pragma kernel ExternalForces
 #pragma kernel RelaxColored
 
+#pragma kernel ApplyGameplayForces
+#pragma kernel IntegratePositions
+#pragma kernel UpdateDtPositions
+#pragma kernel RebuildParentsAtLevel
+
 #pragma kernel ColoringInit
 #pragma kernel ColoringDetectConflicts
 #pragma kernel ColoringApply

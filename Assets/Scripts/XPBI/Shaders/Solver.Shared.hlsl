@@ -12,7 +12,7 @@ RWStructuredBuffer<float2> _Vel;
 StructuredBuffer<float> _InvMass;
 StructuredBuffer<uint> _Flags;
 StructuredBuffer<float> _RestVolume;
-StructuredBuffer<int> _ParentIndex;
+RWStructuredBuffer<int> _ParentIndex;
 
 RWStructuredBuffer<float4> _F;
 RWStructuredBuffer<float4> _Fp;
@@ -123,5 +123,22 @@ static void XPBI_GetNeighbors(int gi, out int nCount, out int n0, out int n1, ou
     if (nCount > 5)
         n5 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 5]);
 }
+
+struct XPBI_ForceEvent
+{
+    int node;
+    float2 force;
+};
+
+StructuredBuffer<XPBI_ForceEvent> _ForceEvents;
+int _ForceEventCount;
+
+RWStructuredBuffer<float2> _DtPositions;
+float2 _DtNormCenter;
+float _DtNormInvHalfExtent;
+
+int _ParentRangeStart;
+int _ParentRangeEnd;
+int _ParentCoarseCount;
 
 #endif

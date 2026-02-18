@@ -10,6 +10,12 @@ namespace GPU.Solver {
         const int ColoringMaxColors = 64;
         const int ColoringConflictRounds = 24;
 
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        public struct ForceEvent {
+            public int node;
+            public float2 force;
+        }
+
         readonly ComputeShader shader;
 
         ComputeBuffer pos;
@@ -52,8 +58,18 @@ namespace GPU.Solver {
         float4[] FCpu;
         float4[] FpCpu;
 
+        ComputeBuffer forceEvents;
+        ForceEvent[] forceEventsCpu;
+        int forceEventsCapacity;
+        int forceEventsCount;
+
         int capacity;
         bool loggedKernelError;
+
+        bool initialized;
+        int initializedCount = -1;
+
+        public ComputeBuffer PositionBuffer => pos;
 
         public XPBISolver(ComputeShader shader) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
@@ -111,9 +127,27 @@ namespace GPU.Solver {
 
             cachedActiveCountByLevel = null;
             cachedAdjacencyVersionByLevel = null;
+
+            EnsureForceEventCapacity(64);
+
+            initialized = false;
+            initializedCount = -1;
         }
 
-        public void UploadFromMeshless(Meshless m) {
+        void EnsureForceEventCapacity(int n) {
+            if (n <= forceEventsCapacity) return;
+
+            int newCap = math.max(64, forceEventsCapacity);
+            while (newCap < n) newCap *= 2;
+            forceEventsCapacity = newCap;
+
+            forceEvents?.Dispose();
+            forceEvents = new ComputeBuffer(forceEventsCapacity, sizeof(int) + sizeof(float) * 2, ComputeBufferType.Structured);
+
+            forceEventsCpu = new ForceEvent[forceEventsCapacity];
+        }
+
+        public void InitializeFromMeshless(Meshless m) {
             int n = m.nodes.Count;
             EnsureCapacity(n);
 
@@ -137,24 +171,26 @@ namespace GPU.Solver {
             parentIndex.SetData(parentIndexCpu, 0, 0, n);
             F.SetData(FCpu, 0, 0, n);
             Fp.SetData(FpCpu, 0, 0, n);
+
+            initialized = true;
+            initializedCount = n;
         }
 
-        public void DownloadToMeshless(Meshless m) {
-            int n = m.nodes.Count;
+        public void SetGameplayForces(ForceEvent[] events, int count) {
+            if (events == null) throw new ArgumentNullException(nameof(events));
+            if (count < 0 || count > events.Length) throw new ArgumentOutOfRangeException(nameof(count));
 
-            vel.GetData(velCpu, 0, 0, n);
-            F.GetData(FCpu, 0, 0, n);
-            Fp.GetData(FpCpu, 0, 0, n);
+            forceEventsCount = count;
+            if (forceEventsCount <= 0) return;
 
-            for (int i = 0; i < n; i++) {
-                m.nodes[i].vel = velCpu[i];
+            EnsureForceEventCapacity(forceEventsCount);
 
-                var f = FCpu[i];
-                m.nodes[i].F = new float2x2(f.xy, f.zw);
+            Array.Copy(events, 0, forceEventsCpu, 0, forceEventsCount);
+            forceEvents.SetData(forceEventsCpu, 0, 0, forceEventsCount);
+        }
 
-                var fp = FpCpu[i];
-                m.nodes[i].Fp = new float2x2(fp.xy, fp.zw);
-            }
+        public void ClearGameplayForces() {
+            forceEventsCount = 0;
         }
 
         void EnsurePerLevelCaches(int levelCount) {
@@ -258,12 +294,16 @@ namespace GPU.Solver {
                 shader.HasKernel("CacheF0AndResetLambda") &&
                 shader.HasKernel("SaveVelPrefix") &&
                 shader.HasKernel("ClearVelDelta") &&
-                shader.HasKernel("RelaxScatter") &&
                 shader.HasKernel("RelaxColored") &&
-                shader.HasKernel("ApplyVelDelta") &&
                 shader.HasKernel("Prolongate") &&
                 shader.HasKernel("CommitDeformation") &&
                 shader.HasKernel("ExternalForces") &&
+
+                shader.HasKernel("ApplyGameplayForces") &&
+                shader.HasKernel("IntegratePositions") &&
+                shader.HasKernel("UpdateDtPositions") &&
+                shader.HasKernel("RebuildParentsAtLevel") &&
+
                 shader.HasKernel("ColoringInit") &&
                 shader.HasKernel("ColoringDetectConflicts") &&
                 shader.HasKernel("ColoringApply") &&
@@ -275,7 +315,14 @@ namespace GPU.Solver {
                 shader.HasKernel("ColoringBuildRelaxArgs");
         }
 
-        public void SolveHierarchical(Meshless m, float dt, bool useHierarchical) {
+        public void StepGpuTruth(
+    Meshless m,
+    float dt,
+    bool useHierarchical,
+    int dtFixIterations,
+    int dtLegalizeIterations,
+    bool rebuildParents
+) {
             if (!HasAllKernels()) {
                 if (!loggedKernelError) {
                     loggedKernelError = true;
@@ -286,6 +333,16 @@ namespace GPU.Solver {
                 return;
             }
 
+            int total = m.nodes.Count;
+            if (total == 0) return;
+
+            EnsureCapacity(total);
+            if (!initialized || initializedCount != total)
+                InitializeFromMeshless(m);
+
+            int kApplyGameplayForces = shader.FindKernel("ApplyGameplayForces");
+            int kExternalForces = shader.FindKernel("ExternalForces");
+
             int kClearCurrentVolume = shader.FindKernel("ClearCurrentVolume");
             int kCacheVolumesHierarchical = shader.FindKernel("CacheVolumesHierarchical");
             int kCacheKernelH = shader.FindKernel("CacheKernelH");
@@ -293,12 +350,13 @@ namespace GPU.Solver {
             int kCacheF0AndResetLambda = shader.FindKernel("CacheF0AndResetLambda");
             int kSaveVelPrefix = shader.FindKernel("SaveVelPrefix");
             int kClearVelDelta = shader.FindKernel("ClearVelDelta");
-            int kRelaxScatter = shader.FindKernel("RelaxScatter");
             int kRelaxColored = shader.FindKernel("RelaxColored");
-            int kApplyVelDelta = shader.FindKernel("ApplyVelDelta");
             int kProlongate = shader.FindKernel("Prolongate");
             int kCommitDeformation = shader.FindKernel("CommitDeformation");
-            int kExternalForces = shader.FindKernel("ExternalForces");
+
+            int kIntegratePositions = shader.FindKernel("IntegratePositions");
+            int kUpdateDtPositions = shader.FindKernel("UpdateDtPositions");
+            int kRebuildParentsAtLevel = shader.FindKernel("RebuildParentsAtLevel");
 
             int kColoringInit = shader.FindKernel("ColoringInit");
             int kColoringDetectConflicts = shader.FindKernel("ColoringDetectConflicts");
@@ -310,105 +368,37 @@ namespace GPU.Solver {
             int kColoringScatterOrder = shader.FindKernel("ColoringScatterOrder");
             int kColoringBuildRelaxArgs = shader.FindKernel("ColoringBuildRelaxArgs");
 
-            int total = m.nodes.Count;
-            if (total == 0) return;
-
-            shader.SetBuffer(kExternalForces, "_Pos", pos);
-            shader.SetBuffer(kExternalForces, "_Vel", vel);
-            shader.SetBuffer(kExternalForces, "_InvMass", invMass);
-            shader.SetBuffer(kExternalForces, "_Flags", flags);
-
-            shader.SetBuffer(kClearCurrentVolume, "_CurrentVolumeBits", currentVolumeBits);
-
-            shader.SetBuffer(kCacheVolumesHierarchical, "_RestVolume", restVolume);
-            shader.SetBuffer(kCacheVolumesHierarchical, "_F", F);
-            shader.SetBuffer(kCacheVolumesHierarchical, "_ParentIndex", parentIndex);
-            shader.SetBuffer(kCacheVolumesHierarchical, "_CurrentVolumeBits", currentVolumeBits);
-
-            shader.SetBuffer(kCacheKernelH, "_Pos", pos);
-            shader.SetBuffer(kCacheKernelH, "_KernelH", kernelH);
-
-            shader.SetBuffer(kComputeCorrectionL, "_Pos", pos);
-            shader.SetBuffer(kComputeCorrectionL, "_KernelH", kernelH);
-            shader.SetBuffer(kComputeCorrectionL, "_CurrentVolumeBits", currentVolumeBits);
-            shader.SetBuffer(kComputeCorrectionL, "_L", L);
-
-            shader.SetBuffer(kCacheF0AndResetLambda, "_F", F);
-            shader.SetBuffer(kCacheF0AndResetLambda, "_F0", F0);
-            shader.SetBuffer(kCacheF0AndResetLambda, "_Lambda", lambda);
-
-            shader.SetBuffer(kSaveVelPrefix, "_Vel", vel);
-            shader.SetBuffer(kSaveVelPrefix, "_SavedVelPrefix", savedVelPrefix);
-
-            shader.SetBuffer(kClearVelDelta, "_VelDeltaBits", velDeltaBits);
-
-            shader.SetBuffer(kRelaxScatter, "_Pos", pos);
-            shader.SetBuffer(kRelaxScatter, "_Vel", vel);
-            shader.SetBuffer(kRelaxScatter, "_InvMass", invMass);
-            shader.SetBuffer(kRelaxScatter, "_Flags", flags);
-            shader.SetBuffer(kRelaxScatter, "_RestVolume", restVolume);
-            shader.SetBuffer(kRelaxScatter, "_F0", F0);
-            shader.SetBuffer(kRelaxScatter, "_L", L);
-            shader.SetBuffer(kRelaxScatter, "_KernelH", kernelH);
-            shader.SetBuffer(kRelaxScatter, "_CurrentVolumeBits", currentVolumeBits);
-            shader.SetBuffer(kRelaxScatter, "_Lambda", lambda);
-            shader.SetBuffer(kRelaxScatter, "_VelDeltaBits", velDeltaBits);
-
-            shader.SetBuffer(kRelaxColored, "_Pos", pos);
-            shader.SetBuffer(kRelaxColored, "_Vel", vel);
-            shader.SetBuffer(kRelaxColored, "_InvMass", invMass);
-            shader.SetBuffer(kRelaxColored, "_Flags", flags);
-            shader.SetBuffer(kRelaxColored, "_RestVolume", restVolume);
-            shader.SetBuffer(kRelaxColored, "_F0", F0);
-            shader.SetBuffer(kRelaxColored, "_L", L);
-            shader.SetBuffer(kRelaxColored, "_KernelH", kernelH);
-            shader.SetBuffer(kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
-            shader.SetBuffer(kRelaxColored, "_Lambda", lambda);
-
-            shader.SetBuffer(kApplyVelDelta, "_Vel", vel);
-            shader.SetBuffer(kApplyVelDelta, "_VelDeltaBits", velDeltaBits);
-
-            shader.SetBuffer(kProlongate, "_Vel", vel);
-            shader.SetBuffer(kProlongate, "_ParentIndex", parentIndex);
-            shader.SetBuffer(kProlongate, "_SavedVelPrefix", savedVelPrefix);
-
-            shader.SetBuffer(kCommitDeformation, "_Pos", pos);
-            shader.SetBuffer(kCommitDeformation, "_Vel", vel);
-            shader.SetBuffer(kCommitDeformation, "_InvMass", invMass);
-            shader.SetBuffer(kCommitDeformation, "_Flags", flags);
-            shader.SetBuffer(kCommitDeformation, "_F0", F0);
-            shader.SetBuffer(kCommitDeformation, "_L", L);
-            shader.SetBuffer(kCommitDeformation, "_KernelH", kernelH);
-            shader.SetBuffer(kCommitDeformation, "_CurrentVolumeBits", currentVolumeBits);
-            shader.SetBuffer(kCommitDeformation, "_F", F);
-            shader.SetBuffer(kCommitDeformation, "_Fp", Fp);
-
-            shader.SetBuffer(kColoringInit, "_ColoringColor", coloringColor);
-            shader.SetBuffer(kColoringInit, "_ColoringProposed", coloringProposed);
-            shader.SetBuffer(kColoringInit, "_ColoringPrio", coloringPrio);
-
-            shader.SetBuffer(kColoringDetectConflicts, "_ColoringColor", coloringColor);
-            shader.SetBuffer(kColoringDetectConflicts, "_ColoringProposed", coloringProposed);
-            shader.SetBuffer(kColoringDetectConflicts, "_ColoringPrio", coloringPrio);
-
-            shader.SetBuffer(kColoringApply, "_ColoringColor", coloringColor);
-            shader.SetBuffer(kColoringApply, "_ColoringProposed", coloringProposed);
-
-            shader.SetBuffer(kColoringChoose, "_ColoringColor", coloringColor);
-            shader.SetBuffer(kColoringChoose, "_ColoringProposed", coloringProposed);
-
             shader.SetInt("_Base", 0);
             shader.SetInt("_TotalCount", total);
             shader.SetFloat("_Dt", dt);
             shader.SetFloat("_Gravity", m.gravity);
             shader.SetFloat("_Compliance", m.compliance);
 
+            // Force stage.
+            shader.SetBuffer(kApplyGameplayForces, "_Vel", vel);
+            shader.SetBuffer(kApplyGameplayForces, "_InvMass", invMass);
+            shader.SetBuffer(kApplyGameplayForces, "_Flags", flags);
+
+            shader.SetBuffer(kExternalForces, "_Vel", vel);
+            shader.SetBuffer(kExternalForces, "_InvMass", invMass);
+            shader.SetBuffer(kExternalForces, "_Flags", flags);
+
+            if (forceEventsCount > 0) {
+                shader.SetInt("_ForceEventCount", forceEventsCount);
+                shader.SetBuffer(kApplyGameplayForces, "_ForceEvents", forceEvents);
+                shader.Dispatch(kApplyGameplayForces, (forceEventsCount + 255) / 256, 1, 1);
+                forceEventsCount = 0;
+            } else {
+                shader.SetInt("_ForceEventCount", 0);
+            }
+
             shader.Dispatch(kExternalForces, (total + 255) / 256, 1, 1);
 
-            int maxLevel = useHierarchical && m.levelEndIndex != null ? m.maxLayer : 0;
-            EnsurePerLevelCaches(maxLevel + 1);
+            // Solve levels: only what the solver needs.
+            int maxSolveLevel = (useHierarchical && m.levelEndIndex != null) ? m.maxLayer : 0;
+            EnsurePerLevelCaches(maxSolveLevel + 1);
 
-            for (int level = maxLevel; level >= 0; level--) {
+            for (int level = maxSolveLevel; level >= 0; level--) {
                 if (!m.TryGetLevelDt(level, out DT dtLevel))
                     continue;
 
@@ -423,14 +413,61 @@ namespace GPU.Solver {
                 int neighborCount = dtLevel.NeighborCount;
                 shader.SetInt("_DtNeighborCount", neighborCount);
 
+                shader.SetBuffer(kClearCurrentVolume, "_CurrentVolumeBits", currentVolumeBits);
+
+                shader.SetBuffer(kCacheVolumesHierarchical, "_RestVolume", restVolume);
+                shader.SetBuffer(kCacheVolumesHierarchical, "_F", F);
+                shader.SetBuffer(kCacheVolumesHierarchical, "_ParentIndex", parentIndex);
+                shader.SetBuffer(kCacheVolumesHierarchical, "_CurrentVolumeBits", currentVolumeBits);
+
+                shader.SetBuffer(kCacheKernelH, "_Pos", pos);
+                shader.SetBuffer(kCacheKernelH, "_KernelH", kernelH);
+
+                shader.SetBuffer(kComputeCorrectionL, "_Pos", pos);
+                shader.SetBuffer(kComputeCorrectionL, "_KernelH", kernelH);
+                shader.SetBuffer(kComputeCorrectionL, "_CurrentVolumeBits", currentVolumeBits);
+                shader.SetBuffer(kComputeCorrectionL, "_L", L);
+
+                shader.SetBuffer(kCacheF0AndResetLambda, "_F", F);
+                shader.SetBuffer(kCacheF0AndResetLambda, "_F0", F0);
+                shader.SetBuffer(kCacheF0AndResetLambda, "_Lambda", lambda);
+
+                shader.SetBuffer(kSaveVelPrefix, "_Vel", vel);
+                shader.SetBuffer(kSaveVelPrefix, "_SavedVelPrefix", savedVelPrefix);
+
+                shader.SetBuffer(kClearVelDelta, "_VelDeltaBits", velDeltaBits);
+
+                shader.SetBuffer(kRelaxColored, "_Pos", pos);
+                shader.SetBuffer(kRelaxColored, "_Vel", vel);
+                shader.SetBuffer(kRelaxColored, "_InvMass", invMass);
+                shader.SetBuffer(kRelaxColored, "_Flags", flags);
+                shader.SetBuffer(kRelaxColored, "_RestVolume", restVolume);
+                shader.SetBuffer(kRelaxColored, "_F0", F0);
+                shader.SetBuffer(kRelaxColored, "_L", L);
+                shader.SetBuffer(kRelaxColored, "_KernelH", kernelH);
+                shader.SetBuffer(kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
+                shader.SetBuffer(kRelaxColored, "_Lambda", lambda);
+
+                shader.SetBuffer(kProlongate, "_Vel", vel);
+                shader.SetBuffer(kProlongate, "_ParentIndex", parentIndex);
+                shader.SetBuffer(kProlongate, "_SavedVelPrefix", savedVelPrefix);
+
+                shader.SetBuffer(kCommitDeformation, "_Pos", pos);
+                shader.SetBuffer(kCommitDeformation, "_Vel", vel);
+                shader.SetBuffer(kCommitDeformation, "_InvMass", invMass);
+                shader.SetBuffer(kCommitDeformation, "_Flags", flags);
+                shader.SetBuffer(kCommitDeformation, "_F0", F0);
+                shader.SetBuffer(kCommitDeformation, "_L", L);
+                shader.SetBuffer(kCommitDeformation, "_KernelH", kernelH);
+                shader.SetBuffer(kCommitDeformation, "_CurrentVolumeBits", currentVolumeBits);
+                shader.SetBuffer(kCommitDeformation, "_F", F);
+                shader.SetBuffer(kCommitDeformation, "_Fp", Fp);
+
                 shader.SetBuffer(kCacheKernelH, "_DtNeighbors", dtLevel.NeighborsBuffer);
                 shader.SetBuffer(kCacheKernelH, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
                 shader.SetBuffer(kComputeCorrectionL, "_DtNeighbors", dtLevel.NeighborsBuffer);
                 shader.SetBuffer(kComputeCorrectionL, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
-
-                shader.SetBuffer(kRelaxScatter, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                shader.SetBuffer(kRelaxScatter, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
                 shader.SetBuffer(kRelaxColored, "_DtNeighbors", dtLevel.NeighborsBuffer);
                 shader.SetBuffer(kRelaxColored, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
@@ -469,6 +506,20 @@ namespace GPU.Solver {
                     shader.SetInt("_ColoringDtNeighborCount", neighborCount);
                     shader.SetInt("_ColoringMaxColors", ColoringMaxColors);
                     shader.SetInt("_ColoringSeed", unchecked((int)seed));
+
+                    shader.SetBuffer(kColoringInit, "_ColoringColor", coloringColor);
+                    shader.SetBuffer(kColoringInit, "_ColoringProposed", coloringProposed);
+                    shader.SetBuffer(kColoringInit, "_ColoringPrio", coloringPrio);
+
+                    shader.SetBuffer(kColoringDetectConflicts, "_ColoringColor", coloringColor);
+                    shader.SetBuffer(kColoringDetectConflicts, "_ColoringProposed", coloringProposed);
+                    shader.SetBuffer(kColoringDetectConflicts, "_ColoringPrio", coloringPrio);
+
+                    shader.SetBuffer(kColoringApply, "_ColoringColor", coloringColor);
+                    shader.SetBuffer(kColoringApply, "_ColoringProposed", coloringProposed);
+
+                    shader.SetBuffer(kColoringChoose, "_ColoringColor", coloringColor);
+                    shader.SetBuffer(kColoringChoose, "_ColoringProposed", coloringProposed);
 
                     shader.SetBuffer(kColoringInit, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
                     shader.SetBuffer(kColoringInit, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
@@ -540,7 +591,53 @@ namespace GPU.Solver {
                     shader.Dispatch(kCommitDeformation, (activeCount + 255) / 256, 1, 1);
                 }
             }
+
+            // Integrate on GPU.
+            shader.SetBuffer(kIntegratePositions, "_Pos", pos);
+            shader.SetBuffer(kIntegratePositions, "_Vel", vel);
+            shader.SetBuffer(kIntegratePositions, "_InvMass", invMass);
+            shader.SetBuffer(kIntegratePositions, "_Flags", flags);
+            shader.Dispatch(kIntegratePositions, (total + 255) / 256, 1, 1);
+
+            // DT update levels: always update all DT levels for rendering.
+            int maxDtLevel = m.maxLayer;
+            for (int level = maxDtLevel; level >= 0; level--) {
+                if (!m.TryGetLevelDt(level, out DT dtLevel))
+                    continue;
+
+                int activeCount = (level > 0) ? m.NodeCount(level) : total;
+                if (activeCount < 3) continue;
+
+                int fineCount = (level > 1) ? m.NodeCount(level - 1) : total;
+
+                shader.SetInt("_ActiveCount", activeCount);
+                shader.SetInt("_FineCount", fineCount);
+                shader.SetInt("_DtNeighborCount", dtLevel.NeighborCount);
+
+                shader.SetBuffer(kUpdateDtPositions, "_Pos", pos);
+                shader.SetBuffer(kUpdateDtPositions, "_DtPositions", dtLevel.PositionsBuffer);
+                shader.SetVector("_DtNormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
+                shader.SetFloat("_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
+                shader.Dispatch(kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
+
+                dtLevel.Maintain(dtFixIterations, dtLegalizeIterations, readback: false);
+
+                if (rebuildParents && useHierarchical && level > 0 && fineCount > activeCount) {
+                    shader.SetInt("_ParentRangeStart", activeCount);
+                    shader.SetInt("_ParentRangeEnd", fineCount);
+                    shader.SetInt("_ParentCoarseCount", activeCount);
+
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_Pos", pos);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
+                    shader.SetBuffer(kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+                    shader.Dispatch(kRebuildParentsAtLevel, ((fineCount - activeCount) + 255) / 256, 1, 1);
+                }
+            }
         }
+
+
 
         void ReleaseBuffers() {
             pos?.Dispose(); pos = null;
@@ -564,6 +661,8 @@ namespace GPU.Solver {
             coloringColor?.Dispose(); coloringColor = null;
             coloringProposed?.Dispose(); coloringProposed = null;
             coloringPrio?.Dispose(); coloringPrio = null;
+
+            forceEvents?.Dispose(); forceEvents = null;
 
             if (colorOrders != null) {
                 for (int i = 0; i < colorOrders.Length; i++) {
@@ -604,6 +703,9 @@ namespace GPU.Solver {
                 }
                 relaxArgsByLevel = null;
             }
+
+            initialized = false;
+            initializedCount = -1;
         }
 
         void Release() {
@@ -618,6 +720,10 @@ namespace GPU.Solver {
             parentIndexCpu = null;
             FCpu = null;
             FpCpu = null;
+
+            forceEventsCpu = null;
+            forceEventsCapacity = 0;
+            forceEventsCount = 0;
 
             cachedActiveCountByLevel = null;
             cachedAdjacencyVersionByLevel = null;

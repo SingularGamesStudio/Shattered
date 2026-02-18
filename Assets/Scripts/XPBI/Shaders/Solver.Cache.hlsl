@@ -1,7 +1,29 @@
 #ifndef XPBI_SOLVER_CACHE_KERNELS_INCLUDED
 #define XPBI_SOLVER_CACHE_KERNELS_INCLUDED
 
-[numthreads(256, 1, 1)] void ExternalForces(uint3 id : SV_DispatchThreadID)
+[numthreads(256, 1, 1)] void ApplyGameplayForces(uint3 id : SV_DispatchThreadID)
+{
+    int ei = (int)id.x;
+    if (ei >= _ForceEventCount)
+        return;
+
+    XPBI_ForceEvent e = _ForceEvents[ei];
+    int gi = e.node;
+
+    if (gi < _Base || gi >= _Base + _TotalCount)
+        return;
+    if (XPBI_IsFixed(gi))
+        return;
+
+    // Assumption: at most one event per node per tick (no contention on _Vel writes).
+    float invM = _InvMass[gi];
+    if (invM <= 0.0)
+        return;
+
+    _Vel[gi] = _Vel[gi] + (e.force * (invM * _Dt));
+}
+
+    [numthreads(256, 1, 1)] void ExternalForces(uint3 id : SV_DispatchThreadID)
 {
     int li = (int)id.x;
     if (li >= _TotalCount)
@@ -14,6 +36,87 @@
     float2 v = _Vel[gi];
     v.y += _Gravity * _Dt;
     _Vel[gi] = v;
+}
+
+[numthreads(256, 1, 1)] void IntegratePositions(uint3 id : SV_DispatchThreadID)
+{
+    int li = (int)id.x;
+    if (li >= _TotalCount)
+        return;
+
+    int gi = _Base + li;
+    if (XPBI_IsFixed(gi))
+        return;
+
+    _Pos[gi] = _Pos[gi] + _Vel[gi] * _Dt;
+}
+
+    [numthreads(256, 1, 1)] void UpdateDtPositions(uint3 id : SV_DispatchThreadID)
+{
+    int li = (int)id.x;
+    if (li >= _ActiveCount)
+        return;
+
+    int gi = _Base + li;
+    _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
+}
+
+[numthreads(256, 1, 1)] void RebuildParentsAtLevel(uint3 id : SV_DispatchThreadID)
+{
+    int gi = _ParentRangeStart + (int)id.x;
+    if (gi >= _ParentRangeEnd)
+        return;
+
+    float2 q = _Pos[gi];
+
+    int cur = _ParentIndex[gi];
+    if (cur < _Base || cur >= _Base + _ParentCoarseCount)
+        cur = _Base;
+
+    float2 d0 = _Pos[cur] - q;
+    float best = dot(d0, d0);
+
+    [loop] for (int iter = 0; iter < 32; iter++)
+    {
+        int li = cur - _Base;
+        if (li < 0 || li >= _ParentCoarseCount)
+            break;
+
+        int cnt = _DtNeighborCounts[li];
+        if (cnt < 0)
+            cnt = 0;
+        if (cnt > _DtNeighborCount)
+            cnt = _DtNeighborCount;
+
+        int bestNext = cur;
+        float bestNextDist = best;
+
+        int baseIdx = li * _DtNeighborCount;
+        for (int k = 0; k < cnt; k++)
+        {
+            int njLocal = _DtNeighbors[baseIdx + k];
+            int nj = _Base + njLocal;
+
+            if (nj < _Base || nj >= _Base + _ParentCoarseCount)
+                continue;
+
+            float2 d = _Pos[nj] - q;
+            float dsq = dot(d, d);
+            if (dsq < bestNextDist)
+            {
+                bestNextDist = dsq;
+                bestNext = nj;
+            }
+        }
+
+        if (bestNext == cur)
+            break;
+
+        cur = bestNext;
+        best = bestNextDist;
+    }
+
+    _ParentIndex[gi] = cur;
 }
 
     [numthreads(256, 1, 1)] void ClearCurrentVolume(uint3 id : SV_DispatchThreadID)
