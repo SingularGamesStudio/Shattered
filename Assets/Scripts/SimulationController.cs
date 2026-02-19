@@ -150,25 +150,12 @@ public sealed class SimulationController : MonoBehaviour {
 
         lastFrameTicks = 0;
 
-        if (asyncGpu) {
-            ProcessAsyncBatchCompletions();
+        ProcessAsyncBatchCompletions();
 
-            if (manual) ManualUpdateAsync(frameDt, tickDt);
-            else AutoUpdateAsync(frameDt, tickDt);
+        if (manual) ManualUpdateAsync(frameDt, tickDt);
+        else AutoUpdateAsync(frameDt, tickDt);
 
-            renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
-        } else {
-            float clampedFps = Mathf.Max(1f, targetFPS);
-            float budgetSeconds = (1f / clampedFps);
-            float frameEndTime = Time.realtimeSinceStartup + budgetSeconds;
-
-            if (manual) ManualUpdate(frameDt, tickDt, frameEndTime);
-            else AutoUpdate(frameDt, tickDt, frameEndTime);
-
-            renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
-
-            ProcessReadbacks();
-        }
+        renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
 
         UpdateTpsDisplay(frameDt);
     }
@@ -260,76 +247,6 @@ public sealed class SimulationController : MonoBehaviour {
         }
     }
 
-    void AutoUpdate(float frameDt, float tickDt, float frameEndTime) {
-        accumulator += frameDt;
-
-        int ticks = 0;
-        float now = Time.realtimeSinceStartup;
-
-        while (accumulator >= tickDt && now <= frameEndTime) {
-            Tick(tickDt);
-            accumulator -= tickDt;
-            ticks++;
-            now = Time.realtimeSinceStartup;
-        }
-
-        if (accumulator >= tickDt && now > frameEndTime)
-            accumulator = 0f;
-
-        lastFrameTicks += ticks;
-    }
-
-    void ManualUpdate(float frameDt, float tickDt, float frameEndTime) {
-        if (Input.GetKeyDown(KeyCode.T)) {
-            keyHeldTime = 0f;
-            accumulator = 0f;
-        }
-
-        if (Input.GetKey(KeyCode.T)) {
-            keyHeldTime += frameDt;
-
-            if (keyHeldTime >= holdThreshold) {
-                accumulator += frameDt;
-
-                int ticks = 0;
-                float now = Time.realtimeSinceStartup;
-
-                while (accumulator >= tickDt && now <= frameEndTime) {
-                    Tick(tickDt);
-                    accumulator -= tickDt;
-                    ticks++;
-                    now = Time.realtimeSinceStartup;
-                }
-
-                lastFrameTicks += ticks;
-            }
-        }
-
-        if (Input.GetKeyUp(KeyCode.T)) {
-            if (keyHeldTime < holdThreshold) {
-                Tick(tickDt);
-                lastFrameTicks += 1;
-            }
-            keyHeldTime = 0f;
-            accumulator = 0f;
-        }
-    }
-
-    void Tick(float tickDt) {
-        float dt = tickDt * simulationSpeed;
-
-        for (int i = meshless.Count - 1; i >= 0; i--) {
-            var m = meshless[i];
-            if (m == null || !m.isActiveAndEnabled) {
-                meshless.RemoveAt(i);
-                if (m != null) Unregister(m);
-                continue;
-            }
-
-            StepMeshlessGpuTruth(m, dt);
-        }
-    }
-
     void SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
         if (m == null || ticksToRun <= 0)
             return;
@@ -337,7 +254,6 @@ public sealed class SimulationController : MonoBehaviour {
         if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
             solver = new XPBISolver(gpuXpbiSolverShader);
             gpuSolverCache[m] = solver;
-            solver.InitializeFromMeshless(m);
         }
 
         if (!tickCounters.ContainsKey(m)) tickCounters[m] = 0;
@@ -360,7 +276,7 @@ public sealed class SimulationController : MonoBehaviour {
 
         int dtSwapMaxLevel = asyncUpdateDtPositions ? (asyncRunDtMaintain ? m.maxLayer : 0) : -1;
 
-        st.fence = solver.SubmitGpuTruthAsyncBatch(
+        st.fence = solver.SubmitSolve(
             m,
             dtPerTick,
             ticksToRun,
@@ -369,8 +285,6 @@ public sealed class SimulationController : MonoBehaviour {
             m.dtLegalizeIterationsPerTick,
             rebuildParents,
             asyncUpdateDtPositions,
-            dtSwapMaxLevel,
-            asyncRunDtMaintain,
             asyncQueue
         );
 
@@ -380,9 +294,6 @@ public sealed class SimulationController : MonoBehaviour {
         asyncStates[m] = st;
 
         tickCounters[m] = tickIdAfterBatch;
-
-        // In async mode, snapshots are disabled by default because they create extra GPU traffic and can defeat the "smooth render" goal.
-        // If you need them, re-enable and ensure you request them only after fences pass.
     }
 
     void ProcessAsyncBatchCompletions() {
@@ -414,30 +325,6 @@ public sealed class SimulationController : MonoBehaviour {
         ListPool<Meshless>.Release(keys);
     }
 
-    void StepMeshlessGpuTruth(Meshless m, float dt) {
-        if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
-            solver = new XPBISolver(gpuXpbiSolverShader);
-            gpuSolverCache[m] = solver;
-            solver.InitializeFromMeshless(m);
-        }
-
-        if (!tickCounters.ContainsKey(m)) tickCounters[m] = 0;
-        int tickId = ++tickCounters[m];
-
-        bool rebuildParents = (tickId % Const.HierarchyRebuildInterval) == 0;
-
-        solver.StepGpuTruth(
-            m,
-            dt,
-            useHierarchicalSolver,
-            m.dtFixIterationsPerTick,
-            m.dtLegalizeIterationsPerTick,
-            rebuildParents);
-
-        if (snapshotEveryTicks > 0 && (tickId % snapshotEveryTicks) == 0)
-            TryScheduleSnapshotReadback(m, solver, m.nodes.Count, tickId);
-    }
-
     void TryScheduleSnapshotReadback(Meshless m, XPBISolver solver, int count, int tickId) {
         if (solver == null || solver.PositionBuffer == null) return;
         if (count <= 0) return;
@@ -456,42 +343,6 @@ public sealed class SimulationController : MonoBehaviour {
         readbackSlots[m] = slot;
         latestSnapshotTick[m] = tickId;
     }
-
-    void ProcessReadbacks() {
-        if (readbackSlots.Count == 0) return;
-
-        var keys = ListPool<Meshless>.Get();
-        foreach (var kv in readbackSlots) keys.Add(kv.Key);
-
-        for (int i = 0; i < keys.Count; i++) {
-            var m = keys[i];
-            if (m == null) continue;
-
-            if (!readbackSlots.TryGetValue(m, out ReadbackSlot slot))
-                continue;
-
-            if (!slot.pending)
-                continue;
-
-            if (!slot.request.done)
-                continue;
-
-            slot.pending = false;
-            readbackSlots[m] = slot;
-
-            if (slot.request.hasError)
-                continue;
-
-            var data = slot.request.GetData<float2>();
-            if (!latestSnapshot.TryGetValue(m, out float2[] dst) || dst == null || dst.Length != slot.count)
-                dst = latestSnapshot[m] = new float2[slot.count];
-
-            data.CopyTo(dst);
-        }
-
-        ListPool<Meshless>.Release(keys);
-    }
-
     void UpdateTpsDisplay(float frameDt) {
         float k = 1f - Mathf.Exp(-frameDt * 8f);
 
