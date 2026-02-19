@@ -387,19 +387,33 @@ namespace GPU.Solver {
             return buf;
         }
 
+        public void CompleteDtSwapAfterAsync(Meshless m, int maxLevelToSwap) {
+            if (m == null) return;
+
+            int max = math.max(0, math.min(m.maxLayer, maxLevelToSwap));
+            for (int level = max; level >= 0; level--) {
+                if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                    continue;
+
+                dtLevel.SwapTopologyAfterTick();
+                dtLevel.SwapPositionsAfterTick();
+            }
+        }
+
+
         public GraphicsFence SubmitGpuTruthAsyncBatch(
-            Meshless m,
-            float dtPerTick,
-            int tickCount,
-            bool useHierarchical,
-            int dtFixIterations,
-            int dtLegalizeIterations,
-            bool rebuildParents,
-            bool updateDtPositionsForRender,
-            int dtSwapMaxLevel,
-            bool runDtMaintain,
-            ComputeQueueType queueType
-        ) {
+    Meshless m,
+    float dtPerTick,
+    int tickCount,
+    bool useHierarchical,
+    int dtFixIterations,
+    int dtLegalizeIterations,
+    bool rebuildParents,
+    bool updateDtPositionsForRender,
+    int dtSwapMaxLevel,
+    bool runDtMaintain,
+    ComputeQueueType queueType
+) {
             if (!HasAllKernels()) {
                 if (!loggedKernelError) {
                     loggedKernelError = true;
@@ -666,13 +680,11 @@ namespace GPU.Solver {
                         }
                     }
 
-                    if (level > 0 && fineCount > activeCount) {
+                    if (level > 0 && fineCount > activeCount)
                         asyncCb.DispatchCompute(shader, kProlongate, ((fineCount - activeCount) + 255) / 256, 1, 1);
-                    }
 
-                    if (level == 0) {
+                    if (level == 0)
                         asyncCb.DispatchCompute(shader, kCommitDeformation, (activeCount + 255) / 256, 1, 1);
-                    }
                 }
 
                 asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Pos", pos);
@@ -681,33 +693,37 @@ namespace GPU.Solver {
                 asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Flags", flags);
                 asyncCb.DispatchCompute(shader, kIntegratePositions, (total + 255) / 256, 1, 1);
 
-                if (runDtMaintain) {
-                    // Intentionally unsupported in this file-only patch: DT.Maintain() uses its own compute shader instance,
-                    // and must be migrated to CommandBuffer dispatches too (or you reintroduce sync/stalls).
-                }
-            }
+                bool doDtPosUpdate = updateDtPositionsForRender && dtSwapMaxLevel >= 0;
+                bool doDtMaintain = runDtMaintain;
 
-            if (updateDtPositionsForRender && dtSwapMaxLevel >= 0) {
-                int maxDtLevel = math.min(m.maxLayer, dtSwapMaxLevel);
-                for (int level = maxDtLevel; level >= 0; level--) {
-                    if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
-                        continue;
+                if (doDtPosUpdate || doDtMaintain) {
+                    int maxDtLevel = math.min(m.maxLayer, math.max(0, dtSwapMaxLevel));
 
-                    int activeCount = (level > 0) ? m.NodeCount(level) : total;
-                    if (activeCount < 3) continue;
+                    for (int level = maxDtLevel; level >= 0; level--) {
+                        if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                            continue;
 
-                    int fineCount = (level > 1) ? m.NodeCount(level - 1) : total;
+                        int activeCount = (level > 0) ? m.NodeCount(level) : total;
+                        if (activeCount < 3) continue;
 
-                    asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
-                    asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
-                    asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
+                        int fineCount = (level > 1) ? m.NodeCount(level - 1) : total;
 
-                    asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
-                    asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions", dtLevel.PositionsWriteBuffer);
-                    asyncCb.SetComputeVectorParam(shader, "_DtNormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
-                    asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
+                        asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
+                        asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
+                        asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
 
-                    asyncCb.DispatchCompute(shader, kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
+                        if (doDtPosUpdate) {
+                            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
+                            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions", dtLevel.PositionsWriteBuffer);
+                            asyncCb.SetComputeVectorParam(shader, "_DtNormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
+                            asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
+                            asyncCb.DispatchCompute(shader, kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
+                        }
+
+                        if (doDtMaintain) {
+                            dtLevel.EnqueueMaintain(asyncCb, dtLevel.PositionsWriteBuffer, dtFixIterations, dtLegalizeIterations);
+                        }
+                    }
                 }
             }
 
@@ -715,6 +731,7 @@ namespace GPU.Solver {
             Graphics.ExecuteCommandBufferAsync(asyncCb, queueType);
             return fence;
         }
+
 
         public void CompleteAsyncBatch(Meshless m, int dtSwapMaxLevel) {
             if (m == null || dtSwapMaxLevel < 0)
@@ -725,9 +742,11 @@ namespace GPU.Solver {
                 if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
                     continue;
 
+                dtLevel.SwapTopologyAfterTick();
                 dtLevel.SwapPositionsAfterTick();
             }
         }
+
 
         public void StepGpuTruth(
             Meshless m,

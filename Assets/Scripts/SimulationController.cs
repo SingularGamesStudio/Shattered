@@ -331,6 +331,9 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
+        if (m == null || ticksToRun <= 0)
+            return;
+
         if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
             solver = new XPBISolver(gpuXpbiSolverShader);
             gpuSolverCache[m] = solver;
