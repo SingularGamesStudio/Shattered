@@ -10,6 +10,9 @@ public class Box : Meshless {
     public bool generateOnStart = false;
 
     void Start() {
+        Debug.Log($"API: {SystemInfo.graphicsDeviceType}");
+        Debug.Log($"GPU: {SystemInfo.graphicsDeviceName} ({SystemInfo.graphicsDeviceVendor})");
+        Debug.Log($"supportsAsyncCompute: {SystemInfo.supportsAsyncCompute}");
         if (generateOnStart) Generate(pointCount, 0);
     }
 

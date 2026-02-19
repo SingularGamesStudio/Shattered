@@ -154,7 +154,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetTPS: 500
-  targetFPS: 60
+  targetFPS: 30
   simulationSpeed: 10
   manual: 1
   showTpsOverlay: 1
@@ -162,6 +162,11 @@ MonoBehaviour:
   useUnscaledTime: 0
   useHierarchicalSolver: 0
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
+  asyncGpu: 1
+  asyncQueue: 1
+  maxTicksPerBatch: 32
+  asyncUpdateDtPositions: 1
+  asyncRunDtMaintain: 0
   snapshotEveryTicks: 10
 --- !u!4 &86236646
 Transform:
@@ -346,7 +351,7 @@ MonoBehaviour:
   dtWarmupFixIterations: 64
   dtWarmupLegalizeIterations: 128
   dtNormalizePadding: 2
-  dtAutoNormalizeAtRuntime: 1
+  dtAutoNormalizeAtRuntime: 0
   dtAutoNormalizeGrowFactor: 1.15
   dtAutoNormalizeRecenterThreshold: 0.25
   dtAutoNormalizeIncludeCamera: 1

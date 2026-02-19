@@ -30,6 +30,21 @@ public sealed class SimulationController : MonoBehaviour {
     [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
     public ComputeShader gpuXpbiSolverShader;
 
+    [Header("Async GPU (experimental)")]
+    [Tooltip("When enabled, submits XPBI ticks as async compute batches, and swaps DT position buffers only after a GPU fence passes.")]
+    public bool asyncGpu = true;
+
+    [Tooltip("Desired async compute queue; if the platform doesn't support async compute, Unity executes on the graphics queue.")]
+    public ComputeQueueType asyncQueue = ComputeQueueType.Background;
+
+    [Min(1)] public int maxTicksPerBatch = 32;
+
+    [Tooltip("Updates DT positions buffers for rendering after an async batch. Topology maintenance is disabled in async mode by default.")]
+    public bool asyncUpdateDtPositions = true;
+
+    [Tooltip("If enabled, still runs DT.Maintain() inside ticks. This will contend with rendering because DT topology buffers are shared.")]
+    public bool asyncRunDtMaintain = false;
+
     [Header("CPU snapshots (AI)")]
     [Min(1)] public int snapshotEveryTicks = 10;
 
@@ -47,11 +62,22 @@ public sealed class SimulationController : MonoBehaviour {
     readonly Dictionary<Meshless, float2[]> latestSnapshot = new Dictionary<Meshless, float2[]>();
     readonly Dictionary<Meshless, int> latestSnapshotTick = new Dictionary<Meshless, int>();
 
+    struct AsyncBatchState {
+        public bool pending;
+        public GraphicsFence fence;
+        public int tickIdAfterBatch;
+        public int dtSwapMaxLevel;
+    }
+
+    readonly Dictionary<Meshless, AsyncBatchState> asyncStates = new Dictionary<Meshless, AsyncBatchState>();
+
     float accumulator;
     float keyHeldTime;
 
     int lastFrameTicks;
     float tpsSmoothed;
+    float fpsSmoothed;
+
 
     float renderAlpha;
     public float RenderAlpha => renderAlpha;
@@ -72,6 +98,7 @@ public sealed class SimulationController : MonoBehaviour {
         readbackSlots.Clear();
         latestSnapshot.Clear();
         latestSnapshotTick.Clear();
+        asyncStates.Clear();
     }
 
     public void Register(Meshless m) {
@@ -79,6 +106,7 @@ public sealed class SimulationController : MonoBehaviour {
             meshless.Add(m);
             tickCounters[m] = 0;
             readbackSlots[m] = default;
+            asyncStates[m] = default;
         }
     }
 
@@ -89,6 +117,7 @@ public sealed class SimulationController : MonoBehaviour {
             readbackSlots.Remove(m);
             latestSnapshot.Remove(m);
             latestSnapshotTick.Remove(m);
+            asyncStates.Remove(m);
 
             if (gpuSolverCache.TryGetValue(m, out XPBISolver solver)) {
                 solver.Dispose();
@@ -119,19 +148,116 @@ public sealed class SimulationController : MonoBehaviour {
 
         float tickDt = 1f / targetTPS;
 
-        float clampedFps = Mathf.Max(1f, targetFPS);
-        float budgetSeconds = (1f / clampedFps);
-        float frameEndTime = Time.realtimeSinceStartup + budgetSeconds;
-
         lastFrameTicks = 0;
 
-        if (manual) ManualUpdate(frameDt, tickDt, frameEndTime);
-        else AutoUpdate(frameDt, tickDt, frameEndTime);
+        if (asyncGpu) {
+            ProcessAsyncBatchCompletions();
 
-        renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
+            if (manual) ManualUpdateAsync(frameDt, tickDt);
+            else AutoUpdateAsync(frameDt, tickDt);
 
-        ProcessReadbacks();
+            renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
+        } else {
+            float clampedFps = Mathf.Max(1f, targetFPS);
+            float budgetSeconds = (1f / clampedFps);
+            float frameEndTime = Time.realtimeSinceStartup + budgetSeconds;
+
+            if (manual) ManualUpdate(frameDt, tickDt, frameEndTime);
+            else AutoUpdate(frameDt, tickDt, frameEndTime);
+
+            renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
+
+            ProcessReadbacks();
+        }
+
         UpdateTpsDisplay(frameDt);
+    }
+
+    void AutoUpdateAsync(float frameDt, float tickDt) {
+        accumulator += frameDt;
+
+        int ticksToRun = 0;
+        while (accumulator >= tickDt && ticksToRun < maxTicksPerBatch) {
+            accumulator -= tickDt;
+            ticksToRun++;
+        }
+
+        if (ticksToRun <= 0) return;
+
+        float dt = tickDt * simulationSpeed;
+
+        for (int i = meshless.Count - 1; i >= 0; i--) {
+            var m = meshless[i];
+            if (m == null || !m.isActiveAndEnabled) {
+                meshless.RemoveAt(i);
+                if (m != null) Unregister(m);
+                continue;
+            }
+
+            SubmitMeshlessAsyncBatch(m, dt, ticksToRun);
+        }
+
+        lastFrameTicks += ticksToRun;
+    }
+
+    void ManualUpdateAsync(float frameDt, float tickDt) {
+        if (Input.GetKeyDown(KeyCode.T)) {
+            keyHeldTime = 0f;
+            accumulator = 0f;
+        }
+
+        if (Input.GetKey(KeyCode.T)) {
+            keyHeldTime += frameDt;
+
+            if (keyHeldTime >= holdThreshold) {
+                accumulator += frameDt;
+
+                int ticksToRun = 0;
+                while (accumulator >= tickDt && ticksToRun < maxTicksPerBatch) {
+                    accumulator -= tickDt;
+                    ticksToRun++;
+                }
+
+                if (ticksToRun > 0) {
+                    float dt = tickDt * simulationSpeed;
+
+                    for (int i = meshless.Count - 1; i >= 0; i--) {
+                        var m = meshless[i];
+                        if (m == null || !m.isActiveAndEnabled) {
+                            meshless.RemoveAt(i);
+                            if (m != null) Unregister(m);
+                            continue;
+                        }
+
+                        SubmitMeshlessAsyncBatch(m, dt, ticksToRun);
+                    }
+
+                    lastFrameTicks += ticksToRun;
+                }
+            }
+        }
+
+        if (Input.GetKeyUp(KeyCode.T)) {
+            if (keyHeldTime < holdThreshold) {
+                float dt = tickDt * simulationSpeed;
+
+                for (int i = meshless.Count - 1; i >= 0; i--) {
+                    var m = meshless[i];
+                    if (m == null || !m.isActiveAndEnabled) {
+                        meshless.RemoveAt(i);
+                        if (m != null) Unregister(m);
+                        continue;
+                    }
+
+                    SubmitMeshlessAsyncBatch(m, dt, 1);
+                }
+
+                lastFrameTicks += 1;
+            }
+
+            keyHeldTime = 0f;
+            accumulator = 0f;
+        }
     }
 
     void AutoUpdate(float frameDt, float tickDt, float frameEndTime) {
@@ -152,7 +278,6 @@ public sealed class SimulationController : MonoBehaviour {
 
         lastFrameTicks += ticks;
     }
-
 
     void ManualUpdate(float frameDt, float tickDt, float frameEndTime) {
         if (Input.GetKeyDown(KeyCode.T)) {
@@ -203,6 +328,87 @@ public sealed class SimulationController : MonoBehaviour {
 
             StepMeshlessGpuTruth(m, dt);
         }
+    }
+
+    void SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
+        if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
+            solver = new XPBISolver(gpuXpbiSolverShader);
+            gpuSolverCache[m] = solver;
+            solver.InitializeFromMeshless(m);
+        }
+
+        if (!tickCounters.ContainsKey(m)) tickCounters[m] = 0;
+        int lastTickId = tickCounters[m];
+        int tickIdAfterBatch = lastTickId + ticksToRun;
+
+        if (!asyncStates.TryGetValue(m, out AsyncBatchState st))
+            st = default;
+
+        if (st.pending && !st.fence.passed)
+            return;
+
+        if (st.pending && st.fence.passed) {
+            solver.CompleteAsyncBatch(m, st.dtSwapMaxLevel);
+            st.pending = false;
+            asyncStates[m] = st;
+        }
+
+        bool rebuildParents = ((tickIdAfterBatch % Const.HierarchyRebuildInterval) == 0);
+
+        int dtSwapMaxLevel = asyncUpdateDtPositions ? (asyncRunDtMaintain ? m.maxLayer : 0) : -1;
+
+        st.fence = solver.SubmitGpuTruthAsyncBatch(
+            m,
+            dtPerTick,
+            ticksToRun,
+            useHierarchicalSolver,
+            m.dtFixIterationsPerTick,
+            m.dtLegalizeIterationsPerTick,
+            rebuildParents,
+            asyncUpdateDtPositions,
+            dtSwapMaxLevel,
+            asyncRunDtMaintain,
+            asyncQueue
+        );
+
+        st.pending = true;
+        st.tickIdAfterBatch = tickIdAfterBatch;
+        st.dtSwapMaxLevel = dtSwapMaxLevel;
+        asyncStates[m] = st;
+
+        tickCounters[m] = tickIdAfterBatch;
+
+        // In async mode, snapshots are disabled by default because they create extra GPU traffic and can defeat the "smooth render" goal.
+        // If you need them, re-enable and ensure you request them only after fences pass.
+    }
+
+    void ProcessAsyncBatchCompletions() {
+        if (asyncStates.Count == 0) return;
+
+        var keys = ListPool<Meshless>.Get();
+        foreach (var kv in asyncStates) keys.Add(kv.Key);
+
+        for (int i = 0; i < keys.Count; i++) {
+            var m = keys[i];
+            if (m == null) continue;
+
+            if (!asyncStates.TryGetValue(m, out AsyncBatchState st))
+                continue;
+
+            if (!st.pending)
+                continue;
+
+            if (!st.fence.passed)
+                continue;
+
+            if (gpuSolverCache.TryGetValue(m, out XPBISolver solver) && solver != null)
+                solver.CompleteAsyncBatch(m, st.dtSwapMaxLevel);
+
+            st.pending = false;
+            asyncStates[m] = st;
+        }
+
+        ListPool<Meshless>.Release(keys);
     }
 
     void StepMeshlessGpuTruth(Meshless m, float dt) {
@@ -284,11 +490,15 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void UpdateTpsDisplay(float frameDt) {
+        float k = 1f - Mathf.Exp(-frameDt * 8f);
+
+        float fpsInst = frameDt > 0f ? (1f / frameDt) : 0f;
+        fpsSmoothed = Mathf.Lerp(fpsSmoothed, fpsInst, k);
+
         if (manual && lastFrameTicks == 0)
             return;
 
         float inst = frameDt > 0f ? (lastFrameTicks / frameDt) : 0f;
-        float k = 1f - Mathf.Exp(-frameDt * 8f);
         tpsSmoothed = Mathf.Lerp(tpsSmoothed, inst, k);
     }
 
@@ -299,14 +509,16 @@ public sealed class SimulationController : MonoBehaviour {
 
         float tickDt = targetTPS > 0f ? (1f / targetTPS) : 0f;
         string text =
-            (paused ? "TPS: (paused)\n" : $"TPS: {tpsSmoothed:0}\n") +
+            $"FPS: {fpsSmoothed:0}\n" +
+            $"TPS: {tpsSmoothed:0}\n" +
             $"Target: {targetTPS:0}\n" +
             $"Ticks/frame: {lastFrameTicks}\n" +
             $"Tick dt: {tickDt:0.000000}\n" +
             $"Sim speed: {simulationSpeed:0.###}";
 
-        GUI.Label(new Rect(tpsOverlayPos.x, tpsOverlayPos.y, 260f, 90f), text);
+        GUI.Label(new Rect(tpsOverlayPos.x, tpsOverlayPos.y, 260f, 105f), text);
     }
+
 
     static class ListPool<T> {
         static readonly Stack<List<T>> pool = new Stack<List<T>>(16);
