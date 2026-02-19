@@ -13,7 +13,7 @@ namespace GPU.Solver {
 
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         public struct ForceEvent {
-            public int node;
+            public uint node;
             public float2 force;
         }
 
@@ -342,7 +342,7 @@ namespace GPU.Solver {
             if (buf != null && buf.count >= capacity) return buf;
 
             buf?.Dispose();
-            buf = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
+            buf = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);  // changed to uint
             colorOrders[level] = buf;
             return buf;
         }
@@ -352,7 +352,7 @@ namespace GPU.Solver {
             if (buf != null && buf.count >= ColoringMaxColors) return buf;
 
             buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);  // changed to uint
             colorCountsByLevel[level] = buf;
             return buf;
         }
@@ -362,7 +362,7 @@ namespace GPU.Solver {
             if (buf != null && buf.count >= ColoringMaxColors) return buf;
 
             buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);  // changed to uint
             colorStartsByLevel[level] = buf;
             return buf;
         }
@@ -372,7 +372,7 @@ namespace GPU.Solver {
             if (buf != null && buf.count >= ColoringMaxColors) return buf;
 
             buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(int), ComputeBufferType.Structured);
+            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);  // changed to uint
             colorWriteByLevel[level] = buf;
             return buf;
         }
@@ -441,6 +441,10 @@ namespace GPU.Solver {
             int maxSolveLevel = (useHierarchical && m.levelEndIndex != null) ? m.maxLayer : 0;
             EnsurePerLevelCaches(maxSolveLevel + 1);
 
+            // In the "fully integrated DT" path, we update DT positions for all levels whenever
+            // rendering wants them; this fixes coarse-level wireframe freezing.
+            int maxDtLevel = (updateDtPositionsForRender || runDtMaintain) ? m.maxLayer : -1;
+
             for (int tick = 0; tick < tickCount; tick++) {
                 asyncCb.SetComputeIntParam(shader, "_Base", 0);
                 asyncCb.SetComputeIntParam(shader, "_TotalCount", total);
@@ -459,6 +463,8 @@ namespace GPU.Solver {
                         if (fineCount <= activeCount)
                             continue;
 
+                        int pingRead = dtLevel.RenderPing ^ (maxDtLevel >= 0 ? (tick & 1) : 0);
+
                         asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
 
                         asyncCb.SetComputeIntParam(shader, "_ParentRangeStart", activeCount);
@@ -467,8 +473,8 @@ namespace GPU.Solver {
 
                         asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_Pos", pos);
                         asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
-                        asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                        asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                        asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                        asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
                         asyncCb.DispatchCompute(shader, kRebuildParentsAtLevel, ((fineCount - activeCount) + 255) / 256, 1, 1);
                     }
@@ -503,6 +509,9 @@ namespace GPU.Solver {
                     if (activeCount < 3) continue;
 
                     int fineCount = level > 1 ? m.NodeCount(level - 1) : total;
+
+                    int pingRead = dtLevel.RenderPing ^ (maxDtLevel >= 0 ? (tick & 1) : 0);
+                    uint adjacencyVersion = dtLevel.GetAdjacencyVersion(pingRead);
 
                     asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
                     asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
@@ -560,17 +569,17 @@ namespace GPU.Solver {
                     asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
                     asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
-                    asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                    asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                    asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
-                    asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                    asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                    asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
-                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
-                    asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLevel.NeighborsBuffer);
-                    asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                    asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
                     asyncCb.DispatchCompute(shader, kSaveVelPrefix, (activeCount + 255) / 256, 1, 1);
 
@@ -581,7 +590,6 @@ namespace GPU.Solver {
                     asyncCb.DispatchCompute(shader, kComputeCorrectionL, (activeCount + 255) / 256, 1, 1);
                     asyncCb.DispatchCompute(shader, kCacheF0AndResetLambda, (activeCount + 255) / 256, 1, 1);
 
-                    uint adjacencyVersion = dtLevel.AdjacencyVersion;
                     bool rebuildColors =
                         cachedActiveCountByLevel[level] != activeCount ||
                         cachedAdjacencyVersionByLevel[level] != adjacencyVersion ||
@@ -618,14 +626,14 @@ namespace GPU.Solver {
                         asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringColor", coloringColor);
                         asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringProposed", coloringProposed);
 
-                        asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-                        asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                        asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                        asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
-                        asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-                        asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                        asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                        asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
-                        asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-                        asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
+                        asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighbors", dtLevel.GetNeighborsBuffer(pingRead));
+                        asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighborCounts", dtLevel.GetNeighborCountsBuffer(pingRead));
 
                         asyncCb.SetComputeBufferParam(shader, kColoringClearMeta, "_ColoringCounts", countsBuf);
                         asyncCb.SetComputeBufferParam(shader, kColoringClearMeta, "_ColoringStarts", startsBuf);
@@ -693,12 +701,7 @@ namespace GPU.Solver {
                 asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Flags", flags);
                 asyncCb.DispatchCompute(shader, kIntegratePositions, (total + 255) / 256, 1, 1);
 
-                bool doDtPosUpdate = updateDtPositionsForRender && dtSwapMaxLevel >= 0;
-                bool doDtMaintain = runDtMaintain;
-
-                if (doDtPosUpdate || doDtMaintain) {
-                    int maxDtLevel = math.min(m.maxLayer, math.max(0, dtSwapMaxLevel));
-
+                if (maxDtLevel >= 0) {
                     for (int level = maxDtLevel; level >= 0; level--) {
                         if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
                             continue;
@@ -706,24 +709,35 @@ namespace GPU.Solver {
                         int activeCount = (level > 0) ? m.NodeCount(level) : total;
                         if (activeCount < 3) continue;
 
-                        int fineCount = (level > 1) ? m.NodeCount(level - 1) : total;
+                        int pingRead = dtLevel.RenderPing ^ (tick & 1);
+                        int pingWrite = pingRead ^ 1;
 
                         asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
-                        asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
+                        asyncCb.SetComputeIntParam(shader, "_FineCount", (level > 1) ? m.NodeCount(level - 1) : total);
                         asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
 
-                        if (doDtPosUpdate) {
+                        if (updateDtPositionsForRender) {
                             asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
-                            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions", dtLevel.PositionsWriteBuffer);
+                            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions", dtLevel.GetPositionsBuffer(pingWrite));
                             asyncCb.SetComputeVectorParam(shader, "_DtNormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
                             asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
                             asyncCb.DispatchCompute(shader, kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
                         }
 
-                        if (doDtMaintain) {
-                            dtLevel.EnqueueMaintain(asyncCb, dtLevel.PositionsWriteBuffer, dtFixIterations, dtLegalizeIterations);
+                        if (runDtMaintain) {
+                            dtLevel.EnqueueMaintain(asyncCb, dtLevel.GetPositionsBuffer(pingWrite), pingWrite, dtFixIterations, dtLegalizeIterations);
                         }
                     }
+                }
+            }
+
+            if (maxDtLevel >= 0) {
+                int pingXor = tickCount & 1;
+                for (int level = maxDtLevel; level >= 0; level--) {
+                    if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                        continue;
+
+                    dtLevel.SetPendingRenderPing(dtLevel.RenderPing ^ pingXor);
                 }
             }
 
@@ -733,19 +747,19 @@ namespace GPU.Solver {
         }
 
 
+
         public void CompleteAsyncBatch(Meshless m, int dtSwapMaxLevel) {
-            if (m == null || dtSwapMaxLevel < 0)
+            if (m == null)
                 return;
 
-            int maxDtLevel = math.min(m.maxLayer, dtSwapMaxLevel);
-            for (int level = maxDtLevel; level >= 0; level--) {
+            for (int level = m.maxLayer; level >= 0; level--) {
                 if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
                     continue;
 
-                dtLevel.SwapTopologyAfterTick();
-                dtLevel.SwapPositionsAfterTick();
+                dtLevel.CommitPendingRenderPing();
             }
         }
+
 
 
         public void StepGpuTruth(

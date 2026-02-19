@@ -166,7 +166,7 @@ MonoBehaviour:
   asyncQueue: 1
   maxTicksPerBatch: 32
   asyncUpdateDtPositions: 1
-  asyncRunDtMaintain: 0
+  asyncRunDtMaintain: 1
   snapshotEveryTicks: 10
 --- !u!4 &86236646
 Transform:
@@ -213,12 +213,12 @@ MonoBehaviour:
   fillShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
   wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
   uvScale: 5
-  showWireframe: 1
+  showWireframe: 0
   wireColorLevel0: {r: 0.15, g: 0.35, b: 1, a: 1}
   wireColorMaxLevel: {r: 1, g: 0.2, b: 0.2, a: 1}
   wireWidthPixels: 0.74
   drawLevel0Fill: 1
-  drawCoarseLevels: 1
+  drawCoarseLevels: 0
   preferGpuSnapshotBounds: 1
 --- !u!1 &519420028
 GameObject:
@@ -362,7 +362,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 100
+  pointCount: 1000
   generateOnStart: 1
 --- !u!4 &961765557
 Transform:

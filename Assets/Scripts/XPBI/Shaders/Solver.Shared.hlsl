@@ -1,144 +1,135 @@
 #ifndef XPBI_SOLVER_SHARED_INCLUDED
-#define XPBI_SOLVER_SHARED_INCLUDED
+    #define XPBI_SOLVER_SHARED_INCLUDED
 
-#include "Utils.hlsl"
-#include "Deformation.hlsl"
+    #include "Utils.hlsl"
+    #include "Deformation.hlsl"
 
-#define targetNeighborCount 6
+    #define targetNeighborCount 6
 
-RWStructuredBuffer<float2> _Pos;
-RWStructuredBuffer<float2> _Vel;
+    // Core particle data
+    RWStructuredBuffer<float2> _Pos;
+    RWStructuredBuffer<float2> _Vel;
 
-StructuredBuffer<float> _InvMass;
-StructuredBuffer<uint> _Flags;
-StructuredBuffer<float> _RestVolume;
-RWStructuredBuffer<int> _ParentIndex;
+    // Material and state
+    StructuredBuffer<float> _InvMass;
+    StructuredBuffer<uint> _Flags;
+    StructuredBuffer<float> _RestVolume;
+    RWStructuredBuffer<int> _ParentIndex;
 
-RWStructuredBuffer<float4> _F;
-RWStructuredBuffer<float4> _Fp;
+    // Deformation gradients
+    RWStructuredBuffer<float4> _F;
+    RWStructuredBuffer<float4> _Fp;
 
-RWStructuredBuffer<uint> _CurrentVolumeBits;
-RWStructuredBuffer<float> _KernelH;
-RWStructuredBuffer<float4> _L;
-RWStructuredBuffer<float4> _F0;
-RWStructuredBuffer<float> _Lambda;
+    // SPH and plasticity
+    RWStructuredBuffer<uint> _CurrentVolumeBits;
+    RWStructuredBuffer<float> _KernelH;
+    RWStructuredBuffer<float4> _L;     // correction matrix
+    RWStructuredBuffer<float4> _F0;    // initial deformation
+    RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
 
-RWStructuredBuffer<float2> _SavedVelPrefix;
-RWStructuredBuffer<uint> _VelDeltaBits;
+    // Velocity delta accumulation
+    RWStructuredBuffer<float2> _SavedVelPrefix;
+    RWStructuredBuffer<uint> _VelDeltaBits;
 
-StructuredBuffer<int> _DtNeighbors;
-StructuredBuffer<int> _DtNeighborCounts;
+    // Neighbour lists
+    StructuredBuffer<uint> _DtNeighbors;
+    StructuredBuffer<uint> _DtNeighborCounts;
 
-StructuredBuffer<int> _ColorOrder;
-StructuredBuffer<int> _ColorCounts;
-StructuredBuffer<int> _ColorStarts;
-int _ColorIndex;
+    // Colouring order
+    StructuredBuffer<uint> _ColorOrder;
+    StructuredBuffer<uint> _ColorCounts;
+    StructuredBuffer<uint> _ColorStarts;
+    uint _ColorIndex;
 
-int _DtNeighborCount;
+    uint _DtNeighborCount;
 
-int _Base;
-int _ActiveCount;
-int _TotalCount;
-int _FineCount;
-float _Dt;
-float _Gravity;
-float _Compliance;
+    // Simulation ranges
+    uint _Base;
+    uint _ActiveCount;
+    uint _TotalCount;
+    uint _FineCount;
 
-static const float EPS = 1e-6;
-static const float KERNEL_H_SCALE = 0.7;
+    // Simulation parameters
+    float _Dt;
+    float _Gravity;
+    float _Compliance;
 
-static const float STRETCH_EPS = 1e-6;
-static const float EIGEN_OFFDIAG_EPS = 1e-5;
-static const float INV_DET_EPS = 1e-8;
+    // Constants
+    static const float EPS = 1e-6;
+    static const float KERNEL_H_SCALE = 0.7;
 
-static const float YOUNGS = 5e4;
-static const float POISSON = 0.3;
-static const float MU = (YOUNGS / (2.0 * (1.0 + POISSON)));
-static const float LAMBDA = ((YOUNGS * POISSON) / ((1.0 + POISSON) * (1.0 - 2.0 * POISSON)));
-static const float YIELD_HENCKY = 0.05;
-static const float VOL_HENCKY_LIMIT = 0.3;
+    static const float STRETCH_EPS = 1e-6;
+    static const float EIGEN_OFFDIAG_EPS = 1e-5;
+    static const float INV_DET_EPS = 1e-8;
 
-static bool XPBI_IsFixed(int gi)
-{
-    return (_Flags[gi] & 1u) != 0u || _InvMass[gi] <= 0.0;
-}
+    static const float YOUNGS = 5e4;
+    static const float POISSON = 0.3;
+    static const float MU = (YOUNGS / (2.0 * (1.0 + POISSON)));
+    static const float LAMBDA = ((YOUNGS * POISSON) / ((1.0 + POISSON) * (1.0 - 2.0 * POISSON)));
+    static const float YIELD_HENCKY = 0.05;
+    static const float VOL_HENCKY_LIMIT = 0.3;
 
-static float XPBI_ReadCurrentVolume(int gi)
-{
-    return asfloat(_CurrentVolumeBits[gi]);
-}
+    // ----------------------------------------------------------------------------
+    // Utility functions
+    // ----------------------------------------------------------------------------
+    static bool IsFixedVertex(uint gi)
+    {
+        return (_Flags[gi] & 1u) != 0u || _InvMass[gi] <= 0.0;
+    }
 
-static uint XPBI_VelDeltaIndex(int gi, uint comp)
-{
-    return (uint)(gi * 2) + comp;
-}
+    static float ReadCurrentVolume(uint gi)
+    {
+        return asfloat(_CurrentVolumeBits[gi]);
+    }
 
-static void XPBI_AddVelDelta(int gi, float2 dv)
-{
-    XPBI_AtomicAddFloatBits(_VelDeltaBits, XPBI_VelDeltaIndex(gi, 0u), dv.x);
-    XPBI_AtomicAddFloatBits(_VelDeltaBits, XPBI_VelDeltaIndex(gi, 1u), dv.y);
-}
+    static uint LocalIndexFromGlobal(uint gi) { return gi - _Base; }
+    static uint GlobalIndexFromLocal(uint li) { return _Base + li; }
 
-static float2 XPBI_ReadVelDelta(int gi)
-{
-    return float2(
-        asfloat(_VelDeltaBits[XPBI_VelDeltaIndex(gi, 0u)]),
-        asfloat(_VelDeltaBits[XPBI_VelDeltaIndex(gi, 1u)]));
-}
+    // ----------------------------------------------------------------------------
+    // Neighbour access – returns up to 6 neighbours (global indices) and count.
+    // ----------------------------------------------------------------------------
+    [forceinline] static void GetNeighbors(uint gi,
+    out uint nCount,
+    out uint n0, out uint n1, out uint n2,
+    out uint n3, out uint n4, out uint n5)
+    {
+        uint li = LocalIndexFromGlobal(gi);
 
-static int XPBI_LocalIndexFromGlobal(int gi) { return gi - _Base; }
-static int XPBI_GlobalIndexFromLocal(int li) { return _Base + li; }
+        nCount = _DtNeighborCounts[li];
+        nCount = min(nCount, _DtNeighborCount);
+        nCount = min(nCount, targetNeighborCount);
 
-static void XPBI_GetNeighbors(int gi, out int nCount, out int n0, out int n1, out int n2, out int n3, out int n4, out int n5)
-{
-    int li = XPBI_LocalIndexFromGlobal(gi);
+        uint baseIdx = li * _DtNeighborCount;
 
-    nCount = _DtNeighborCounts[li];
-    if (nCount < 0)
-        nCount = 0;
-    if (nCount > _DtNeighborCount)
-        nCount = _DtNeighborCount;
-    if (nCount > targetNeighborCount)
-        nCount = targetNeighborCount;
+        n0 = (nCount > 0) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 0u]) : ~0u;
+        n1 = (nCount > 1) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 1u]) : ~0u;
+        n2 = (nCount > 2) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 2u]) : ~0u;
+        n3 = (nCount > 3) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 3u]) : ~0u;
+        n4 = (nCount > 4) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 4u]) : ~0u;
+        n5 = (nCount > 5) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 5u]) : ~0u;
+    }
 
-    n0 = -1;
-    n1 = -1;
-    n2 = -1;
-    n3 = -1;
-    n4 = -1;
-    n5 = -1;
+    // ----------------------------------------------------------------------------
+    // External force event structure
+    // ----------------------------------------------------------------------------
+    struct XPBI_ForceEvent
+    {
+        uint node;
+        float2 force;
+    };
 
-    int baseIdx = li * _DtNeighborCount;
+    StructuredBuffer<XPBI_ForceEvent> _ForceEvents;
+    uint _ForceEventCount;
 
-    if (nCount > 0)
-        n0 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 0]);
-    if (nCount > 1)
-        n1 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 1]);
-    if (nCount > 2)
-        n2 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 2]);
-    if (nCount > 3)
-        n3 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 3]);
-    if (nCount > 4)
-        n4 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 4]);
-    if (nCount > 5)
-        n5 = XPBI_GlobalIndexFromLocal(_DtNeighbors[baseIdx + 5]);
-}
+    // ----------------------------------------------------------------------------
+    // Multigrid prolongation ranges
+    // ----------------------------------------------------------------------------
+    RWStructuredBuffer<float2> _DtPositions;
+    float2 _DtNormCenter;
+    float _DtNormInvHalfExtent;
 
-struct XPBI_ForceEvent
-{
-    int node;
-    float2 force;
-};
+    uint _ParentRangeStart;
+    uint _ParentRangeEnd;
+    uint _ParentCoarseCount;
 
-StructuredBuffer<XPBI_ForceEvent> _ForceEvents;
-int _ForceEventCount;
-
-RWStructuredBuffer<float2> _DtPositions;
-float2 _DtNormCenter;
-float _DtNormInvHalfExtent;
-
-int _ParentRangeStart;
-int _ParentRangeEnd;
-int _ParentCoarseCount;
-
-#endif
+#endif // XPBI_SOLVER_SHARED_INCLUDED

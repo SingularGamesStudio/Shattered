@@ -22,38 +22,41 @@ namespace GPU.Delaunay {
         readonly ComputeShader shader;
         readonly bool ownsShaderInstance;
 
-        ComputeBuffer positionsA;
-        ComputeBuffer positionsB;
-        bool positionsAIsCurrent = true;
+        ComputeBuffer positions0;
+        ComputeBuffer positions1;
 
-        // Topology/adjacency is double-buffered so rendering can read "current"
-        // while async compute writes into "write", then we swap on fence.
-        ComputeBuffer halfEdgesA;
-        ComputeBuffer halfEdgesB;
-        ComputeBuffer triLocksA;
-        ComputeBuffer triLocksB;
+        ComputeBuffer halfEdges0;
+        ComputeBuffer halfEdges1;
 
-        ComputeBuffer vToEA;
-        ComputeBuffer vToEB;
-        ComputeBuffer neighborsA;
-        ComputeBuffer neighborsB;
-        ComputeBuffer neighborCountsA;
-        ComputeBuffer neighborCountsB;
+        ComputeBuffer triLocks0;
+        ComputeBuffer triLocks1;
 
-        ComputeBuffer flipCountA;
-        ComputeBuffer flipCountB;
+        ComputeBuffer vToE0;
+        ComputeBuffer vToE1;
+
+        ComputeBuffer neighbors0;
+        ComputeBuffer neighbors1;
+
+        ComputeBuffer neighborCounts0;
+        ComputeBuffer neighborCounts1;
+
+        ComputeBuffer flipCount0;
+        ComputeBuffer flipCount1;
 
         // Rendering support: tri -> representative half-edge (or -1 if not renderable).
-        ComputeBuffer triToHEA;
-        ComputeBuffer triToHEB;
+        ComputeBuffer triToHE0;
+        ComputeBuffer triToHE1;
 
-        bool topologyAIsCurrent = true;
-        uint adjacencyVersionA;
-        uint adjacencyVersionB;
+        uint adjacencyVersion0;
+        uint adjacencyVersion1;
 
         float2[] positionScratch;
         float2[] superPoints;
         readonly uint[] flipScratch = { 0u };
+
+        int renderPing;
+        int pendingRenderPing;
+        bool hasPendingRenderPing;
 
         int vertexCount;
         int realVertexCount;
@@ -76,42 +79,24 @@ namespace GPU.Delaunay {
         public int TriCount => triCount;
         public int NeighborCount { get; private set; }
 
-        public uint AdjacencyVersion => topologyAIsCurrent ? adjacencyVersionA : adjacencyVersionB;
+        public int RenderPing => renderPing;
 
-        public ComputeBuffer PositionsCurrBuffer => positionsAIsCurrent ? positionsA : positionsB;
-        public ComputeBuffer PositionsPrevBuffer => positionsAIsCurrent ? positionsB : positionsA;
-        public ComputeBuffer PositionsWriteBuffer => PositionsPrevBuffer;
+        public uint AdjacencyVersion => GetAdjacencyVersion(renderPing);
+
+        public ComputeBuffer PositionsCurrBuffer => GetPositionsBuffer(renderPing);
+        public ComputeBuffer PositionsPrevBuffer => GetPositionsBuffer(renderPing ^ 1);
 
         // Back-compat: treat "PositionsBuffer" as "current".
         public ComputeBuffer PositionsBuffer => PositionsCurrBuffer;
 
-        public ComputeBuffer HalfEdgesBuffer => topologyAIsCurrent ? halfEdgesA : halfEdgesB;
-        ComputeBuffer HalfEdgesWriteBuffer => topologyAIsCurrent ? halfEdgesB : halfEdgesA;
+        // Back-compat: "write" means "other ping" relative to current render ping.
+        public ComputeBuffer PositionsWriteBuffer => GetPositionsBuffer(renderPing ^ 1);
 
-        public ComputeBuffer TriToHEBuffer => topologyAIsCurrent ? triToHEA : triToHEB;
-        ComputeBuffer TriToHEWriteBuffer => topologyAIsCurrent ? triToHEB : triToHEA;
+        public ComputeBuffer HalfEdgesBuffer => GetHalfEdgesBuffer(renderPing);
+        public ComputeBuffer TriToHEBuffer => GetTriToHEBuffer(renderPing);
 
-        public ComputeBuffer NeighborsBuffer => topologyAIsCurrent ? neighborsA : neighborsB;
-        ComputeBuffer NeighborsWriteBuffer => topologyAIsCurrent ? neighborsB : neighborsA;
-
-        public ComputeBuffer NeighborCountsBuffer => topologyAIsCurrent ? neighborCountsA : neighborCountsB;
-
-        // Expose write-side buffers so solver can explicitly bind them for async recording.
-        public ComputeBuffer HalfEdgesA => halfEdgesA;
-        public ComputeBuffer HalfEdgesB => halfEdgesB;
-        public ComputeBuffer NeighborsA => neighborsA;
-        public ComputeBuffer NeighborsB => neighborsB;
-        public ComputeBuffer NeighborCountsA => neighborCountsA;
-        public ComputeBuffer NeighborCountsB => neighborCountsB;
-
-        public bool TopologyAIsCurrent => topologyAIsCurrent;
-        public bool PositionsAIsCurrent => positionsAIsCurrent;
-
-        ComputeBuffer NeighborCountsWriteBuffer => topologyAIsCurrent ? neighborCountsB : neighborCountsA;
-
-        ComputeBuffer TriLocksWriteBuffer => topologyAIsCurrent ? triLocksB : triLocksA;
-        ComputeBuffer VToEWriteBuffer => topologyAIsCurrent ? vToEB : vToEA;
-        ComputeBuffer FlipCountWriteBuffer => topologyAIsCurrent ? flipCountB : flipCountA;
+        public ComputeBuffer NeighborsBuffer => GetNeighborsBuffer(renderPing);
+        public ComputeBuffer NeighborCountsBuffer => GetNeighborCountsBuffer(renderPing);
 
         public DT(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
@@ -130,6 +115,33 @@ namespace GPU.Delaunay {
 
             kClearTriToHE = this.shader.FindKernel("ClearTriToHE");
             kBuildRenderableTriToHE = this.shader.FindKernel("BuildRenderableTriToHE");
+        }
+
+        public ComputeBuffer GetPositionsBuffer(int ping) => (ping & 1) == 0 ? positions0 : positions1;
+        public ComputeBuffer GetHalfEdgesBuffer(int ping) => (ping & 1) == 0 ? halfEdges0 : halfEdges1;
+        public ComputeBuffer GetTriToHEBuffer(int ping) => (ping & 1) == 0 ? triToHE0 : triToHE1;
+        public ComputeBuffer GetNeighborsBuffer(int ping) => (ping & 1) == 0 ? neighbors0 : neighbors1;
+        public ComputeBuffer GetNeighborCountsBuffer(int ping) => (ping & 1) == 0 ? neighborCounts0 : neighborCounts1;
+
+        public uint GetAdjacencyVersion(int ping) => (ping & 1) == 0 ? adjacencyVersion0 : adjacencyVersion1;
+
+        ComputeBuffer GetTriLocksBuffer(int ping) => (ping & 1) == 0 ? triLocks0 : triLocks1;
+        ComputeBuffer GetVToEBuffer(int ping) => (ping & 1) == 0 ? vToE0 : vToE1;
+        ComputeBuffer GetFlipCountBuffer(int ping) => (ping & 1) == 0 ? flipCount0 : flipCount1;
+
+        public void SetRenderPing(int ping) {
+            renderPing = ping & 1;
+        }
+
+        public void SetPendingRenderPing(int ping) {
+            pendingRenderPing = ping & 1;
+            hasPendingRenderPing = true;
+        }
+
+        public void CommitPendingRenderPing() {
+            if (!hasPendingRenderPing) return;
+            renderPing = pendingRenderPing;
+            hasPendingRenderPing = false;
         }
 
         /// <summary>
@@ -172,36 +184,35 @@ namespace GPU.Delaunay {
                 allPoints[realVertexCount + 2],
             };
 
-            positionsA = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
-            positionsB = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
-            positionsAIsCurrent = true;
+            positions0 = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
+            positions1 = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
 
-            halfEdgesA = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
-            halfEdgesB = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
+            halfEdges0 = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
+            halfEdges1 = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
 
-            triLocksA = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
-            triLocksB = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+            triLocks0 = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+            triLocks1 = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
 
-            vToEA = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
-            vToEB = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
+            vToE0 = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
+            vToE1 = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
 
-            neighborsA = new ComputeBuffer(realVertexCount * neighborCount, sizeof(int), ComputeBufferType.Structured);
-            neighborsB = new ComputeBuffer(realVertexCount * neighborCount, sizeof(int), ComputeBufferType.Structured);
+            neighbors0 = new ComputeBuffer(realVertexCount * neighborCount, sizeof(int), ComputeBufferType.Structured);
+            neighbors1 = new ComputeBuffer(realVertexCount * neighborCount, sizeof(int), ComputeBufferType.Structured);
 
-            neighborCountsA = new ComputeBuffer(realVertexCount, sizeof(int), ComputeBufferType.Structured);
-            neighborCountsB = new ComputeBuffer(realVertexCount, sizeof(int), ComputeBufferType.Structured);
+            neighborCounts0 = new ComputeBuffer(realVertexCount, sizeof(int), ComputeBufferType.Structured);
+            neighborCounts1 = new ComputeBuffer(realVertexCount, sizeof(int), ComputeBufferType.Structured);
 
-            flipCountA = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
-            flipCountB = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            flipCount0 = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            flipCount1 = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
-            triToHEA = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
-            triToHEB = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+            triToHE0 = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+            triToHE1 = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
 
             for (int i = 0; i < vertexCount; i++)
                 positionScratch[i] = allPoints[i];
 
-            positionsA.SetData(positionScratch);
-            positionsB.SetData(positionScratch);
+            positions0.SetData(positionScratch);
+            positions1.SetData(positionScratch);
 
             var he = new HalfEdge[halfEdgeCount];
             for (int i = 0; i < halfEdgeCount; i++) {
@@ -213,36 +224,19 @@ namespace GPU.Delaunay {
                 };
             }
 
-            halfEdgesA.SetData(he);
-            halfEdgesB.SetData(he);
+            halfEdges0.SetData(he);
+            halfEdges1.SetData(he);
 
-            topologyAIsCurrent = true;
-            adjacencyVersionA = 0;
-            adjacencyVersionB = 0;
+            renderPing = 0;
+            pendingRenderPing = 0;
+            hasPendingRenderPing = false;
+
+            adjacencyVersion0 = 0;
+            adjacencyVersion1 = 0;
 
             BindCommon();
-
-            // Build adjacency/tri-map for BOTH topology buffers so the first async swap
-            // doesn't reveal an uninitialized "other" buffer.
-            BindTopologyForMaintainSync(halfEdgesA, triLocksA, flipCountA, vToEA, neighborsA, neighborCountsA, triToHEA, PositionsCurrBuffer);
-            DispatchClearTriLocks();
-            DispatchRebuildVertexAdjacencyAndTriMapSync(vertexCount, halfEdgeCount, triCount, realVertexCount);
-            adjacencyVersionA = 1;
-
-            BindTopologyForMaintainSync(halfEdgesB, triLocksB, flipCountB, vToEB, neighborsB, neighborCountsB, triToHEB, PositionsCurrBuffer);
-            DispatchClearTriLocks();
-            DispatchRebuildVertexAdjacencyAndTriMapSync(vertexCount, halfEdgeCount, triCount, realVertexCount);
-            adjacencyVersionB = 1;
-
-            // Restore bindings to "current" topology for anyone using shader.Dispatch without rebinding.
-            BindTopologyForMaintainSync(HalfEdgesBuffer,
-                topologyAIsCurrent ? triLocksA : triLocksB,
-                topologyAIsCurrent ? flipCountA : flipCountB,
-                topologyAIsCurrent ? vToEA : vToEB,
-                NeighborsBuffer,
-                NeighborCountsBuffer,
-                TriToHEBuffer,
-                PositionsCurrBuffer);
+            RebuildVertexAdjacencyAndTriMapForPingSync(0);
+            RebuildVertexAdjacencyAndTriMapForPingSync(1);
         }
 
         void BindCommon() {
@@ -251,8 +245,6 @@ namespace GPU.Delaunay {
             shader.SetInt("_HalfEdgeCount", halfEdgeCount);
             shader.SetInt("_TriCount", triCount);
             shader.SetInt("_NeighborCount", NeighborCount);
-
-            BindPositionsForMaintain(PositionsCurrBuffer);
         }
 
         public void BindPositionsForMaintain(ComputeBuffer pos) {
@@ -265,57 +257,35 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_Positions", pos);
         }
 
-        public void SwapPositionsAfterTick() {
-            positionsAIsCurrent = !positionsAIsCurrent;
-            BindPositionsForMaintain(PositionsCurrBuffer);
-        }
+        void BindBuffersForPing(CommandBuffer cb, int ping, ComputeBuffer positionsForMaintain) {
+            EnqueueSetCommonParams(cb);
 
-        public void SwapTopologyAfterTick() {
-            topologyAIsCurrent = !topologyAIsCurrent;
-        }
+            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", GetTriLocksBuffer(ping));
 
-        void BindTopologyForMaintainSync(
-            ComputeBuffer halfEdges,
-            ComputeBuffer triLocks,
-            ComputeBuffer flipCount,
-            ComputeBuffer vToE,
-            ComputeBuffer neighbors,
-            ComputeBuffer neighborCounts,
-            ComputeBuffer triToHE,
-            ComputeBuffer positionsForMaintain
-        ) {
-            shader.SetInt("_VertexCount", vertexCount);
-            shader.SetInt("_RealVertexCount", realVertexCount);
-            shader.SetInt("_HalfEdgeCount", halfEdgeCount);
-            shader.SetInt("_TriCount", triCount);
-            shader.SetInt("_NeighborCount", NeighborCount);
+            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_TriLocks", GetTriLocksBuffer(ping));
+            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_FlipCount", GetFlipCountBuffer(ping));
+            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_Positions", positionsForMaintain);
 
-            shader.SetBuffer(kClearTriLocks, "_TriLocks", triLocks);
+            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_TriLocks", GetTriLocksBuffer(ping));
+            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_FlipCount", GetFlipCountBuffer(ping));
+            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_Positions", positionsForMaintain);
 
-            shader.SetBuffer(kFixHalfEdges, "_HalfEdges", halfEdges);
-            shader.SetBuffer(kFixHalfEdges, "_TriLocks", triLocks);
-            shader.SetBuffer(kFixHalfEdges, "_FlipCount", flipCount);
-            shader.SetBuffer(kFixHalfEdges, "_Positions", positionsForMaintain);
+            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", GetVToEBuffer(ping));
 
-            shader.SetBuffer(kLegalizeHalfEdges, "_HalfEdges", halfEdges);
-            shader.SetBuffer(kLegalizeHalfEdges, "_TriLocks", triLocks);
-            shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", flipCount);
-            shader.SetBuffer(kLegalizeHalfEdges, "_Positions", positionsForMaintain);
+            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", GetVToEBuffer(ping));
 
-            shader.SetBuffer(kClearVertexToEdge, "_VToE", vToE);
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", GetVToEBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", GetNeighborsBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer(ping));
 
-            shader.SetBuffer(kBuildVertexToEdge, "_HalfEdges", halfEdges);
-            shader.SetBuffer(kBuildVertexToEdge, "_VToE", vToE);
+            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
 
-            shader.SetBuffer(kBuildNeighbors, "_HalfEdges", halfEdges);
-            shader.SetBuffer(kBuildNeighbors, "_VToE", vToE);
-            shader.SetBuffer(kBuildNeighbors, "_Neighbors", neighbors);
-            shader.SetBuffer(kBuildNeighbors, "_NeighborCounts", neighborCounts);
-
-            shader.SetBuffer(kClearTriToHE, "_TriToHE", triToHE);
-
-            shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", halfEdges);
-            shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", triToHE);
+            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
         }
 
         void EnqueueSetCommonParams(CommandBuffer cb) {
@@ -326,78 +296,160 @@ namespace GPU.Delaunay {
             cb.SetComputeIntParam(shader, "_NeighborCount", NeighborCount);
         }
 
-        void EnqueueSetWriteBuffers(CommandBuffer cb, ComputeBuffer positionsForMaintain) {
-            var he = HalfEdgesWriteBuffer;
-            var tl = TriLocksWriteBuffer;
-            var fc = FlipCountWriteBuffer;
-            var vte = VToEWriteBuffer;
-            var n = NeighborsWriteBuffer;
-            var nc = NeighborCountsWriteBuffer;
-            var t2 = TriToHEWriteBuffer;
-
-            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", tl);
-
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_HalfEdges", he);
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_TriLocks", tl);
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_FlipCount", fc);
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_Positions", positionsForMaintain);
-
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_HalfEdges", he);
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_TriLocks", tl);
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_FlipCount", fc);
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_Positions", positionsForMaintain);
-
-            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", vte);
-
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", he);
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", vte);
-
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", he);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", vte);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", n);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", nc);
-
-            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", t2);
-
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", he);
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", t2);
+        void EnqueueDispatchClearTriLocks(CommandBuffer cb, int ping) {
+            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", GetTriLocksBuffer(ping));
+            cb.DispatchCompute(shader, kClearTriLocks, (triCount + 255) / 256, 1, 1);
         }
 
-        public void UpdatePositionsFromNodes(List<Node> nodes) {
-            if (nodes == null) throw new ArgumentNullException(nameof(nodes));
-            if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
+        public void EnqueueMaintain(
+            CommandBuffer cb,
+            ComputeBuffer positionsForMaintain,
+            int writePing,
+            int fixIterations,
+            int legalizeIterations,
+            bool rebuildAdjacencyAndTriMap = true
+        ) {
+            if (cb == null) throw new ArgumentNullException(nameof(cb));
+            if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
 
-            for (int i = 0; i < realVertexCount; i++)
-                positionScratch[i] = nodes[i].pos;
+            int ping = writePing & 1;
 
-            positionScratch[realVertexCount + 0] = superPoints[0];
-            positionScratch[realVertexCount + 1] = superPoints[1];
-            positionScratch[realVertexCount + 2] = superPoints[2];
+            BindBuffersForPing(cb, ping, positionsForMaintain);
 
-            positionsA.SetData(positionScratch);
-            positionsB.SetData(positionScratch);
-            positionsAIsCurrent = true;
-            BindPositionsForMaintain(PositionsCurrBuffer);
+            int groups = (halfEdgeCount + 255) / 256;
+            var flipCount = GetFlipCountBuffer(ping);
+
+            for (int i = 0; i < fixIterations; i++) {
+                EnqueueDispatchClearTriLocks(cb, ping);
+                cb.SetBufferData(flipCount, flipScratch);
+                cb.DispatchCompute(shader, kFixHalfEdges, groups, 1, 1);
+            }
+
+            for (int i = 0; i < legalizeIterations; i++) {
+                EnqueueDispatchClearTriLocks(cb, ping);
+                cb.SetBufferData(flipCount, flipScratch);
+                cb.DispatchCompute(shader, kLegalizeHalfEdges, groups, 1, 1);
+            }
+
+            if (rebuildAdjacencyAndTriMap) {
+                EnqueueRebuildVertexAdjacencyAndTriMap(cb, ping);
+
+                if (ping == 0) adjacencyVersion0++;
+                else adjacencyVersion1++;
+            }
         }
 
-        public void UpdatePositionsFromNodes(List<Node> nodes, float2 center, float invHalfExtent) {
-            if (nodes == null) throw new ArgumentNullException(nameof(nodes));
-            if (nodes.Count != realVertexCount) throw new ArgumentException("Node count doesn't match RealVertexCount.", nameof(nodes));
+        public void EnqueueRebuildVertexAdjacencyAndTriMap(CommandBuffer cb, int writePing) {
+            if (cb == null) throw new ArgumentNullException(nameof(cb));
 
-            for (int i = 0; i < realVertexCount; i++)
-                positionScratch[i] = (nodes[i].pos - center) * invHalfExtent;
+            int ping = writePing & 1;
 
-            positionScratch[realVertexCount + 0] = superPoints[0];
-            positionScratch[realVertexCount + 1] = superPoints[1];
-            positionScratch[realVertexCount + 2] = superPoints[2];
+            EnqueueSetCommonParams(cb);
 
-            positionsA.SetData(positionScratch);
-            positionsB.SetData(positionScratch);
-            positionsAIsCurrent = true;
-            BindPositionsForMaintain(PositionsCurrBuffer);
+            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", GetVToEBuffer(ping));
+
+            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", GetVToEBuffer(ping));
+
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", GetVToEBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", GetNeighborsBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer(ping));
+
+            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
+
+            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
+
+            cb.DispatchCompute(shader, kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(shader, kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(shader, kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
+
+            cb.DispatchCompute(shader, kClearTriToHE, (triCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(shader, kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
         }
 
-        // Used by the hierarchy: the DT only owns the prefix [0..RealVertexCount).
+        public void Maintain(int fixIterations, int legalizeIterations) {
+            int writePing = renderPing ^ 1;
+            int groups = (halfEdgeCount + 255) / 256;
+
+            BindCommon();
+            shader.SetBuffer(kFixHalfEdges, "_Positions", GetPositionsBuffer(writePing));
+            shader.SetBuffer(kLegalizeHalfEdges, "_Positions", GetPositionsBuffer(writePing));
+
+            shader.SetBuffer(kClearTriLocks, "_TriLocks", GetTriLocksBuffer(writePing));
+
+            shader.SetBuffer(kFixHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(writePing));
+            shader.SetBuffer(kFixHalfEdges, "_TriLocks", GetTriLocksBuffer(writePing));
+            shader.SetBuffer(kFixHalfEdges, "_FlipCount", GetFlipCountBuffer(writePing));
+
+            shader.SetBuffer(kLegalizeHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(writePing));
+            shader.SetBuffer(kLegalizeHalfEdges, "_TriLocks", GetTriLocksBuffer(writePing));
+            shader.SetBuffer(kLegalizeHalfEdges, "_FlipCount", GetFlipCountBuffer(writePing));
+
+            shader.SetBuffer(kClearVertexToEdge, "_VToE", GetVToEBuffer(writePing));
+
+            shader.SetBuffer(kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(writePing));
+            shader.SetBuffer(kBuildVertexToEdge, "_VToE", GetVToEBuffer(writePing));
+
+            shader.SetBuffer(kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(writePing));
+            shader.SetBuffer(kBuildNeighbors, "_VToE", GetVToEBuffer(writePing));
+            shader.SetBuffer(kBuildNeighbors, "_Neighbors", GetNeighborsBuffer(writePing));
+            shader.SetBuffer(kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer(writePing));
+
+            shader.SetBuffer(kClearTriToHE, "_TriToHE", GetTriToHEBuffer(writePing));
+
+            shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(writePing));
+            shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(writePing));
+
+            for (int i = 0; i < fixIterations; i++) {
+                shader.Dispatch(kClearTriLocks, (triCount + 255) / 256, 1, 1);
+                flipScratch[0] = 0u;
+                GetFlipCountBuffer(writePing).SetData(flipScratch);
+                shader.Dispatch(kFixHalfEdges, groups, 1, 1);
+            }
+
+            for (int i = 0; i < legalizeIterations; i++) {
+                shader.Dispatch(kClearTriLocks, (triCount + 255) / 256, 1, 1);
+                flipScratch[0] = 0u;
+                GetFlipCountBuffer(writePing).SetData(flipScratch);
+                shader.Dispatch(kLegalizeHalfEdges, groups, 1, 1);
+            }
+
+            RebuildVertexAdjacencyAndTriMapForPingSync(writePing);
+
+            if (writePing == 0) adjacencyVersion0++;
+            else adjacencyVersion1++;
+
+            renderPing = writePing;
+        }
+
+        void RebuildVertexAdjacencyAndTriMapForPingSync(int ping) {
+            BindCommon();
+
+            shader.SetBuffer(kClearVertexToEdge, "_VToE", GetVToEBuffer(ping));
+
+            shader.SetBuffer(kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            shader.SetBuffer(kBuildVertexToEdge, "_VToE", GetVToEBuffer(ping));
+
+            shader.SetBuffer(kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            shader.SetBuffer(kBuildNeighbors, "_VToE", GetVToEBuffer(ping));
+            shader.SetBuffer(kBuildNeighbors, "_Neighbors", GetNeighborsBuffer(ping));
+            shader.SetBuffer(kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer(ping));
+
+            shader.SetBuffer(kClearTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
+
+            shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(ping));
+            shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(ping));
+
+            shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
+
+            shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
+            shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
+        }
+
         public void UpdatePositionsFromNodesPrefix(List<Node> nodes, float2 center, float invHalfExtent) {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count < realVertexCount) throw new ArgumentException("Node count is smaller than RealVertexCount.", nameof(nodes));
@@ -409,165 +461,26 @@ namespace GPU.Delaunay {
             positionScratch[realVertexCount + 1] = superPoints[1];
             positionScratch[realVertexCount + 2] = superPoints[2];
 
-            positionsA.SetData(positionScratch);
-            positionsB.SetData(positionScratch);
-            positionsAIsCurrent = true;
-            BindPositionsForMaintain(PositionsCurrBuffer);
+            positions0.SetData(positionScratch);
+            positions1.SetData(positionScratch);
+            renderPing = 0;
         }
 
         public uint GetLastFlipCount() {
-            var fc = topologyAIsCurrent ? flipCountA : flipCountB;
+            var fc = GetFlipCountBuffer(renderPing);
             if (fc == null) return 0u;
             fc.GetData(flipScratch);
             return flipScratch[0];
         }
 
-        public void Maintain(int fixIterations, int legalizeIterations) {
-            // Sync path: write into the non-current topology buffers, then swap.
-            BindTopologyForMaintainSync(
-                HalfEdgesWriteBuffer,
-                TriLocksWriteBuffer,
-                FlipCountWriteBuffer,
-                VToEWriteBuffer,
-                NeighborsWriteBuffer,
-                NeighborCountsWriteBuffer,
-                TriToHEWriteBuffer,
-                PositionsCurrBuffer
-            );
-
-            int groups = (halfEdgeCount + 255) / 256;
-
-            for (int i = 0; i < fixIterations; i++) {
-                DispatchClearTriLocks();
-                flipScratch[0] = 0u;
-                FlipCountWriteBuffer.SetData(flipScratch);
-                shader.Dispatch(kFixHalfEdges, groups, 1, 1);
-            }
-
-            for (int i = 0; i < legalizeIterations; i++) {
-                DispatchClearTriLocks();
-                flipScratch[0] = 0u;
-                FlipCountWriteBuffer.SetData(flipScratch);
-                shader.Dispatch(kLegalizeHalfEdges, groups, 1, 1);
-            }
-
-            DispatchRebuildVertexAdjacencyAndTriMapSync(vertexCount, halfEdgeCount, triCount, realVertexCount);
-
-            uint next = AdjacencyVersion + 1;
-            if (topologyAIsCurrent) adjacencyVersionB = next;
-            else adjacencyVersionA = next;
-
-            SwapTopologyAfterTick();
-        }
-
-        public void EnqueueMaintain(
-            CommandBuffer cb,
-            ComputeBuffer positionsForMaintain,
-            int fixIterations,
-            int legalizeIterations,
-            bool rebuildAdjacencyAndTriMap = true
-        ) {
-            if (cb == null) throw new ArgumentNullException(nameof(cb));
-            if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
-
-            EnqueueSetCommonParams(cb);
-            EnqueueSetWriteBuffers(cb, positionsForMaintain);
-
-            int groups = (halfEdgeCount + 255) / 256;
-
-            for (int i = 0; i < fixIterations; i++) {
-                EnqueueDispatchClearTriLocks(cb);
-                cb.SetBufferData(FlipCountWriteBuffer, flipScratch);
-                cb.DispatchCompute(shader, kFixHalfEdges, groups, 1, 1);
-            }
-
-            for (int i = 0; i < legalizeIterations; i++) {
-                EnqueueDispatchClearTriLocks(cb);
-                cb.SetBufferData(FlipCountWriteBuffer, flipScratch);
-                cb.DispatchCompute(shader, kLegalizeHalfEdges, groups, 1, 1);
-            }
-
-            if (rebuildAdjacencyAndTriMap) {
-                EnqueueRebuildVertexAdjacencyAndTriMap(cb);
-
-                uint next = AdjacencyVersion + 1;
-                if (topologyAIsCurrent) adjacencyVersionB = next;
-                else adjacencyVersionA = next;
-            }
-        }
-
-        public void RebuildVertexAdjacencyAndTriMap() {
-            // Sync path: rebuild into write buffers, then swap.
-            BindTopologyForMaintainSync(
-                HalfEdgesWriteBuffer,
-                TriLocksWriteBuffer,
-                FlipCountWriteBuffer,
-                VToEWriteBuffer,
-                NeighborsWriteBuffer,
-                NeighborCountsWriteBuffer,
-                TriToHEWriteBuffer,
-                PositionsCurrBuffer
-            );
-
-            DispatchRebuildVertexAdjacencyAndTriMapSync(vertexCount, halfEdgeCount, triCount, realVertexCount);
-
-            uint next = AdjacencyVersion + 1;
-            if (topologyAIsCurrent) adjacencyVersionB = next;
-            else adjacencyVersionA = next;
-
-            SwapTopologyAfterTick();
-        }
-
-        public void EnqueueRebuildVertexAdjacencyAndTriMap(CommandBuffer cb) {
-            if (cb == null) throw new ArgumentNullException(nameof(cb));
-
-            EnqueueSetCommonParams(cb);
-
-            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", VToEWriteBuffer);
-
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", HalfEdgesWriteBuffer);
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", VToEWriteBuffer);
-
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", HalfEdgesWriteBuffer);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", VToEWriteBuffer);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", NeighborsWriteBuffer);
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", NeighborCountsWriteBuffer);
-
-            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", TriToHEWriteBuffer);
-
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", HalfEdgesWriteBuffer);
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", TriToHEWriteBuffer);
-
-            cb.DispatchCompute(shader, kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
-
-            cb.DispatchCompute(shader, kClearTriToHE, (triCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
-        }
-
-        void DispatchRebuildVertexAdjacencyAndTriMapSync(int vCount, int heCount, int tCount, int rvCount) {
-            shader.Dispatch(kClearVertexToEdge, (vCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildVertexToEdge, (heCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildNeighbors, (rvCount + 255) / 256, 1, 1);
-
-            shader.Dispatch(kClearTriToHE, (tCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildRenderableTriToHE, (heCount + 255) / 256, 1, 1);
-        }
-
-        void DispatchClearTriLocks() {
-            shader.Dispatch(kClearTriLocks, (triCount + 255) / 256, 1, 1);
-        }
-
-        void EnqueueDispatchClearTriLocks(CommandBuffer cb) {
-            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", TriLocksWriteBuffer);
-            cb.DispatchCompute(shader, kClearTriLocks, (triCount + 255) / 256, 1, 1);
-        }
+        // Back-compat for old call sites (no longer used by the async solver).
+        public void SwapPositionsAfterTick() => renderPing ^= 1;
+        public void SwapTopologyAfterTick() => renderPing ^= 1;
 
         public void GetHalfEdges(HalfEdge[] dst) {
             if (dst == null) throw new ArgumentNullException(nameof(dst));
             if (dst.Length != halfEdgeCount) throw new ArgumentException("Wrong destination length.", nameof(dst));
-            HalfEdgesBuffer.GetData(dst);
+            GetHalfEdgesBuffer(renderPing).GetData(dst);
         }
 
         public void Dispose() {
@@ -578,29 +491,29 @@ namespace GPU.Delaunay {
         }
 
         void DisposeBuffers() {
-            positionsA?.Dispose(); positionsA = null;
-            positionsB?.Dispose(); positionsB = null;
+            positions0?.Dispose(); positions0 = null;
+            positions1?.Dispose(); positions1 = null;
 
-            halfEdgesA?.Dispose(); halfEdgesA = null;
-            halfEdgesB?.Dispose(); halfEdgesB = null;
+            halfEdges0?.Dispose(); halfEdges0 = null;
+            halfEdges1?.Dispose(); halfEdges1 = null;
 
-            triLocksA?.Dispose(); triLocksA = null;
-            triLocksB?.Dispose(); triLocksB = null;
+            triLocks0?.Dispose(); triLocks0 = null;
+            triLocks1?.Dispose(); triLocks1 = null;
 
-            vToEA?.Dispose(); vToEA = null;
-            vToEB?.Dispose(); vToEB = null;
+            vToE0?.Dispose(); vToE0 = null;
+            vToE1?.Dispose(); vToE1 = null;
 
-            neighborsA?.Dispose(); neighborsA = null;
-            neighborsB?.Dispose(); neighborsB = null;
+            neighbors0?.Dispose(); neighbors0 = null;
+            neighbors1?.Dispose(); neighbors1 = null;
 
-            neighborCountsA?.Dispose(); neighborCountsA = null;
-            neighborCountsB?.Dispose(); neighborCountsB = null;
+            neighborCounts0?.Dispose(); neighborCounts0 = null;
+            neighborCounts1?.Dispose(); neighborCounts1 = null;
 
-            flipCountA?.Dispose(); flipCountA = null;
-            flipCountB?.Dispose(); flipCountB = null;
+            flipCount0?.Dispose(); flipCount0 = null;
+            flipCount1?.Dispose(); flipCount1 = null;
 
-            triToHEA?.Dispose(); triToHEA = null;
-            triToHEB?.Dispose(); triToHEB = null;
+            triToHE0?.Dispose(); triToHE0 = null;
+            triToHE1?.Dispose(); triToHE1 = null;
 
             positionScratch = null;
             superPoints = null;
@@ -610,10 +523,14 @@ namespace GPU.Delaunay {
             halfEdgeCount = 0;
             triCount = 0;
 
-            positionsAIsCurrent = true;
-            topologyAIsCurrent = true;
-            adjacencyVersionA = 0;
-            adjacencyVersionB = 0;
+            NeighborCount = 0;
+
+            renderPing = 0;
+            pendingRenderPing = 0;
+            hasPendingRenderPing = false;
+
+            adjacencyVersion0 = 0;
+            adjacencyVersion1 = 0;
         }
     }
 }

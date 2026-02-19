@@ -5,8 +5,6 @@
 #pragma kernel CacheF0AndResetLambda
 #pragma kernel SaveVelPrefix
 #pragma kernel ClearVelDelta
-#pragma kernel RelaxScatter
-#pragma kernel ApplyVelDelta
 #pragma kernel Prolongate
 #pragma kernel CommitDeformation
 #pragma kernel ExternalForces
