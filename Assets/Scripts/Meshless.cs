@@ -112,18 +112,6 @@ public class Meshless : MonoBehaviour {
         return levelEndIndex[level];
     }
 
-    public void UpdateDelaunayAfterIntegration() {
-        UpdateDelaunayAfterIntegration(readback: false);
-    }
-
-    public void UpdateDelaunayAfterIntegration(bool readback) {
-        if (dtAutoNormalizeAtRuntime) {
-            UpdateDelaunayNormalizationIfNeeded(dtAutoNormalizeIncludeCamera ? Camera.main : null);
-        }
-
-        delaunayHierarchy.UpdatePositionsFromNodesAllLevels(nodes, dtNormCenter, dtNormInvHalfExtent);
-        delaunayHierarchy.MaintainAllLevels(dtFixIterationsPerTick, dtLegalizeIterationsPerTick);
-    }
 
     bool UpdateDelaunayNormalizationIfNeeded(Camera cam) {
         if (nodes.Count == 0) return false;

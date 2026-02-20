@@ -82,7 +82,7 @@ public sealed class Renderer : MonoBehaviour {
             EnsurePerNodeBuffers(m);
 
             int maxLevel = m.maxLayer;
-            Bounds bounds = ComputeBounds(m);
+            Bounds bounds = ComputeBoundsFromNodes(m.nodes);
 
             if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
                 SetupCommon(m, dt0, lib, m.NodeCount(0));
@@ -113,18 +113,6 @@ public sealed class Renderer : MonoBehaviour {
                 Graphics.DrawProcedural(wireMaterial, bounds, MeshTopology.Triangles, dt.TriCount * 3, 1, null, mpb);
             }
         }
-    }
-
-    Bounds ComputeBounds(Meshless m) {
-        if (preferGpuSnapshotBounds) {
-            var sc = SimulationController.Instance;
-            if (sc != null && sc.TryGetLatestPositionsSnapshot(m, out float2[] positions, out int count, out _)) {
-                if (positions != null && count >= 3)
-                    return ComputeBoundsFromPositions(positions, count);
-            }
-        }
-
-        return ComputeBoundsFromNodes(m.nodes);
     }
 
     void EnsurePerNodeBuffers(Meshless m) {
@@ -186,15 +174,12 @@ public sealed class Renderer : MonoBehaviour {
         mpb.Clear();
         mpb.SetTexture("_AlbedoArray", lib.AlbedoArray);
 
-        var posPrev = dt.PositionsPrevBuffer ?? dt.PositionsBuffer;
-        var posCurr = dt.PositionsCurrBuffer ?? dt.PositionsBuffer;
-
-        mpb.SetBuffer("_PositionsPrev", posPrev);
-        mpb.SetBuffer("_PositionsCurr", posCurr);
+        mpb.SetBuffer("_PositionsPrev", dt.PositionsBuffer);
+        mpb.SetBuffer("_PositionsCurr", dt.PositionsBuffer);
         mpb.SetFloat("_RenderAlpha", alpha);
 
         // Back-compat binding for any other debug shaders still using _Positions.
-        mpb.SetBuffer("_Positions", posCurr);
+        mpb.SetBuffer("_Positions", dt.PositionsBuffer);
 
         mpb.SetBuffer("_HalfEdges", dt.HalfEdgesBuffer);
         mpb.SetBuffer("_TriToHE", dt.TriToHEBuffer);
@@ -215,25 +200,6 @@ public sealed class Renderer : MonoBehaviour {
 
         for (int i = 1; i < nodes.Count; i++) {
             float2 p = nodes[i].pos;
-            min = math.min(min, p);
-            max = math.max(max, p);
-        }
-
-        float2 c2 = 0.5f * (min + max);
-        float2 e2 = 0.5f * (max - min);
-
-        float pad = 50f;
-        Vector3 center = new Vector3(c2.x, c2.y, 0f);
-        Vector3 size = new Vector3(e2.x * 2f + pad, e2.y * 2f + pad, 10f);
-        return new Bounds(center, size);
-    }
-
-    static Bounds ComputeBoundsFromPositions(float2[] positions, int count) {
-        float2 min = positions[0];
-        float2 max = positions[0];
-
-        for (int i = 1; i < count; i++) {
-            float2 p = positions[i];
             min = math.min(min, p);
             max = math.max(max, p);
         }

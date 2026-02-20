@@ -154,7 +154,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetTPS: 500
-  targetFPS: 30
+  targetFPS: 1
   simulationSpeed: 10
   manual: 1
   showTpsOverlay: 1
@@ -219,7 +219,7 @@ MonoBehaviour:
   wireWidthPixels: 0.74
   drawLevel0Fill: 1
   drawCoarseLevels: 0
-  preferGpuSnapshotBounds: 1
+  preferGpuSnapshotBounds: 0
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -362,7 +362,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 1000
+  pointCount: 100
   generateOnStart: 1
 --- !u!4 &961765557
 Transform:

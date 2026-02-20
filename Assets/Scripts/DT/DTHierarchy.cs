@@ -40,16 +40,6 @@ namespace GPU.Delaunay {
             return levels[level];
         }
 
-        public int GetLevelRealVertexCount(int level) {
-            if ((uint)level >= (uint)LevelCount) return 0;
-            return levelEndIndex[level];
-        }
-
-        public int GetLevelHalfEdgeCount(int level) {
-            if ((uint)level >= (uint)LevelCount) return 0;
-            return levels[level]?.HalfEdgeCount ?? 0;
-        }
-
         public void InitFromMeshlessNodes(
             List<Node> nodes,
             float2 normCenter,
@@ -94,36 +84,9 @@ namespace GPU.Delaunay {
 
                 var dt = new DT(shader);
                 dt.Init(gpuAllScratch, n, he, triangles.Count, neighborCount);
-                dt.Maintain(warmupFixIterations, warmupLegalizeIterations);
 
                 levels[level] = dt;
             }
-        }
-
-        public void UpdatePositionsFromNodesAllLevels(List<Node> nodes, float2 normCenter, float normInvHalfExtent) {
-            if (levels == null) return;
-
-            for (int level = 0; level < levels.Length; level++) {
-                var dt = levels[level];
-                if (dt == null) continue;
-                dt.UpdatePositionsFromNodesPrefix(nodes, normCenter, normInvHalfExtent);
-            }
-        }
-
-        public void MaintainAllLevels(int fixIterations, int legalizeIterations) {
-            if (levels == null) return;
-
-            for (int level = 0; level < levels.Length; level++) {
-                var dt = levels[level];
-                if (dt == null) continue;
-                dt.Maintain(fixIterations, legalizeIterations);
-            }
-        }
-
-        public void GetHalfEdges(int level, DT.HalfEdge[] dst) {
-            if ((uint)level >= (uint)LevelCount) throw new ArgumentOutOfRangeException(nameof(level));
-            if (levels[level] == null) throw new InvalidOperationException("Level DT is not initialized (too few vertices).");
-            levels[level].GetHalfEdges(dst);
         }
 
         public void Dispose() {

@@ -212,10 +212,8 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighbors",
-                dtLevel.GetNeighborsBuffer(dtLevel.RenderPing));
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(dtLevel.RenderPing));
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
         }
 
         void PrepareRelaxBuffers(DT dtLevel, int activeCount, int fineCount, int tickIndex) {
@@ -266,22 +264,17 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
             // DT neighbor buffers
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors",
-                dtLevel.GetNeighborsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors",
-                dtLevel.GetNeighborsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors",
-                dtLevel.GetNeighborsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors",
-                dtLevel.GetNeighborsBuffer(tickIndex & 1));
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(tickIndex & 1));
+            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
         }
 
         void PrepareColoringBuffers(DT dtLevel, int level, int activeCount, int neighborCount,
@@ -315,20 +308,14 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringColor", coloringColor);
             asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringProposed", coloringProposed);
 
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighbors",
-                dtLevel.GetNeighborsBuffer(pingBufferIndex));
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(pingBufferIndex));
+            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighbors",
-                dtLevel.GetNeighborsBuffer(pingBufferIndex));
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(pingBufferIndex));
+            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighbors",
-                dtLevel.GetNeighborsBuffer(pingBufferIndex));
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighborCounts",
-                dtLevel.GetNeighborCountsBuffer(pingBufferIndex));
+            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", orderBuf);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", countsBuf);

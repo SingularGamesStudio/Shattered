@@ -52,6 +52,7 @@ namespace GPU.Solver {
             forceEventsCount = 0;
         }
         // Public entry point for asynchronous simulation
+        // Add writeSlot parameter to signature
         public GraphicsFence SubmitSolve(
             Meshless m,
             float dtPerTick,
@@ -61,7 +62,9 @@ namespace GPU.Solver {
             int dtLegalizeIterations,
             bool rebuildParents,
             bool updateDtPositionsForRender,
-            ComputeQueueType queueType) {
+            ComputeQueueType queueType,
+            int writeSlot)                     // new parameter
+        {
             if (!HasAllKernels()) {
                 if (!loggedKernelError) {
                     loggedKernelError = true;
@@ -82,13 +85,11 @@ namespace GPU.Solver {
             if (!initialized || initializedCount != total)
                 InitializeFromMeshless(m);
 
-            // Create or clear command buffer
             if (asyncCb == null)
                 asyncCb = new CommandBuffer { name = "XPBI Async Batch" };
             asyncCb.Clear();
             asyncCb.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
 
-            // Async dispatch wrappers
             DispatchAction dispatch = (shader, kernel, x, y, z) =>
                 asyncCb.DispatchCompute(shader, kernel, x, y, z);
             DispatchActionIndirect dispatchIndirect = (shader, kernel, args, offset) =>
@@ -125,7 +126,7 @@ namespace GPU.Solver {
                 // Final position integration
                 IntegratePositions(total, dispatch);
 
-                // Update DT
+                // Update DT using the fixed writeSlot for all ticks
                 if (maxDtLevel >= 0) {
                     for (int level = maxDtLevel; level >= 0; level--) {
                         if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
@@ -134,25 +135,13 @@ namespace GPU.Solver {
                         int activeCount = (level > 0) ? m.NodeCount(level) : total;
                         if (activeCount < 3) continue;
 
-                        int pingRead = dtLevel.RenderPing ^ (tick & 1);
-                        int pingWrite = pingRead ^ 1;
-
                         if (updateDtPositionsForRender) {
-                            UpdateDtPositionsForLevel(level, dtLevel, activeCount, m, pingWrite, dispatch);
+                            UpdateDtPositionsForLevel(level, dtLevel, activeCount, m, writeSlot, dispatch);
                         }
 
-                        dtLevel.EnqueueMaintain(asyncCb, dtLevel.GetPositionsBuffer(pingWrite),
-                            pingWrite, dtFixIterations, dtLegalizeIterations);
+                        dtLevel.EnqueueMaintain(asyncCb, dtLevel.GetPositionsBuffer(writeSlot),
+                            writeSlot, dtFixIterations, dtLegalizeIterations);
                     }
-                }
-            }
-
-            // After all ticks, mark pending render ping for each DT level
-            if (maxDtLevel >= 0) {
-                int pingXor = tickCount & 1;
-                for (int level = maxDtLevel; level >= 0; level--) {
-                    if (m.TryGetLevelDt(level, out DT dtLevel) && dtLevel != null)
-                        dtLevel.SetPendingRenderPing(dtLevel.RenderPing ^ pingXor);
                 }
             }
 
@@ -161,20 +150,6 @@ namespace GPU.Solver {
             Graphics.ExecuteCommandBufferAsync(asyncCb, queueType);
             return fence;
         }
-
-        public void CompleteAsyncBatch(Meshless m, int dtSwapMaxLevel) {
-            if (m == null)
-                return;
-
-            for (int level = m.maxLayer; level >= 0; level--) {
-                if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
-                    continue;
-
-                dtLevel.CommitPendingRenderPing();
-            }
-        }
-
-
 
         private void RebuildAllParents(Meshless m, int total, DispatchAction dispatch) {
             for (int level = m.maxLayer; level >= 1; level--) {
