@@ -162,6 +162,7 @@ MonoBehaviour:
   useUnscaledTime: 0
   useHierarchicalSolver: 0
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
+  ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   asyncGpu: 1
   asyncQueue: 1
   maxTicksPerBatch: 32
@@ -213,12 +214,12 @@ MonoBehaviour:
   fillShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
   wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
   uvScale: 5
-  showWireframe: 0
+  showWireframe: 1
   wireColorLevel0: {r: 0.15, g: 0.35, b: 1, a: 1}
   wireColorMaxLevel: {r: 1, g: 0.2, b: 0.2, a: 1}
   wireWidthPixels: 0.74
   drawLevel0Fill: 1
-  drawCoarseLevels: 0
+  drawCoarseLevels: 1
   preferGpuSnapshotBounds: 0
 --- !u!1 &519420028
 GameObject:
@@ -341,7 +342,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9d14631452deebe4aabf97a144ad34fe, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  maxLayer: 3
+  maxLayer: 2
   gravity: -0.01
   compliance: 1
   levelEndIndex: 
@@ -355,6 +356,7 @@ MonoBehaviour:
   dtAutoNormalizeGrowFactor: 1.15
   dtAutoNormalizeRecenterThreshold: 0.25
   dtAutoNormalizeIncludeCamera: 1
+  layerRadii: []
   baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   center:
     x: -1
@@ -362,8 +364,12 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 100
+  pointCount: 1000
   generateOnStart: 1
+  layerRatio: 0.1
+  radiusScale: 0.85
+  poissonK: 30
+  levelNodeCounts: 
 --- !u!4 &961765557
 Transform:
   m_ObjectHideFlags: 0

@@ -16,15 +16,6 @@ namespace GPU.Solver {
         private int kIntegratePositions;
         private int kUpdateDtPositions;
         private int kRebuildParentsAtLevel;
-        private int kColoringInit;
-        private int kColoringDetectConflicts;
-        private int kColoringApply;
-        private int kColoringChoose;
-        private int kColoringClearMeta;
-        private int kColoringBuildCounts;
-        private int kColoringBuildStarts;
-        private int kColoringScatterOrder;
-        private int kColoringBuildRelaxArgs;
 
         private bool kernelsCached;
 
@@ -45,17 +36,7 @@ namespace GPU.Solver {
                 shader.HasKernel("ApplyGameplayForces") &&
                 shader.HasKernel("IntegratePositions") &&
                 shader.HasKernel("UpdateDtPositions") &&
-                shader.HasKernel("RebuildParentsAtLevel") &&
-
-                shader.HasKernel("ColoringInit") &&
-                shader.HasKernel("ColoringDetectConflicts") &&
-                shader.HasKernel("ColoringApply") &&
-                shader.HasKernel("ColoringChoose") &&
-                shader.HasKernel("ColoringClearMeta") &&
-                shader.HasKernel("ColoringBuildCounts") &&
-                shader.HasKernel("ColoringBuildStarts") &&
-                shader.HasKernel("ColoringScatterOrder") &&
-                shader.HasKernel("ColoringBuildRelaxArgs");
+                shader.HasKernel("RebuildParentsAtLevel");
         }
 
         void EnsureKernelsCached() {
@@ -78,16 +59,6 @@ namespace GPU.Solver {
             kIntegratePositions = shader.FindKernel("IntegratePositions");
             kUpdateDtPositions = shader.FindKernel("UpdateDtPositions");
             kRebuildParentsAtLevel = shader.FindKernel("RebuildParentsAtLevel");
-
-            kColoringInit = shader.FindKernel("ColoringInit");
-            kColoringDetectConflicts = shader.FindKernel("ColoringDetectConflicts");
-            kColoringApply = shader.FindKernel("ColoringApply");
-            kColoringChoose = shader.FindKernel("ColoringChoose");
-            kColoringClearMeta = shader.FindKernel("ColoringClearMeta");
-            kColoringBuildCounts = shader.FindKernel("ColoringBuildCounts");
-            kColoringBuildStarts = shader.FindKernel("ColoringBuildStarts");
-            kColoringScatterOrder = shader.FindKernel("ColoringScatterOrder");
-            kColoringBuildRelaxArgs = shader.FindKernel("ColoringBuildRelaxArgs");
 
             kernelsCached = true;
         }

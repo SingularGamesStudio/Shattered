@@ -29,6 +29,7 @@ public sealed class SimulationController : MonoBehaviour {
 
     [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
     public ComputeShader gpuXpbiSolverShader;
+    public ComputeShader ColoringShader;
 
     [Header("Async GPU (experimental)")]
     [Tooltip("When enabled, submits XPBI ticks as async compute batches, and swaps DT position buffers only after a GPU fence passes.")]
@@ -311,7 +312,7 @@ public sealed class SimulationController : MonoBehaviour {
             return;
 
         if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
-            solver = new XPBISolver(gpuXpbiSolverShader);
+            solver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
             gpuSolverCache[m] = solver;
         }
 

@@ -4,38 +4,47 @@
 #pragma kernel BuildNeighbors
 #pragma kernel FixHalfEdges
 #pragma kernel LegalizeHalfEdges
-
 #pragma kernel ClearTriToHE
 #pragma kernel BuildRenderableTriToHE
+#pragma kernel ClearDirtyVertexFlags
+#pragma kernel MarkAllDirty
 
+//---------------------------------------------------------------------------
+// Half‑edge structure
+//---------------------------------------------------------------------------
 struct HalfEdge
 {
-    int v;
-    int next;
-    int twin;
-    int t;
+    int v;      // vertex at the origin of this half‑edge
+    int next;   // next half‑edge in the same triangle (cyclic)
+    int twin;   // opposite half‑edge (or -1 if boundary)
+    int t;      // triangle index this half‑edge belongs to (or -1 if unused)
 };
 
-StructuredBuffer<float2> _Positions;
+//---------------------------------------------------------------------------
+// Global buffers (all bound externally)
+//---------------------------------------------------------------------------
+StructuredBuffer<float2> _Positions;               // vertex positions
+RWStructuredBuffer<HalfEdge> _HalfEdges;           // half‑edge pool
+RWStructuredBuffer<int> _TriLocks;                  // 0 = free, >0 = locked by thread (thread ID = he0+1)
+RWStructuredBuffer<int> _VToE;                      // vertex → outgoing half‑edge
+RWStructuredBuffer<int> _Neighbors;                  // neighbour list per vertex (flat, size = _VertexCount * _NeighborCount)
+RWStructuredBuffer<int> _NeighborCounts;             // actual neighbour count per vertex
+RWStructuredBuffer<uint> _FlipCount;                  // total number of flips performed
+RWStructuredBuffer<int> _TriToHE;                     // triangle → representative half‑edge
+RWStructuredBuffer<uint> _DirtyVertexFlags;           // dirty flags for rebuild
 
-RWStructuredBuffer<HalfEdge> _HalfEdges;
-RWStructuredBuffer<int> _TriLocks;
+//---------------------------------------------------------------------------
+// Constant parameters (set from CPU)
+//---------------------------------------------------------------------------
+int _VertexCount;        // total vertices (real + ghost)
+int _RealVertexCount;    // number of real vertices (0 … _RealVertexCount-1)
+int _HalfEdgeCount;      // number of allocated half‑edges
+int _TriCount;           // number of triangles
+int _NeighborCount;      // maximum neighbours per vertex (size of neighbour arrays)
 
-RWStructuredBuffer<int> _VToE;
-RWStructuredBuffer<int> _Neighbors;
-RWStructuredBuffer<int> _NeighborCounts;
-
-RWStructuredBuffer<uint> _FlipCount;
-
-// For rendering: tri -> representative half-edge index (or -1).
-RWStructuredBuffer<int> _TriToHE;
-
-int _VertexCount;
-int _RealVertexCount;
-int _HalfEdgeCount;
-int _TriCount;
-int _NeighborCount;
-
+//---------------------------------------------------------------------------
+// 2D orientation test (signed area of triangle abc)
+//---------------------------------------------------------------------------
 static float Orient2D(float2 a, float2 b, float2 c)
 {
     float2 ab = b - a;
@@ -43,6 +52,9 @@ static float Orient2D(float2 a, float2 b, float2 c)
     return ab.x * ac.y - ab.y * ac.x;
 }
 
+//---------------------------------------------------------------------------
+// InCircle test (positive if d lies inside the circumcircle of triangle abc)
+//---------------------------------------------------------------------------
 static float InCircleDet(float2 a, float2 b, float2 c, float2 p)
 {
     float2 ap = a - p;
@@ -54,86 +66,192 @@ static float InCircleDet(float2 a, float2 b, float2 c, float2 p)
     float c2 = dot(cp, cp);
 
     return ap.x * (bp.y * c2 - b2 * cp.y) -
-           ap.y * (bp.x * c2 - b2 * cp.x) +
-           a2 * (bp.x * cp.y - bp.y * cp.x);
+    ap.y * (bp.x * c2 - b2 * cp.x) +
+    a2  * (bp.x * cp.y - bp.y * cp.x);
 }
 
-static int Next(int he) { return _HalfEdges[he].next; }
+//---------------------------------------------------------------------------
+// Half‑edge navigation helpers
+//---------------------------------------------------------------------------
+static int Next(int he)          { return _HalfEdges[he].next; }
+static int Prev(int he)          { return Next(Next(he)); }   // previous in same triangle
+static int Dest(int he)          { return _HalfEdges[Next(he)].v; }
 
-static int Prev(int he)
+static void UnlockTri(int t)     { _TriLocks[t] = 0; }
+
+static void MarkDirtyVertex(int v)
 {
-    int n = Next(he);
-    return Next(n);
+    if ((uint)v >= (uint)_RealVertexCount) return;
+    InterlockedOr(_DirtyVertexFlags[v], 1u);
 }
 
-static int Dest(int he)
+//---------------------------------------------------------------------------
+// Atomically lock two triangles using a unique owner ID (he0+1).
+// Returns true if both locks were acquired.
+//---------------------------------------------------------------------------
+static bool TryLockTwo(int t0, int t1, int owner)
 {
-    return _HalfEdges[Next(he)].v;
+    int prev0;
+    InterlockedCompareExchange(_TriLocks[t0], 0, owner, prev0);
+    if (prev0 != 0) return false;
+
+    int prev1;
+    InterlockedCompareExchange(_TriLocks[t1], 0, owner, prev1);
+    if (prev1 != 0)
+    {
+        UnlockTri(t0);
+        return false;
+    }
+    return true;
 }
 
-static void UnlockTri(int t)
+//---------------------------------------------------------------------------
+// Flip the diagonal of the quadrilateral formed by two adjacent triangles.
+// Precondition: he0 and he1 are twins, and both triangles are locked.
+// The four outer half‑edges keep their twins; only the diagonal half‑edges
+// change their origin vertex.
+//---------------------------------------------------------------------------
+static void FlipDiagonal(int he0, int he1)
 {
-    _TriLocks[t] = 0;
+    int t0 = _HalfEdges[he0].t;
+    int t1 = _HalfEdges[he1].t;
+
+    int he0n = Next(he0);
+    int he0p = Next(he0n);           // = Prev(he0)
+    int he1n = Next(he1);
+    int he1p = Next(he1n);           // = Prev(he1)
+
+    int c = Dest(he0n);              // vertex opposite he0 in triangle t0
+    int d = Dest(he1n);              // vertex opposite he1 in triangle t1
+
+    // Update diagonal half‑edges
+    _HalfEdges[he0].v = c;
+    _HalfEdges[he1].v = d;
+
+    // Twin relationship stays between he0 and he1
+    _HalfEdges[he0].twin = he1;
+    _HalfEdges[he1].twin = he0;
+
+    // Re‑assign triangle memberships
+    _HalfEdges[he0].t = t0;
+    _HalfEdges[he1p].t = t0;
+    _HalfEdges[he0n].t = t0;
+
+    _HalfEdges[he1].t = t1;
+    _HalfEdges[he0p].t = t1;
+    _HalfEdges[he1n].t = t1;
+
+    // Rewire cycles
+    _HalfEdges[he0].next = he1p;
+    _HalfEdges[he1p].next = he0n;
+    _HalfEdges[he0n].next = he0;
+
+    _HalfEdges[he1].next = he0p;
+    _HalfEdges[he0p].next = he1n;
+    _HalfEdges[he1n].next = he1;
 }
 
-[numthreads(256, 1, 1)] void ClearTriLocks(uint3 id : SV_DispatchThreadID)
+//=============================================================================
+// KERNELS
+//=============================================================================
+
+//---------------------------------------------------------------------------
+// Clear all triangle locks to 0.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void ClearTriLocks(uint3 id : SV_DispatchThreadID)
 {
     uint t = id.x;
-    if (t >= (uint)_TriCount)
-        return;
+    if (t >= (uint)_TriCount) return;
     _TriLocks[t] = 0;
 }
 
-    [numthreads(256, 1, 1)] void ClearVertexToEdge(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Clear the dirty vertex flags.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void ClearDirtyVertexFlags(uint3 id : SV_DispatchThreadID)
 {
     uint v = id.x;
-    if (v >= (uint)_VertexCount)
-        return;
+    if (v >= (uint)_RealVertexCount) return;
+    _DirtyVertexFlags[v] = 0u;
+}
+
+//---------------------------------------------------------------------------
+// Set all real vertices as dirty.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void MarkAllDirty(uint3 id : SV_DispatchThreadID)
+{
+    uint v = id.x;
+    if (v >= (uint)_RealVertexCount) return;
+    _DirtyVertexFlags[v] = 1u;
+}
+
+//---------------------------------------------------------------------------
+// Clear the vertex‑to‑halfedge mapping.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void ClearVertexToEdge(uint3 id : SV_DispatchThreadID)
+{
+    uint v = id.x;
+    if (v >= (uint)_VertexCount) return;
     _VToE[v] = -1;
 }
 
-[numthreads(256, 1, 1)] void BuildVertexToEdge(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Build the vertex‑to‑halfedge mapping.
+// For each half‑edge belonging to a valid triangle, if its origin vertex
+// does not yet have an outgoing half‑edge, store this half‑edge.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void BuildVertexToEdge(uint3 id : SV_DispatchThreadID)
 {
     uint he = id.x;
-    if (he >= (uint)_HalfEdgeCount)
-        return;
+    if (he >= (uint)_HalfEdgeCount) return;
 
     HalfEdge e = _HalfEdges[he];
-    if (e.t < 0)
-        return;
-    if ((uint)e.v >= (uint)_VertexCount)
-        return;
+    if (e.t < 0) return;                     // not part of a triangle
+    if ((uint)e.v >= (uint)_VertexCount) return;
 
+    // Atomically set _VToE[e.v] to this half‑edge if it is still -1.
     int original;
     InterlockedCompareExchange(_VToE[e.v], -1, (int)he, original);
 }
 
-    [numthreads(256, 1, 1)] void BuildNeighbors(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Build neighbour lists for all real vertices.
+// Starting from the outgoing half‑edge stored in _VToE, walk around the
+// vertex using twin of the previous half‑edge, collecting all distinct
+// neighbour vertices (destinations of outgoing half‑edges).
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void BuildNeighbors(uint3 id : SV_DispatchThreadID)
 {
     uint v = id.x;
-    if (v >= (uint)_RealVertexCount)
-        return;
+    if (v >= (uint)_RealVertexCount) return;
 
     int baseIdx = (int)v * _NeighborCount;
     for (int i = 0; i < _NeighborCount; i++)
-        _Neighbors[baseIdx + i] = -1;
+    _Neighbors[baseIdx + i] = -1;
     _NeighborCounts[v] = 0;
 
     int start = _VToE[v];
-    if (start < 0)
-        return;
+    if (start < 0) return;
 
     int he = start;
     int count = 0;
 
+    // Walk around the vertex (max 128 steps to avoid infinite loops)
     [loop] for (int iter = 0; iter < 128 && count < _NeighborCount; iter++)
     {
         int dst = Dest(he);
-        if ((uint)dst >= (uint)_VertexCount)
-            break;
+        if ((uint)dst >= (uint)_VertexCount) break;
 
+        // Only store real neighbours
         if (dst < _RealVertexCount)
         {
+            // Check for duplicates (neighbour list is small, linear scan is fine)
             bool dup = false;
             for (int k = 0; k < count; k++)
             {
@@ -143,133 +261,83 @@ static void UnlockTri(int t)
                     break;
                 }
             }
-
             if (!dup)
-                _Neighbors[baseIdx + count++] = dst;
+            _Neighbors[baseIdx + count++] = dst;
         }
 
+        // Move to next half‑edge around the vertex: prev(he) gives the half‑edge
+        // that points to v; its twin goes to the next triangle.
         int tw = _HalfEdges[Prev(he)].twin;
-        if (tw < 0)
-            break;
-
+        if (tw < 0) break;   // boundary reached
         he = tw;
-        if (he == start)
-            break;
+        if (he == start) break;
     }
 
     _NeighborCounts[v] = count;
 }
 
-[numthreads(256, 1, 1)] void ClearTriToHE(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Clear the triangle‑to‑halfedge mapping.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void ClearTriToHE(uint3 id : SV_DispatchThreadID)
 {
     uint t = id.x;
-    if (t >= (uint)_TriCount)
-        return;
+    if (t >= (uint)_TriCount) return;
     _TriToHE[t] = -1;
 }
 
-    [numthreads(256, 1, 1)] void BuildRenderableTriToHE(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Build triangle‑to‑halfedge mapping for rendering.
+// For each half‑edge that belongs to a triangle consisting of three real
+// vertices, try to set _TriToHE[t] to this half‑edge (only if still -1).
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void BuildRenderableTriToHE(uint3 id : SV_DispatchThreadID)
 {
     uint heu = id.x;
-    if (heu >= (uint)_HalfEdgeCount)
-        return;
+    if (heu >= (uint)_HalfEdgeCount) return;
 
     int he = (int)heu;
     HalfEdge e = _HalfEdges[he];
     int t = e.t;
-    if (t < 0 || t >= _TriCount)
-        return;
+    if (t < 0 || t >= _TriCount) return;
 
     int a = e.v;
     int b = Dest(he);
     int c = Dest(Next(he));
 
-    if ((uint)a >= (uint)_RealVertexCount || (uint)b >= (uint)_RealVertexCount || (uint)c >= (uint)_RealVertexCount)
-        return;
+    // Only consider triangles with all three vertices real
+    if ((uint)a >= (uint)_RealVertexCount ||
+    (uint)b >= (uint)_RealVertexCount ||
+    (uint)c >= (uint)_RealVertexCount) return;
 
     int original;
     InterlockedCompareExchange(_TriToHE[t], -1, he, original);
 }
 
-static bool TryLockTwo(int t0, int t1, int owner)
-{
-    int prev0;
-    InterlockedCompareExchange(_TriLocks[t0], 0, owner, prev0);
-    if (prev0 != 0)
-        return false;
-
-    int prev1;
-    InterlockedCompareExchange(_TriLocks[t1], 0, owner, prev1);
-    if (prev1 != 0)
-    {
-        UnlockTri(t0);
-        return false;
-    }
-
-    return true;
-}
-
-// Flips the diagonal (he0, he1=twin(he0)) of the quad formed by two adjacent triangles.
-// Important invariant: keep boundary half-edges (the 4 non-diagonal edges) representing the same directed edges,
-// so their twins remain valid; only the diagonal half-edges change their origin vertex.
-// Assumes both triangles are locked by the caller.
-static void FlipDiagonal(int he0, int he1)
-{
-    int t0 = _HalfEdges[he0].t;
-    int t1 = _HalfEdges[he1].t;
-
-    int he0n = Next(he0);
-    int he0p = Next(he0n);
-
-    int he1n = Next(he1);
-    int he1p = Next(he1n);
-
-    int c = Dest(he0n);
-    int d = Dest(he1n);
-
-    _HalfEdges[he0].v = c;
-    _HalfEdges[he1].v = d;
-
-    _HalfEdges[he0].twin = he1;
-    _HalfEdges[he1].twin = he0;
-
-    _HalfEdges[he0].t = t0;
-    _HalfEdges[he1p].t = t0;
-    _HalfEdges[he0n].t = t0;
-
-    _HalfEdges[he0].next = he1p;
-    _HalfEdges[he1p].next = he0n;
-    _HalfEdges[he0n].next = he0;
-
-    _HalfEdges[he1].t = t1;
-    _HalfEdges[he0p].t = t1;
-    _HalfEdges[he1n].t = t1;
-
-    _HalfEdges[he1].next = he0p;
-    _HalfEdges[he0p].next = he1n;
-    _HalfEdges[he1n].next = he1;
-}
-
-[numthreads(256, 1, 1)] void FixHalfEdges(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Fix “creased” and “crossed” edges.
+// This is a pre‑processing step before Delaunay legalisation. It detects
+// edges where one adjacent triangle is inverted (orientation ≤ 0) and the
+// other is not, and where the two opposite vertices lie on opposite sides
+// of the edge. Such edges are flipped to remove the inversion.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void FixHalfEdges(uint3 id : SV_DispatchThreadID)
 {
     uint he0u = id.x;
-    if (he0u >= (uint)_HalfEdgeCount)
-        return;
+    if (he0u >= (uint)_HalfEdgeCount) return;
 
     int he0 = (int)he0u;
     int he1 = _HalfEdges[he0].twin;
-    if (he1 < 0 || he0 > he1)
-        return;
+    if (he1 < 0 || he0 > he1) return;   // process each undirected edge once
 
     int t0 = _HalfEdges[he0].t;
     int t1 = _HalfEdges[he1].t;
-    if (t0 < 0 || t1 < 0)
-        return;
+    if (t0 < 0 || t1 < 0) return;
 
-    // Fixing phase:
-    // 1) Detect "creased" edges (one adjacent tri inverted, the other not).
-    // 2) Detect "crossed" creased edges (opposite vertices on different sides of the edge).
-    // 3) Flip crossed creased edges to remove inversions / crossings before Delaunay legalization.
+    // Read half‑edges (may be stale, but used only for quick rejection)
     HalfEdge e0 = _HalfEdges[he0];
     int he0n = e0.next;
     HalfEdge e0n = _HalfEdges[he0n];
@@ -282,34 +350,36 @@ static void FlipDiagonal(int he0, int he1)
 
     int a = e0.v;
     int b = e0n.v;
-    int c = _HalfEdges[he0p].v;
-    int d = _HalfEdges[he1p].v;
+    int c = _HalfEdges[he0p].v;   // vertex opposite he0 in triangle t0
+    int d = _HalfEdges[he1p].v;   // vertex opposite he1 in triangle t1
 
-    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
-        return;
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount ||
+    (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+    return;
 
     float2 pa = _Positions[a];
     float2 pb = _Positions[b];
     float2 pc = _Positions[c];
     float2 pd = _Positions[d];
 
-    float o0 = Orient2D(pa, pb, pc);
-    float o1 = Orient2D(pb, pa, pd);
-
+    float o0 = Orient2D(pa, pb, pc);      // orientation of triangle t0
+    float o1 = Orient2D(pb, pa, pd);      // orientation of triangle t1 (note vertex order)
     bool inv0 = o0 <= 0.0;
     bool inv1 = o1 <= 0.0;
-    if (inv0 == inv1)
-        return;
 
+    // If both triangles have the same orientation (both valid or both inverted), no fix needed.
+    if (inv0 == inv1) return;
+
+    // Check whether the two opposite vertices lie on opposite sides of edge ab.
     float sD = Orient2D(pa, pb, pd);
-    if (o0 * sD >= 0.0)
-        return;
+    if (o0 * sD >= 0.0) return;           // they are on the same side
 
-    int owner = he0 + 1;
+    // Try to lock both triangles
+    int owner = he0 + 1;                   // unique per‑thread ID
     if (!TryLockTwo(t0, t1, owner))
-        return;
+    return;
 
-    // Revalidate after lock because topology/positions may have changed.
+    // --- Re‑fetch all data after locking (topology may have changed) ---
     if (_HalfEdges[he0].twin != he1 || _HalfEdges[he1].twin != he0)
     {
         UnlockTri(t0);
@@ -332,7 +402,8 @@ static void FlipDiagonal(int he0, int he1)
     c = _HalfEdges[he0p].v;
     d = _HalfEdges[he1p].v;
 
-    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount ||
+    (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
     {
         UnlockTri(t0);
         UnlockTri(t1);
@@ -346,7 +417,6 @@ static void FlipDiagonal(int he0, int he1)
 
     o0 = Orient2D(pa, pb, pc);
     o1 = Orient2D(pb, pa, pd);
-
     inv0 = o0 <= 0.0;
     inv1 = o1 <= 0.0;
     if (inv0 == inv1)
@@ -364,6 +434,12 @@ static void FlipDiagonal(int he0, int he1)
         return;
     }
 
+    // All conditions satisfied – perform the flip
+    MarkDirtyVertex(a);
+    MarkDirtyVertex(b);
+    MarkDirtyVertex(c);
+    MarkDirtyVertex(d);
+
     FlipDiagonal(he0, he1);
     InterlockedAdd(_FlipCount[0], 1);
 
@@ -371,24 +447,27 @@ static void FlipDiagonal(int he0, int he1)
     UnlockTri(t1);
 }
 
-    [numthreads(256, 1, 1)] void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID)
+//---------------------------------------------------------------------------
+// Delaunay legalisation.
+// For each interior edge, test whether the quadrilateral formed by the two
+// adjacent triangles is Delaunay (using the incircle test). If not, flip the
+// diagonal.
+//---------------------------------------------------------------------------
+[numthreads(256,1,1)]
+void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID)
 {
     uint he0u = id.x;
-    if (he0u >= (uint)_HalfEdgeCount)
-        return;
+    if (he0u >= (uint)_HalfEdgeCount) return;
 
     int he0 = (int)he0u;
     int he1 = _HalfEdges[he0].twin;
-    if (he1 < 0 || he0 > he1)
-        return;
+    if (he1 < 0 || he0 > he1) return;   // process each undirected edge once
 
     int t0 = _HalfEdges[he0].t;
     int t1 = _HalfEdges[he1].t;
-    if (t0 < 0 || t1 < 0)
-        return;
+    if (t0 < 0 || t1 < 0) return;
 
-    // Legalization phase:
-    // Apply an orientation-corrected incircle predicate; if illegal, flip the diagonal.
+    // Read half‑edges (may be stale)
     HalfEdge e0 = _HalfEdges[he0];
     int he0n = e0.next;
     HalfEdge e0n = _HalfEdges[he0n];
@@ -404,26 +483,28 @@ static void FlipDiagonal(int he0, int he1)
     int c = _HalfEdges[he0p].v;
     int d = _HalfEdges[he1p].v;
 
-    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
-        return;
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount ||
+    (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+    return;
 
     float2 pa = _Positions[a];
     float2 pb = _Positions[b];
     float2 pc = _Positions[c];
     float2 pd = _Positions[d];
 
+    // Compute incircle test with correct sign (adjusted by orientation of triangle abc)
     float o = Orient2D(pa, pb, pc);
     float det = InCircleDet(pa, pb, pc, pd);
-    if (o < 0.0)
-        det = -det;
+    if (o < 0.0) det = -det;          // ensure consistent orientation
 
-    if (det <= 1e-12)
-        return;
+    if (det <= 1e-12) return;         // edge is already Delaunay
 
+    // Try to lock both triangles
     int owner = he0 + 1;
     if (!TryLockTwo(t0, t1, owner))
-        return;
+    return;
 
+    // --- Re‑fetch after locking ---
     if (_HalfEdges[he0].twin != he1 || _HalfEdges[he1].twin != he0)
     {
         UnlockTri(t0);
@@ -446,7 +527,8 @@ static void FlipDiagonal(int he0, int he1)
     c = _HalfEdges[he0p].v;
     d = _HalfEdges[he1p].v;
 
-    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount || (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
+    if ((uint)a >= (uint)_VertexCount || (uint)b >= (uint)_VertexCount ||
+    (uint)c >= (uint)_VertexCount || (uint)d >= (uint)_VertexCount)
     {
         UnlockTri(t0);
         UnlockTri(t1);
@@ -460,11 +542,15 @@ static void FlipDiagonal(int he0, int he1)
 
     o = Orient2D(pa, pb, pc);
     det = InCircleDet(pa, pb, pc, pd);
-    if (o < 0.0)
-        det = -det;
+    if (o < 0.0) det = -det;
 
-    if (det > 1e-12)
+    if (det > 1e-12)                  // still illegal after locking
     {
+        MarkDirtyVertex(a);
+        MarkDirtyVertex(b);
+        MarkDirtyVertex(c);
+        MarkDirtyVertex(d);
+
         FlipDiagonal(he0, he1);
         InterlockedAdd(_FlipCount[0], 1);
     }

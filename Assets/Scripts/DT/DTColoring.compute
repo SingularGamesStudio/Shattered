@@ -1,0 +1,574 @@
+#pragma kernel ColoringInitTriGrid
+#pragma kernel ColoringClearWork
+#pragma kernel ColoringBuildWorkListFromDirty
+#pragma kernel ColoringBuildWorkArgs
+#pragma kernel ColoringDetectConflictsWork
+#pragma kernel ColoringChooseWork
+#pragma kernel ColoringApplyWork
+#pragma kernel ColoringClearMeta
+#pragma kernel ColoringBuildCounts
+#pragma kernel ColoringBuildStarts
+#pragma kernel ColoringScatterOrder
+#pragma kernel ColoringBuildRelaxArgs
+#pragma kernel ColoringCountFinalConflicts
+#pragma kernel ColoringBuildWorkListFromConflicts
+
+// Input buffers (read-only)
+StructuredBuffer<float2> _Positions;               // Vertex positions in 2D
+StructuredBuffer<int> _ColoringDtNeighbors;        // Flat neighbor lists (max _ColoringDtNeighborCount per vertex)
+StructuredBuffer<int> _ColoringDtNeighborCounts;   // Actual neighbor count per vertex
+StructuredBuffer<uint> _ColoringDtDirtyFlags;      // Dirty flags per vertex (non-zero = needs recoloring)
+
+// Output/working buffers (read-write)
+RWStructuredBuffer<int> _ColoringColor;            // Current color (-1 = uncolored, 0-15 = valid)
+RWStructuredBuffer<int> _ColoringProposed;         // Proposed new color during iteration
+RWStructuredBuffer<uint> _ColoringPrio;            // Per-vertex priority (derived from hash)
+
+// Per-vertex epoch stamp for unique work-list building (used with _ColoringEpoch)
+RWStructuredBuffer<uint> _ColoringMarkEpoch;
+
+// Work-list + counter + indirect dispatch arguments
+RWStructuredBuffer<uint> _ColoringWorkCount;       // [0] = current number of items in work list
+RWStructuredBuffer<uint> _ColoringWorkList;        // Array of vertex indices (size >= _ColoringActiveCount)
+RWStructuredBuffer<uint> _ColoringWorkArgs;        // uint3 for DispatchIndirect (groups X,1,1)
+
+// Per-color metadata for scattering
+RWStructuredBuffer<uint> _ColoringCounts;          // Number of vertices per color (size 16)
+RWStructuredBuffer<uint> _ColoringStarts;          // Start index in order buffer per color (size 16)
+RWStructuredBuffer<uint> _ColoringWrite;           // Running write pointer for scattering (size 16)
+RWStructuredBuffer<uint> _ColoringOrderOut;        // Output order buffer: vertices sorted by color
+
+// Indirect arguments for relaxation passes (3 uints per color: groupsX,1,1)
+RWStructuredBuffer<uint> _RelaxArgs;
+
+// Debug counters
+RWStructuredBuffer<uint> _ColoringDebug;           // [0] = total conflicts after final pass
+
+// Constants
+uint _ColoringActiveCount;                         // Number of active vertices
+uint _ColoringDtNeighborCount;                      // Max neighbors per vertex (padded)
+uint _ColoringMaxColors;                            // Must be 16
+uint _ColoringSeed;                                 // Seed for priority hash
+uint _ColoringEpoch;                                // Current epoch for work-list deduplication
+float _ColoringLevelCellSize;                        // Grid cell size for initial color assignment
+
+static const float SQRT3 = 1.7320508075688772f;
+
+//------------------------------------------------------------------------------
+// Hash function for priority generation.
+uint ColoringHash(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// Returns priority for vertex i.
+uint GetPrio(uint i)
+{
+    return ColoringHash(i ^ _ColoringSeed);
+}
+
+// Clamps neighbor count to the maximum allowed (prevents out-of-bounds access).
+uint ClampNeighborCount(uint n)
+{
+    return min(n, _ColoringDtNeighborCount);
+}
+
+//------------------------------------------------------------------------------
+// Initial color assignment based on a triangular grid pattern.
+// Returns a color in 0..15.
+uint TriGridInitColor(float2 p)
+{
+    // Basis vectors:
+    // u = (s, 0)
+    // v = (0.5s, sqrt(3)/2 * s)
+    float invS = 1.0f / max(_ColoringLevelCellSize, 1e-12f);
+
+    float jf = (2.0f / SQRT3) * (p.y * invS);
+    int j = (int)floor(jf + 0.5f);
+
+    float if_ = (p.x * invS) - 0.5f * (float)j;
+    int i = (int)floor(if_ + 0.5f);
+
+    // 16‑color periodic pattern (i and j modulo 4).
+    uint c = (uint)(i & 3) | ((uint)(j & 3) << 2);
+    return c & 15u;
+}
+
+//------------------------------------------------------------------------------
+// Tries to append vertex v to the work list, using an epoch stamp to avoid duplicates.
+// Uses atomic compare-exchange on _ColoringMarkEpoch.
+static void TryAppendUnique(uint v)
+{
+    if (v >= _ColoringActiveCount)
+    return;
+
+    uint old = _ColoringMarkEpoch[v];
+    if (old == _ColoringEpoch)
+    return;
+
+    // Attempt to mark this vertex with the current epoch.
+    uint original;
+    InterlockedCompareExchange(_ColoringMarkEpoch[v], old, _ColoringEpoch, original);
+    if (original != old)
+    return;
+
+    // Reserve a slot in the work list.
+    uint dst;
+    InterlockedAdd(_ColoringWorkCount[0], 1u, dst);
+    _ColoringWorkList[dst] = v;
+}
+
+//------------------------------------------------------------------------------
+// Checks whether any neighbor (1‑hop or 2‑hop) with the same color has higher priority.
+// Returns true if a conflict is found.
+static bool HasHigherPrioSameColor2Hop(uint i, int myC, uint myP)
+{
+    uint baseI = i * _ColoringDtNeighborCount;
+    uint nI = ClampNeighborCount((uint)_ColoringDtNeighborCounts[i]);
+
+    // 1‑hop neighbors
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        if (_ColoringColor[uNa] == myC)
+        {
+            uint p = _ColoringPrio[uNa];
+            if (p > myP || (p == myP && uNa < i))
+            return true;
+        }
+    }
+
+    // 2‑hop neighbors (neighbors of neighbors)
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        uint baseA = uNa * _ColoringDtNeighborCount;
+        uint nA = ClampNeighborCount((uint)_ColoringDtNeighborCounts[uNa]);
+
+        for (uint b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if (nb < 0)
+            continue;
+
+            uint uNb = (uint)nb;
+            if (uNb >= _ColoringActiveCount || uNb == i)
+            continue;
+
+            if (_ColoringColor[uNb] == myC)
+            {
+                uint p = _ColoringPrio[uNb];
+                if (p > myP || (p == myP && uNb < i))
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Initialize colors and priorities using triangular grid.
+[numthreads(256, 1, 1)]
+void ColoringInitTriGrid(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    _ColoringPrio[i] = GetPrio(i);
+    int c = (int)TriGridInitColor(_Positions[i]);
+    _ColoringColor[i] = c;
+    _ColoringProposed[i] = c;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Reset work list counter and debug counter.
+[numthreads(1, 1, 1)]
+void ColoringClearWork(uint3 id : SV_DispatchThreadID)
+{
+    _ColoringWorkCount[0] = 0u;
+    _ColoringDebug[0] = 0u;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Build work list from dirty vertices (and their 1‑hop & 2‑hop neighborhoods).
+[numthreads(256, 1, 1)]
+void ColoringBuildWorkListFromDirty(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    if (_ColoringDtDirtyFlags[i] == 0u)
+    return;
+
+    TryAppendUnique(i);
+
+    uint baseI = i * _ColoringDtNeighborCount;
+    uint nI = ClampNeighborCount((uint)_ColoringDtNeighborCounts[i]);
+
+    // 1‑hop expansion
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        TryAppendUnique(uNa);
+
+        // 2‑hop expansion (from this neighbor)
+        uint baseA = uNa * _ColoringDtNeighborCount;
+        uint nA = ClampNeighborCount((uint)_ColoringDtNeighborCounts[uNa]);
+        for (uint b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if (nb < 0)
+            continue;
+
+            uint uNb = (uint)nb;
+            if (uNb >= _ColoringActiveCount)
+            continue;
+
+            TryAppendUnique(uNb);
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Build indirect dispatch arguments from work list size.
+[numthreads(1, 1, 1)]
+void ColoringBuildWorkArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint count = _ColoringWorkCount[0];
+    uint groupsX = (count + 255u) / 256u;
+
+    _ColoringWorkArgs[0] = groupsX;
+    _ColoringWorkArgs[1] = 1u;
+    _ColoringWorkArgs[2] = 1u;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Detect conflicts for vertices in the work list.
+// Vertices that have a higher‑priority neighbor (1‑hop or 2‑hop) with the same color
+// are marked as needing a new color (proposed = -1).
+[numthreads(256, 1, 1)]
+void ColoringDetectConflictsWork(uint3 id : SV_DispatchThreadID)
+{
+    uint listIdx = id.x;
+    uint count = _ColoringWorkCount[0];
+    if (listIdx >= count)
+    return;
+
+    uint i = _ColoringWorkList[listIdx];
+    if (i >= _ColoringActiveCount)
+    return;
+
+    int myC = _ColoringColor[i];
+    if (myC < 0)
+    {
+        _ColoringProposed[i] = -1;
+        return;
+    }
+
+    uint myP = _ColoringPrio[i];
+    bool conflict = HasHigherPrioSameColor2Hop(i, myC, myP);
+    _ColoringProposed[i] = conflict ? -1 : myC;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Count final conflicts (for debugging / convergence check).
+[numthreads(256, 1, 1)]
+void ColoringCountFinalConflicts(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    int myC = _ColoringColor[i];
+    if (myC < 0)
+    return;
+
+    uint myP = _ColoringPrio[i];
+    if (HasHigherPrioSameColor2Hop(i, myC, myP))
+    {
+        InterlockedAdd(_ColoringDebug[0], 1u);
+    }
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Choose a new color for vertices that need one (proposed = -1).
+// Builds a bitmask of colors used by 1‑hop and 2‑hop neighbors, then picks the first
+// available color (rotating start based on priority and epoch).
+[numthreads(256, 1, 1)]
+void ColoringChooseWork(uint3 id : SV_DispatchThreadID)
+{
+    uint listIdx = id.x;
+    uint count = _ColoringWorkCount[0];
+    if (listIdx >= count)
+    return;
+
+    uint i = _ColoringWorkList[listIdx];
+    if (i >= _ColoringActiveCount)
+    return;
+
+    if (_ColoringProposed[i] != -1)
+    return;
+
+    uint used = 0u;
+
+    uint baseI = i * _ColoringDtNeighborCount;
+    uint nI = ClampNeighborCount((uint)_ColoringDtNeighborCounts[i]);
+
+    // 1‑hop neighbors
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        int c = _ColoringColor[uNa];
+        if ((uint)c < 16u)
+        used |= (1u << (uint)c);
+    }
+
+    // 2‑hop neighbors
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        uint baseA = uNa * _ColoringDtNeighborCount;
+        uint nA = ClampNeighborCount((uint)_ColoringDtNeighborCounts[uNa]);
+        for (uint b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if (nb < 0)
+            continue;
+
+            uint uNb = (uint)nb;
+            if (uNb >= _ColoringActiveCount)
+            continue;
+
+            int c = _ColoringColor[uNb];
+            if ((uint)c < 16u)
+            used |= (1u << (uint)c);
+        }
+    }
+
+    uint start = (_ColoringPrio[i] ^ _ColoringEpoch) & 15u;
+
+    int chosen = -1;
+    [unroll] for (uint k = 0; k < 16u; k++)
+    {
+        uint c = (start + k) & 15u;
+        if ((used & (1u << c)) == 0u)
+        {
+            chosen = (int)c;
+            break;
+        }
+    }
+
+    if (chosen < 0)
+    chosen = (int)start;
+
+    _ColoringProposed[i] = chosen;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Apply proposed colors to vertices in the work list.
+[numthreads(256, 1, 1)]
+void ColoringApplyWork(uint3 id : SV_DispatchThreadID)
+{
+    uint listIdx = id.x;
+    uint count = _ColoringWorkCount[0];
+    if (listIdx >= count)
+    return;
+
+    uint i = _ColoringWorkList[listIdx];
+    if (i >= _ColoringActiveCount)
+    return;
+
+    _ColoringColor[i] = _ColoringProposed[i];
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Clear per‑color metadata (counts, starts, write pointers).
+[numthreads(16, 1, 1)]
+void ColoringClearMeta(uint3 id : SV_DispatchThreadID)
+{
+    uint c = id.x;
+    if (c >= 16u)
+    return;
+
+    _ColoringCounts[c] = 0u;
+    _ColoringStarts[c] = 0u;
+    _ColoringWrite[c] = 0u;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Count vertices per color (atomic adds).
+[numthreads(256, 1, 1)]
+void ColoringBuildCounts(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    int color = _ColoringColor[i];
+    if ((uint)color >= 16u)
+    return;
+
+    InterlockedAdd(_ColoringCounts[(uint)color], 1u);
+}
+
+//------------------------------------------------------------------------------
+groupshared uint gScan[16];
+
+// Kernel: Compute prefix sums over colors to determine start indices in the order buffer.
+[numthreads(16, 1, 1)]
+void ColoringBuildStarts(uint3 id : SV_DispatchThreadID)
+{
+    uint t = id.x;
+    uint cnt = _ColoringCounts[t];
+    gScan[t] = cnt;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Parallel prefix sum (single barrier per iteration, optimized from original two barriers).
+    [unroll] for (uint offset = 1; offset < 16; offset <<= 1)
+    {
+        if (t >= offset)
+        gScan[t] += gScan[t - offset];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    uint inclusive = gScan[t];
+    uint start = inclusive - cnt;
+    _ColoringStarts[t] = start;
+    _ColoringWrite[t] = start;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Scatter vertex indices into order buffer according to their color.
+[numthreads(256, 1, 1)]
+void ColoringScatterOrder(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    int color = _ColoringColor[i];
+    if ((uint)color >= 16u)
+    return;
+
+    uint dst;
+    InterlockedAdd(_ColoringWrite[(uint)color], 1u, dst);
+    _ColoringOrderOut[dst] = i;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Build indirect dispatch arguments for relaxation passes (one set per color).
+[numthreads(16, 1, 1)]
+void ColoringBuildRelaxArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint c = id.x;
+    uint count = _ColoringCounts[c];
+    uint groupsX = (count + 255u) / 256u;
+
+    _RelaxArgs[c * 3 + 0] = groupsX;
+    _RelaxArgs[c * 3 + 1] = 1u;
+    _RelaxArgs[c * 3 + 2] = 1u;
+}
+
+//------------------------------------------------------------------------------
+// Kernel: Build work list from vertices that are still in conflict after a pass.
+// Similar to dirty build, but triggered by conflict detection.
+[numthreads(256, 1, 1)]
+void ColoringBuildWorkListFromConflicts(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ColoringActiveCount)
+    return;
+
+    int myC = _ColoringColor[i];
+    if ((uint)myC >= 16u)
+    {
+        _ColoringProposed[i] = myC;
+        return;
+    }
+
+    uint myP = _ColoringPrio[i];
+    if (!HasHigherPrioSameColor2Hop(i, myC, myP))
+    {
+        _ColoringProposed[i] = myC;
+        return;
+    }
+
+    _ColoringProposed[i] = -1;
+
+    TryAppendUnique(i);
+
+    uint baseI = i * _ColoringDtNeighborCount;
+    uint nI = ClampNeighborCount((uint)_ColoringDtNeighborCounts[i]);
+
+    // 1‑hop + 2‑hop expansion (same as dirty build)
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        TryAppendUnique(uNa);
+
+        uint baseA = uNa * _ColoringDtNeighborCount;
+        uint nA = ClampNeighborCount((uint)_ColoringDtNeighborCounts[uNa]);
+        for (uint b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if (nb < 0)
+            continue;
+
+            uint uNb = (uint)nb;
+            if (uNb >= _ColoringActiveCount)
+            continue;
+
+            TryAppendUnique(uNb);
+        }
+    }
+}

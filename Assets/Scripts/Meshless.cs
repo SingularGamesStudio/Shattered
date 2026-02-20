@@ -9,8 +9,7 @@ public class Meshless : MonoBehaviour {
 
     public List<Node> nodes = new List<Node>();
 
-    [HideInInspector]
-    public int maxLayer = -1;
+    public int maxLayer = 3;
 
     [Header("Simulation parameters")]
     public float gravity = -9.81f;
@@ -41,6 +40,8 @@ public class Meshless : MonoBehaviour {
     float2 dtBoundsMinWorld;
     float2 dtBoundsMaxWorld;
 
+    public float[] layerRadii;        // effective Poisson radii used per level (may be adjusted down to hit exact counts)
+
     readonly float2 dtSuper0 = new float2(0f, 3f);
     readonly float2 dtSuper1 = new float2(-3f, -3f);
     readonly float2 dtSuper2 = new float2(3f, -3f);
@@ -69,20 +70,16 @@ public class Meshless : MonoBehaviour {
         nodes[nodeIdx].vel = float2.zero;
     }
 
-    public void Add(float2 pos) {
+    public int Add(float2 pos) {
         Node newNode = new Node(pos, this);
-        if (newNode.maxLayer > maxLayer) {
-            maxLayer = newNode.maxLayer;
-        }
         nodes.Add(newNode);
+        return nodes.Count - 1;
     }
 
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
-        maxLayer = -1;
         for (int i = 0; i < nodes.Count; i++) {
-            maxLayer = math.max(maxLayer, nodes[i].maxLayer);
             nodes[i].parentIndex = -1;
         }
 
@@ -110,56 +107,6 @@ public class Meshless : MonoBehaviour {
     public int NodeCount(int level) {
         if (levelEndIndex == null || level < 0 || level > maxLayer) return 0;
         return levelEndIndex[level];
-    }
-
-
-    bool UpdateDelaunayNormalizationIfNeeded(Camera cam) {
-        if (nodes.Count == 0) return false;
-
-        float2 min = nodes[0].pos;
-        float2 max = nodes[0].pos;
-
-        for (int i = 1; i < nodes.Count; i++) {
-            float2 p = nodes[i].pos;
-            min = math.min(min, p);
-            max = math.max(max, p);
-        }
-
-        if (cam != null && cam.orthographic) {
-            float halfH = cam.orthographicSize;
-            float halfW = halfH * cam.aspect;
-
-            float2 c = new float2(cam.transform.position.x, cam.transform.position.y);
-            float2 camMin = c - new float2(halfW, halfH);
-            float2 camMax = c + new float2(halfW, halfH);
-
-            min = math.min(min, camMin);
-            max = math.max(max, camMax);
-        }
-
-        float2 targetMin = min - new float2(dtNormalizePadding, dtNormalizePadding);
-        float2 targetMax = max + new float2(dtNormalizePadding, dtNormalizePadding);
-
-        float2 targetCenter = 0.5f * (targetMin + targetMax);
-        float2 extent = targetMax - targetMin;
-        float targetHalf = 0.5f * math.max(extent.x, extent.y);
-        targetHalf = math.max(targetHalf, 1e-6f);
-
-        float currentHalf = 1f / math.max(1e-6f, dtNormInvHalfExtent);
-
-        bool needGrow = targetHalf > currentHalf;
-        bool needRecenter = math.any(math.abs(targetCenter - dtNormCenter) > currentHalf * dtAutoNormalizeRecenterThreshold);
-
-        if (!needGrow && !needRecenter) return false;
-
-        float newHalf = needGrow ? targetHalf * dtAutoNormalizeGrowFactor : currentHalf;
-        dtNormCenter = targetCenter;
-        dtNormInvHalfExtent = 1f / newHalf;
-
-        dtBoundsMinWorld = dtNormCenter - new float2(newHalf, newHalf);
-        dtBoundsMaxWorld = dtNormCenter + new float2(newHalf, newHalf);
-
-        return true;
     }
 
     void RecomputeDelaunayNormalizationBounds(Camera cam) {

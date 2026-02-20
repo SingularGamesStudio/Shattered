@@ -25,7 +25,7 @@ public class Node {
         pos = point;
         originalPos = point;
         this.parent = parent;
-        maxLayer = GetRandomLayer();
+        maxLayer = 0;
         materialId = parent != null ? parent.GetBaseMaterialId() : 0;
     }
 

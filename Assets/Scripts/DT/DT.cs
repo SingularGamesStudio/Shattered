@@ -5,93 +5,132 @@ using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace GPU.Delaunay {
+    /// <summary>
+    /// Manages the GPU‑based Delaunay triangulation.
+    /// Provides triple‑buffered geometry data for rendering and a set of shared working buffers.
+    /// </summary>
     public sealed class DT : IDisposable {
-        public struct HalfEdge {
-            public int v;
-            public int next;
-            public int twin;
-            public int t;
-        }
+        //---------------------------------------------------------------------------
+        // Shader and kernel IDs
+        //---------------------------------------------------------------------------
+        private readonly ComputeShader _shader;
+        private readonly bool _ownsShaderInstance;
 
-        readonly ComputeShader shader;
-        readonly bool ownsShaderInstance;
+        private readonly int _kernelClearTriLocks;
+        private readonly int _kernelClearVertexToEdge;
+        private readonly int _kernelBuildVertexToEdge;
+        private readonly int _kernelBuildNeighbors;
+        private readonly int _kernelFixHalfEdges;
+        private readonly int _kernelLegalizeHalfEdges;
+        private readonly int _kernelClearTriToHE;
+        private readonly int _kernelBuildRenderableTriToHE;
+        private readonly int _kernelClearDirtyVertexFlags;
+        private readonly int _kernelMarkAllDirty;
 
-        // Triple‑buffered for renderer
-        ComputeBuffer[] positions = new ComputeBuffer[3];
-        ComputeBuffer[] halfEdges = new ComputeBuffer[3];
-        ComputeBuffer[] triToHE = new ComputeBuffer[3];
+        //---------------------------------------------------------------------------
+        // Buffers – triple buffered for rendering, single working buffers for topology ops
+        //---------------------------------------------------------------------------
+        private readonly ComputeBuffer[] _positions = new ComputeBuffer[3];      // vertex positions (read‑only in kernels)
+        private readonly ComputeBuffer[] _halfEdges = new ComputeBuffer[3];      // half‑edge arrays (modified during flips)
+        private readonly ComputeBuffer[] _triToHE = new ComputeBuffer[3];        // triangle → representative half‑edge (for rendering)
 
-        // Single working buffers (shared across all slots)
-        ComputeBuffer triLocks;
-        ComputeBuffer vToE;
-        ComputeBuffer neighbors;
-        ComputeBuffer neighborCounts;
-        ComputeBuffer flipCount;
+        private ComputeBuffer _triLocks;           // per‑triangle lock (0 = free)
+        private ComputeBuffer _vToE;                // vertex → outgoing half‑edge
+        private ComputeBuffer _neighbors;           // flat neighbour list per real vertex
+        private ComputeBuffer _neighborCounts;      // number of neighbours per real vertex
+        private ComputeBuffer _flipCount;           // global flip counter (single uint)
+        private ComputeBuffer _dirtyVertexFlags;    // per‑real‑vertex dirty flag (1 if neighbour list needs rebuild)
 
-        float2[] positionScratch;
-        float2[] superPoints;
-        readonly uint[] flipScratch = { 0u };
+        //---------------------------------------------------------------------------
+        // Scratch data
+        //---------------------------------------------------------------------------
+        private float2[] _positionScratch;
+        private readonly uint[] _flipScratch = { 0u };
 
-        int _renderSlot;                // slot used for rendering (0,1,2)
+        //---------------------------------------------------------------------------
+        // Sizes
+        //---------------------------------------------------------------------------
+        private int _vertexCount;           // total vertices (real + ghost)
+        private int _realVertexCount;       // number of real vertices (0 … _realVertexCount-1)
+        private int _halfEdgeCount;          // number of allocated half‑edges
+        private int _triCount;               // number of triangles
+        private int _neighborCount;           // max neighbours per vertex (size of neighbour arrays)
 
-        int vertexCount;
-        int realVertexCount;
-        int halfEdgeCount;
-        int triCount;
+        private int _renderSlot;              // current slot used for rendering (0,1,2)
 
-        readonly int kClearTriLocks;
-        readonly int kClearVertexToEdge;
-        readonly int kBuildVertexToEdge;
-        readonly int kBuildNeighbors;
-        readonly int kFixHalfEdges;
-        readonly int kLegalizeHalfEdges;
-        readonly int kClearTriToHE;
-        readonly int kBuildRenderableTriToHE;
+        //---------------------------------------------------------------------------
+        // Public properties
+        //---------------------------------------------------------------------------
+        public int HalfEdgeCount => _halfEdgeCount;
+        public int TriCount => _triCount;
+        public int NeighborCount => _neighborCount;
 
-        public int HalfEdgeCount => halfEdgeCount;
-        public int TriCount => triCount;
-        public int NeighborCount { get; private set; }
+        /// <summary>Buffer of neighbour indices (flat, length = _realVertexCount * _neighborCount).</summary>
+        public ComputeBuffer NeighborsBuffer => _neighbors;
 
-        public ComputeBuffer NeighborsBuffer => neighbors;
-        public ComputeBuffer NeighborCountsBuffer => neighborCounts;
-        // Renderer-facing properties – use the current render slot.
-        public ComputeBuffer PositionsBuffer => positions[_renderSlot];
-        public ComputeBuffer HalfEdgesBuffer => halfEdges[_renderSlot];
-        public ComputeBuffer TriToHEBuffer => triToHE[_renderSlot];
+        /// <summary>Buffer of neighbour counts per vertex.</summary>
+        public ComputeBuffer NeighborCountsBuffer => _neighborCounts;
 
+        /// <summary>Dirty flags per real vertex (1 = neighbour list outdated).</summary>
+        public ComputeBuffer DirtyVertexFlagsBuffer => _dirtyVertexFlags;
+
+        /// <summary>Positions buffer for the current render slot.</summary>
+        public ComputeBuffer PositionsBuffer => _positions[_renderSlot];
+
+        /// <summary>Half‑edges buffer for the current render slot.</summary>
+        public ComputeBuffer HalfEdgesBuffer => _halfEdges[_renderSlot];
+
+        /// <summary>Triangle‑to‑halfedge map for the current render slot.</summary>
+        public ComputeBuffer TriToHEBuffer => _triToHE[_renderSlot];
+
+        public ComputeBuffer GetPositionsBuffer(int slot) => _positions[slot];
+        public ComputeBuffer GetHalfEdgesBuffer(int slot) => _halfEdges[slot];
+        public ComputeBuffer GetTriToHEBuffer(int slot) => _triToHE[slot];
+
+        //---------------------------------------------------------------------------
+        // Construction
+        //---------------------------------------------------------------------------
+        /// <summary>
+        /// Creates a new DT instance using a copy of the given compute shader.
+        /// </summary>
+        /// <param name="shader">Compute shader containing all required kernels.</param>
         public DT(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
-            this.shader = UnityEngine.Object.Instantiate(shader);
-            ownsShaderInstance = true;
 
-            kClearTriLocks = this.shader.FindKernel("ClearTriLocks");
-            kClearVertexToEdge = this.shader.FindKernel("ClearVertexToEdge");
-            kBuildVertexToEdge = this.shader.FindKernel("BuildVertexToEdge");
-            kBuildNeighbors = this.shader.FindKernel("BuildNeighbors");
-            kFixHalfEdges = this.shader.FindKernel("FixHalfEdges");
-            kLegalizeHalfEdges = this.shader.FindKernel("LegalizeHalfEdges");
-            kClearTriToHE = this.shader.FindKernel("ClearTriToHE");
-            kBuildRenderableTriToHE = this.shader.FindKernel("BuildRenderableTriToHE");
+            // Instantiate a copy so that multiple DT instances can run independently.
+            _shader = UnityEngine.Object.Instantiate(shader);
+            _ownsShaderInstance = true;
+
+            // Cache kernel indices for faster dispatch.
+            _kernelClearTriLocks = _shader.FindKernel("ClearTriLocks");
+            _kernelClearVertexToEdge = _shader.FindKernel("ClearVertexToEdge");
+            _kernelBuildVertexToEdge = _shader.FindKernel("BuildVertexToEdge");
+            _kernelBuildNeighbors = _shader.FindKernel("BuildNeighbors");
+            _kernelFixHalfEdges = _shader.FindKernel("FixHalfEdges");
+            _kernelLegalizeHalfEdges = _shader.FindKernel("LegalizeHalfEdges");
+            _kernelClearTriToHE = _shader.FindKernel("ClearTriToHE");
+            _kernelBuildRenderableTriToHE = _shader.FindKernel("BuildRenderableTriToHE");
+            _kernelClearDirtyVertexFlags = _shader.FindKernel("ClearDirtyVertexFlags");
+            _kernelMarkAllDirty = _shader.FindKernel("MarkAllDirty");
         }
 
-        public ComputeBuffer GetPositionsBuffer(int slot) => positions[slot];
-        public ComputeBuffer GetHalfEdgesBuffer(int slot) => halfEdges[slot];
-        public ComputeBuffer GetTriToHEBuffer(int slot) => triToHE[slot];
-
-        // Shared working buffers
-        ComputeBuffer GetTriLocksBuffer() => triLocks;
-        ComputeBuffer GetVToEBuffer() => vToE;
-        ComputeBuffer GetNeighborsBuffer() => neighbors;
-        ComputeBuffer GetNeighborCountsBuffer() => neighborCounts;
-        ComputeBuffer GetFlipCountBuffer() => flipCount;
-
+        //---------------------------------------------------------------------------
+        // Initialisation
+        //---------------------------------------------------------------------------
+        /// <summary>
+        /// Initialises the triangulation with a fixed set of points and an initial half‑edge mesh.
+        /// </summary>
+        /// <param name="allPoints">All vertex positions (real points + three super points).</param>
+        /// <param name="realPointCount">Number of real points (must be allPoints.Length - 3).</param>
+        /// <param name="initialHalfEdges">Initial half‑edge array describing the triangulation.</param>
+        /// <param name="triangleCount">Number of triangles.</param>
+        /// <param name="neighborCount">Maximum number of neighbours per vertex (used for neighbour lists).</param>
         public void Init(
             IReadOnlyList<float2> allPoints,
             int realPointCount,
             DTBuilder.HalfEdge[] initialHalfEdges,
             int triangleCount,
-            int neighborCount
-        ) {
+            int neighborCount) {
             DisposeBuffers();
 
             if (allPoints == null) throw new ArgumentNullException(nameof(allPoints));
@@ -100,144 +139,151 @@ namespace GPU.Delaunay {
             if (triangleCount < 0) throw new ArgumentOutOfRangeException(nameof(triangleCount));
             if (neighborCount <= 0) throw new ArgumentOutOfRangeException(nameof(neighborCount));
 
-            vertexCount = allPoints.Count;
-            realVertexCount = realPointCount;
+            _vertexCount = allPoints.Count;
+            _realVertexCount = realPointCount;
 
-            if (vertexCount < realVertexCount) throw new ArgumentException("VertexCount < realPointCount.", nameof(allPoints));
-            if (vertexCount != realVertexCount + 3) throw new ArgumentException("Expected real points + 3 super points.", nameof(allPoints));
+            // Validate super‑point convention: exactly three extra points.
+            if (_vertexCount != _realVertexCount + 3)
+                throw new ArgumentException("Expected real points + 3 super points.", nameof(allPoints));
 
-            halfEdgeCount = initialHalfEdges.Length;
-            if (halfEdgeCount == 0) throw new ArgumentException("Half-edge buffer is empty.", nameof(initialHalfEdges));
-            if ((halfEdgeCount % 3) != 0) throw new ArgumentException("Half-edge count must be a multiple of 3.", nameof(initialHalfEdges));
+            _halfEdgeCount = initialHalfEdges.Length;
+            if (_halfEdgeCount == 0) throw new ArgumentException("Half-edge buffer is empty.", nameof(initialHalfEdges));
+            if ((_halfEdgeCount % 3) != 0) throw new ArgumentException("Half-edge count must be a multiple of 3.", nameof(initialHalfEdges));
 
-            triCount = triangleCount;
-            NeighborCount = neighborCount;
+            _triCount = triangleCount;
+            _neighborCount = neighborCount;
 
-            positionScratch = new float2[vertexCount];
-            superPoints = new float2[3] {
-                allPoints[realVertexCount + 0],
-                allPoints[realVertexCount + 1],
-                allPoints[realVertexCount + 2],
-            };
+            // Scratch copy of positions for CPU upload.
+            _positionScratch = new float2[_vertexCount];
+            for (int i = 0; i < _vertexCount; i++)
+                _positionScratch[i] = allPoints[i];
 
-            // Create three copies of render buffers
+            //---------------------------------------------------------------------------
+            // Create triple‑buffers for renderable data.
+            //---------------------------------------------------------------------------
             for (int i = 0; i < 3; i++) {
-                positions[i] = new ComputeBuffer(vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
-                halfEdges[i] = new ComputeBuffer(halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
-                triToHE[i] = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
+                _positions[i] = new ComputeBuffer(_vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
+                _halfEdges[i] = new ComputeBuffer(_halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
+                _triToHE[i] = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
+
+                // Upload identical initial data to all slots.
+                _positions[i].SetData(_positionScratch);
+                _halfEdges[i].SetData(initialHalfEdges);
             }
 
-            // Create single working buffers
-            triLocks = new ComputeBuffer(triCount, sizeof(int), ComputeBufferType.Structured);
-            vToE = new ComputeBuffer(vertexCount, sizeof(int), ComputeBufferType.Structured);
-            neighbors = new ComputeBuffer(realVertexCount * neighborCount, sizeof(int), ComputeBufferType.Structured);
-            neighborCounts = new ComputeBuffer(realVertexCount, sizeof(int), ComputeBufferType.Structured);
-            flipCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            //---------------------------------------------------------------------------
+            // Create shared working buffers.
+            //---------------------------------------------------------------------------
+            _triLocks = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
+            _vToE = new ComputeBuffer(_vertexCount, sizeof(int), ComputeBufferType.Structured);
+            _neighbors = new ComputeBuffer(_realVertexCount * _neighborCount, sizeof(int), ComputeBufferType.Structured);
+            _neighborCounts = new ComputeBuffer(_realVertexCount, sizeof(int), ComputeBufferType.Structured);
+            _flipCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            _dirtyVertexFlags = new ComputeBuffer(_realVertexCount, sizeof(uint), ComputeBufferType.Structured);
 
-            // Fill position data into all three slots
-            for (int idx = 0; idx < vertexCount; idx++)
-                positionScratch[idx] = allPoints[idx];
+            // Initialise dirty flags to 0 (all clean).
+            _dirtyVertexFlags.SetData(new uint[_realVertexCount]);
+
+            // Build initial adjacency and triangle maps synchronously for all three slots.
             for (int i = 0; i < 3; i++)
-                positions[i].SetData(positionScratch);
-
-            // Fill half-edge data into all three slots
-            var he = new HalfEdge[halfEdgeCount];
-            for (int idx = 0; idx < halfEdgeCount; idx++) {
-                he[idx] = new HalfEdge {
-                    v = initialHalfEdges[idx].v,
-                    next = initialHalfEdges[idx].next,
-                    twin = initialHalfEdges[idx].twin,
-                    t = initialHalfEdges[idx].t,
-                };
-            }
-            for (int i = 0; i < 3; i++)
-                halfEdges[i].SetData(he);
-
-            // Initial adjacency and tri map for all slots (uses shared working buffers)
-            for (int i = 0; i < 3; i++) {
-                RebuildVertexAdjacencyAndTriMapForSlotSync(i);
-            }
+                RebuildVertexAdjacencyAndTriMapSync(i);
 
             _renderSlot = 0;
         }
 
-        void BindCommon() {
-            shader.SetInt("_VertexCount", vertexCount);
-            shader.SetInt("_RealVertexCount", realVertexCount);
-            shader.SetInt("_HalfEdgeCount", halfEdgeCount);
-            shader.SetInt("_TriCount", triCount);
-            shader.SetInt("_NeighborCount", NeighborCount);
+        //---------------------------------------------------------------------------
+        // CommandBuffer helpers – set common parameters
+        //---------------------------------------------------------------------------
+        private void SetCommonParams(CommandBuffer cb) {
+            cb.SetComputeIntParam(_shader, "_VertexCount", _vertexCount);
+            cb.SetComputeIntParam(_shader, "_RealVertexCount", _realVertexCount);
+            cb.SetComputeIntParam(_shader, "_HalfEdgeCount", _halfEdgeCount);
+            cb.SetComputeIntParam(_shader, "_TriCount", _triCount);
+            cb.SetComputeIntParam(_shader, "_NeighborCount", _neighborCount);
         }
 
-        void EnqueueSetCommonParams(CommandBuffer cb) {
-            cb.SetComputeIntParam(shader, "_VertexCount", vertexCount);
-            cb.SetComputeIntParam(shader, "_RealVertexCount", realVertexCount);
-            cb.SetComputeIntParam(shader, "_HalfEdgeCount", halfEdgeCount);
-            cb.SetComputeIntParam(shader, "_TriCount", triCount);
-            cb.SetComputeIntParam(shader, "_NeighborCount", NeighborCount);
+        private void DispatchClearTriLocks(CommandBuffer cb) {
+            cb.SetComputeBufferParam(_shader, _kernelClearTriLocks, "_TriLocks", _triLocks);
+            cb.DispatchCompute(_shader, _kernelClearTriLocks, (_triCount + 255) / 256, 1, 1);
         }
 
-        void EnqueueDispatchClearTriLocks(CommandBuffer cb) {
-            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", GetTriLocksBuffer());
-            cb.DispatchCompute(shader, kClearTriLocks, (triCount + 255) / 256, 1, 1);
+        private void DispatchClearDirtyVertexFlags(CommandBuffer cb) {
+            cb.SetComputeBufferParam(_shader, _kernelClearDirtyVertexFlags, "_DirtyVertexFlags", _dirtyVertexFlags);
+            cb.DispatchCompute(_shader, _kernelClearDirtyVertexFlags, (_realVertexCount + 255) / 256, 1, 1);
         }
 
+        //---------------------------------------------------------------------------
+        // Public maintenance API
+        //---------------------------------------------------------------------------
         /// <summary>
-        /// Enqueues maintenance on the specified slot.
+        /// Enqueues a series of edge‑fixing and Delaunay‑legalisation passes on a specific slot.
         /// </summary>
+        /// <param name="cb">Command buffer to record into.</param>
+        /// <param name="positionsForMaintain">Position buffer to use (usually the slot's own positions, but can be a separate velocity‑updated buffer).</param>
+        /// <param name="writeSlot">Target slot (0‑2) whose half‑edges will be modified.</param>
+        /// <param name="fixIterations">Number of “FixHalfEdges” passes.</param>
+        /// <param name="legalizeIterations">Number of “LegalizeHalfEdges” passes.</param>
+        /// <param name="rebuildAdjacencyAndTriMap">If true, rebuilds neighbour lists and triangle maps after all flips.</param>
         public void EnqueueMaintain(
             CommandBuffer cb,
             ComputeBuffer positionsForMaintain,
             int writeSlot,
             int fixIterations,
             int legalizeIterations,
-            bool rebuildAdjacencyAndTriMap = true
-        ) {
+            bool rebuildAdjacencyAndTriMap = true) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
             if (writeSlot < 0 || writeSlot > 2) throw new ArgumentOutOfRangeException(nameof(writeSlot));
 
-            EnqueueSetCommonParams(cb);
+            SetCommonParams(cb);
 
-            // Bind shared working buffers (same for all slots)
-            cb.SetComputeBufferParam(shader, kClearTriLocks, "_TriLocks", GetTriLocksBuffer());
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_TriLocks", GetTriLocksBuffer());
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_FlipCount", GetFlipCountBuffer());
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_TriLocks", GetTriLocksBuffer());
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_FlipCount", GetFlipCountBuffer());
+            // Clear dirty flags once for this maintenance batch.
+            DispatchClearDirtyVertexFlags(cb);
 
-            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", GetNeighborsBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer());
+            // Bind shared working buffers (these are the same for all kernels).
+            cb.SetComputeBufferParam(_shader, _kernelClearTriLocks, "_TriLocks", _triLocks);
+            cb.SetComputeBufferParam(_shader, _kernelFixHalfEdges, "_TriLocks", _triLocks);
+            cb.SetComputeBufferParam(_shader, _kernelFixHalfEdges, "_FlipCount", _flipCount);
+            cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_TriLocks", _triLocks);
+            cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_FlipCount", _flipCount);
 
-            // Bind slot‑specific render buffers (the ones we're writing to)
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_HalfEdges", GetHalfEdgesBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", GetTriToHEBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(writeSlot));
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(writeSlot));
+            cb.SetComputeBufferParam(_shader, _kernelClearVertexToEdge, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_Neighbors", _neighbors);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_NeighborCounts", _neighborCounts);
 
-            // Bind positions (may be same as slot's positions or a separate velocity buffer)
-            cb.SetComputeBufferParam(shader, kFixHalfEdges, "_Positions", positionsForMaintain);
-            cb.SetComputeBufferParam(shader, kLegalizeHalfEdges, "_Positions", positionsForMaintain);
+            // Dirty vertex flags are used by the flip kernels.
+            cb.SetComputeBufferParam(_shader, _kernelFixHalfEdges, "_DirtyVertexFlags", _dirtyVertexFlags);
+            cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_DirtyVertexFlags", _dirtyVertexFlags);
 
-            int groups = (halfEdgeCount + 255) / 256;
-            var flipCountBuffer = GetFlipCountBuffer();
+            // Bind the slot‑specific half‑edge buffer and triangle map.
+            cb.SetComputeBufferParam(_shader, _kernelFixHalfEdges, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelClearTriToHE, "_TriToHE", _triToHE[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[writeSlot]);
 
+            // Bind positions (may be same as slot's positions or a separate updated buffer).
+            cb.SetComputeBufferParam(_shader, _kernelFixHalfEdges, "_Positions", positionsForMaintain);
+            cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_Positions", positionsForMaintain);
+
+            int groups = (_halfEdgeCount + 255) / 256;
+
+            // Fix passes (remove inversions / crossed edges).
             for (int i = 0; i < fixIterations; i++) {
-                EnqueueDispatchClearTriLocks(cb);
-                cb.SetBufferData(flipCountBuffer, flipScratch);
-                cb.DispatchCompute(shader, kFixHalfEdges, groups, 1, 1);
+                DispatchClearTriLocks(cb);
+                cb.SetBufferData(_flipCount, _flipScratch);          // reset flip counter before each pass
+                cb.DispatchCompute(_shader, _kernelFixHalfEdges, groups, 1, 1);
             }
 
+            // Legalisation passes (Delaunay).
             for (int i = 0; i < legalizeIterations; i++) {
-                EnqueueDispatchClearTriLocks(cb);
-                cb.SetBufferData(flipCountBuffer, flipScratch);
-                cb.DispatchCompute(shader, kLegalizeHalfEdges, groups, 1, 1);
+                DispatchClearTriLocks(cb);
+                cb.SetBufferData(_flipCount, _flipScratch);
+                cb.DispatchCompute(_shader, _kernelLegalizeHalfEdges, groups, 1, 1);
             }
 
             if (rebuildAdjacencyAndTriMap) {
@@ -246,86 +292,126 @@ namespace GPU.Delaunay {
         }
 
         /// <summary>
-        /// Enqueues rebuild of adjacency and tri‑to‑HE map for a specific slot.
+        /// Enqueues a full rebuild of vertex neighbour lists and the triangle‑to‑halfedge map for a specific slot.
         /// </summary>
+        /// <param name="cb">Command buffer to record into.</param>
+        /// <param name="slot">Target slot (0‑2).</param>
         public void EnqueueRebuildVertexAdjacencyAndTriMap(CommandBuffer cb, int slot) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (slot < 0 || slot > 2) throw new ArgumentOutOfRangeException(nameof(slot));
 
-            EnqueueSetCommonParams(cb);
+            SetCommonParams(cb);
 
-            // Shared working buffers
-            cb.SetComputeBufferParam(shader, kClearVertexToEdge, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_VToE", GetVToEBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_Neighbors", GetNeighborsBuffer());
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer());
+            // Shared working buffers.
+            cb.SetComputeBufferParam(_shader, _kernelClearVertexToEdge, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_Neighbors", _neighbors);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_NeighborCounts", _neighborCounts);
 
-            // Slot‑specific buffers
-            cb.SetComputeBufferParam(shader, kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            cb.SetComputeBufferParam(shader, kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            cb.SetComputeBufferParam(shader, kClearTriToHE, "_TriToHE", GetTriToHEBuffer(slot));
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            cb.SetComputeBufferParam(shader, kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(slot));
+            // Slot‑specific half‑edge and triangle map.
+            cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[slot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_HalfEdges", _halfEdges[slot]);
+            cb.SetComputeBufferParam(_shader, _kernelClearTriToHE, "_TriToHE", _triToHE[slot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[slot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[slot]);
 
-            cb.DispatchCompute(shader, kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kClearTriToHE, (triCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(shader, kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(_shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(_shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(_shader, _kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(_shader, _kernelClearTriToHE, (_triCount + 255) / 256, 1, 1);
+            cb.DispatchCompute(_shader, _kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1);
         }
 
-        // Synchronous rebuild (used during init)
-        void RebuildVertexAdjacencyAndTriMapForSlotSync(int slot) {
-            BindCommon();
+        /// <summary>
+        /// Synchronous version of <see cref="EnqueueRebuildVertexAdjacencyAndTriMap"/> (used during init).
+        /// </summary>
+        private void RebuildVertexAdjacencyAndTriMapSync(int slot) {
+            // Set common parameters directly on the shader.
+            _shader.SetInt("_VertexCount", _vertexCount);
+            _shader.SetInt("_RealVertexCount", _realVertexCount);
+            _shader.SetInt("_HalfEdgeCount", _halfEdgeCount);
+            _shader.SetInt("_TriCount", _triCount);
+            _shader.SetInt("_NeighborCount", _neighborCount);
 
-            shader.SetBuffer(kClearVertexToEdge, "_VToE", GetVToEBuffer());
-            shader.SetBuffer(kBuildVertexToEdge, "_VToE", GetVToEBuffer());
-            shader.SetBuffer(kBuildNeighbors, "_VToE", GetVToEBuffer());
-            shader.SetBuffer(kBuildNeighbors, "_Neighbors", GetNeighborsBuffer());
-            shader.SetBuffer(kBuildNeighbors, "_NeighborCounts", GetNeighborCountsBuffer());
+            // Bind buffers.
+            _shader.SetBuffer(_kernelClearVertexToEdge, "_VToE", _vToE);
+            _shader.SetBuffer(_kernelBuildVertexToEdge, "_VToE", _vToE);
+            _shader.SetBuffer(_kernelBuildNeighbors, "_VToE", _vToE);
+            _shader.SetBuffer(_kernelBuildNeighbors, "_Neighbors", _neighbors);
+            _shader.SetBuffer(_kernelBuildNeighbors, "_NeighborCounts", _neighborCounts);
 
-            shader.SetBuffer(kBuildVertexToEdge, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            shader.SetBuffer(kBuildNeighbors, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            shader.SetBuffer(kClearTriToHE, "_TriToHE", GetTriToHEBuffer(slot));
-            shader.SetBuffer(kBuildRenderableTriToHE, "_HalfEdges", GetHalfEdgesBuffer(slot));
-            shader.SetBuffer(kBuildRenderableTriToHE, "_TriToHE", GetTriToHEBuffer(slot));
+            _shader.SetBuffer(_kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[slot]);
+            _shader.SetBuffer(_kernelBuildNeighbors, "_HalfEdges", _halfEdges[slot]);
+            _shader.SetBuffer(_kernelClearTriToHE, "_TriToHE", _triToHE[slot]);
+            _shader.SetBuffer(_kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[slot]);
+            _shader.SetBuffer(_kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[slot]);
 
-            shader.Dispatch(kClearVertexToEdge, (vertexCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildVertexToEdge, (halfEdgeCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
-            shader.Dispatch(kClearTriToHE, (triCount + 255) / 256, 1, 1);
-            shader.Dispatch(kBuildRenderableTriToHE, (halfEdgeCount + 255) / 256, 1, 1);
+            _shader.Dispatch(_kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1);
+            _shader.Dispatch(_kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1);
+            _shader.Dispatch(_kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1);
+            _shader.Dispatch(_kernelClearTriToHE, (_triCount + 255) / 256, 1, 1);
+            _shader.Dispatch(_kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1);
         }
 
+        //---------------------------------------------------------------------------
+        // Utility methods
+        //---------------------------------------------------------------------------
+        /// <summary>
+        /// Returns the total number of flips performed during the last maintenance pass.
+        /// Note: This performs a synchronous readback from the GPU and may stall the pipeline.
+        /// </summary>
+        public uint GetLastFlipCount() {
+            if (_flipCount == null) return 0;
+            uint[] result = new uint[1];
+            _flipCount.GetData(result);
+            return result[0];
+        }
+
+        /// <summary>
+        /// Marks all real vertices as dirty (forces neighbour list rebuild on next adjacency build).
+        /// </summary>
+        public void MarkAllDirty(CommandBuffer cb) {
+            if (cb == null) throw new ArgumentNullException(nameof(cb));
+            SetCommonParams(cb);
+            cb.SetComputeBufferParam(_shader, _kernelMarkAllDirty, "_DirtyVertexFlags", _dirtyVertexFlags);
+            cb.DispatchCompute(_shader, _kernelMarkAllDirty, (_realVertexCount + 255) / 256, 1, 1);
+        }
+
+        //---------------------------------------------------------------------------
+        // IDisposable implementation
+        //---------------------------------------------------------------------------
         public void Dispose() {
             DisposeBuffers();
-            if (ownsShaderInstance && shader)
-                UnityEngine.Object.Destroy(shader);
+            if (_ownsShaderInstance && _shader)
+                UnityEngine.Object.Destroy(_shader);
         }
 
-        void DisposeBuffers() {
+        private void DisposeBuffers() {
             for (int i = 0; i < 3; i++) {
-                positions[i]?.Dispose(); positions[i] = null;
-                halfEdges[i]?.Dispose(); halfEdges[i] = null;
-                triToHE[i]?.Dispose(); triToHE[i] = null;
+                _positions[i]?.Dispose();
+                _positions[i] = null;
+                _halfEdges[i]?.Dispose();
+                _halfEdges[i] = null;
+                _triToHE[i]?.Dispose();
+                _triToHE[i] = null;
             }
 
-            triLocks?.Dispose(); triLocks = null;
-            vToE?.Dispose(); vToE = null;
-            neighbors?.Dispose(); neighbors = null;
-            neighborCounts?.Dispose(); neighborCounts = null;
-            flipCount?.Dispose(); flipCount = null;
+            _triLocks?.Dispose();
+            _triLocks = null;
+            _vToE?.Dispose();
+            _vToE = null;
+            _neighbors?.Dispose();
+            _neighbors = null;
+            _neighborCounts?.Dispose();
+            _neighborCounts = null;
+            _flipCount?.Dispose();
+            _flipCount = null;
+            _dirtyVertexFlags?.Dispose();
+            _dirtyVertexFlags = null;
 
-            positionScratch = null;
-            superPoints = null;
-
-            vertexCount = 0;
-            realVertexCount = 0;
-            halfEdgeCount = 0;
-            triCount = 0;
-            NeighborCount = 0;
-
+            _positionScratch = null;
+            _vertexCount = _realVertexCount = _halfEdgeCount = _triCount = _neighborCount = 0;
             _renderSlot = 0;
         }
     }

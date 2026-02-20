@@ -36,13 +36,6 @@ namespace GPU.Solver {
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
 
-        // Per‑level coloring buffers.
-        private ComputeBuffer[] colorOrders;
-        private ComputeBuffer[] colorCountsByLevel;
-        private ComputeBuffer[] colorStartsByLevel;
-        private ComputeBuffer[] colorWriteByLevel;
-        private ComputeBuffer[] relaxArgsByLevel;
-
         // Capacity and event counts.
         private int capacity;
         private int forceEventsCapacity;
@@ -88,12 +81,6 @@ namespace GPU.Solver {
             FCpu = new float4[capacity];
             FpCpu = new float4[capacity];
 
-            colorOrders = null;
-            colorCountsByLevel = null;
-            colorStartsByLevel = null;
-            colorWriteByLevel = null;
-            relaxArgsByLevel = null;
-
             EnsureForceEventCapacity(64);
 
             initialized = false;
@@ -111,89 +98,6 @@ namespace GPU.Solver {
             forceEvents = new ComputeBuffer(forceEventsCapacity, sizeof(int) + sizeof(float) * 2, ComputeBufferType.Structured);
 
             forceEventsCpu = new ForceEvent[forceEventsCapacity];
-        }
-        void EnsurePerLevelCaches(int levelCount) {
-            if (levelCount <= 0) return;
-
-            if (colorOrders == null || colorOrders.Length < levelCount) {
-                var next = new ComputeBuffer[levelCount];
-                if (colorOrders != null) Array.Copy(colorOrders, next, colorOrders.Length);
-                colorOrders = next;
-            }
-
-            if (colorCountsByLevel == null || colorCountsByLevel.Length < levelCount) {
-                var next = new ComputeBuffer[levelCount];
-                if (colorCountsByLevel != null) Array.Copy(colorCountsByLevel, next, colorCountsByLevel.Length);
-                colorCountsByLevel = next;
-            }
-
-            if (colorStartsByLevel == null || colorStartsByLevel.Length < levelCount) {
-                var next = new ComputeBuffer[levelCount];
-                if (colorStartsByLevel != null) Array.Copy(colorStartsByLevel, next, colorStartsByLevel.Length);
-                colorStartsByLevel = next;
-            }
-
-            if (colorWriteByLevel == null || colorWriteByLevel.Length < levelCount) {
-                var next = new ComputeBuffer[levelCount];
-                if (colorWriteByLevel != null) Array.Copy(colorWriteByLevel, next, colorWriteByLevel.Length);
-                colorWriteByLevel = next;
-            }
-
-            if (relaxArgsByLevel == null || relaxArgsByLevel.Length < levelCount) {
-                var next = new ComputeBuffer[levelCount];
-                if (relaxArgsByLevel != null) Array.Copy(relaxArgsByLevel, next, relaxArgsByLevel.Length);
-                relaxArgsByLevel = next;
-            }
-        }
-
-        ComputeBuffer EnsureColorOrderBufferForLevel(int level) {
-            var buf = colorOrders[level];
-            if (buf != null && buf.count >= capacity) return buf;
-
-            buf?.Dispose();
-            buf = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
-            colorOrders[level] = buf;
-            return buf;
-        }
-
-        ComputeBuffer EnsureColorCountsBufferForLevel(int level) {
-            var buf = colorCountsByLevel[level];
-            if (buf != null && buf.count >= ColoringMaxColors) return buf;
-
-            buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);
-            colorCountsByLevel[level] = buf;
-            return buf;
-        }
-
-        ComputeBuffer EnsureColorStartsBufferForLevel(int level) {
-            var buf = colorStartsByLevel[level];
-            if (buf != null && buf.count >= ColoringMaxColors) return buf;
-
-            buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);
-            colorStartsByLevel[level] = buf;
-            return buf;
-        }
-
-        ComputeBuffer EnsureColorWriteBufferForLevel(int level) {
-            var buf = colorWriteByLevel[level];
-            if (buf != null && buf.count >= ColoringMaxColors) return buf;
-
-            buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors, sizeof(uint), ComputeBufferType.Structured);
-            colorWriteByLevel[level] = buf;
-            return buf;
-        }
-
-        ComputeBuffer EnsureRelaxArgsBufferForLevel(int level) {
-            var buf = relaxArgsByLevel[level];
-            if (buf != null && buf.count >= ColoringMaxColors * 3) return buf;
-
-            buf?.Dispose();
-            buf = new ComputeBuffer(ColoringMaxColors * 3, sizeof(uint), ComputeBufferType.IndirectArguments);
-            relaxArgsByLevel[level] = buf;
-            return buf;
         }
 
         private void SetCommonShaderParams(float dt, float gravity, float compliance, int total) {
@@ -277,69 +181,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
         }
 
-        void PrepareColoringBuffers(DT dtLevel, int level, int activeCount, int neighborCount,
-            int pingBufferIndex) {
-            var orderBuf = EnsureColorOrderBufferForLevel(level);
-            var countsBuf = EnsureColorCountsBufferForLevel(level);
-            var startsBuf = EnsureColorStartsBufferForLevel(level);
-            var writeBuf = EnsureColorWriteBufferForLevel(level);
-            var relaxArgsBuf = EnsureRelaxArgsBufferForLevel(level);
-
-            uint seed = (uint)level * 2654435761;
-
-            // Set coloring parameters
-            asyncCb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
-            asyncCb.SetComputeIntParam(shader, "_ColoringDtNeighborCount", neighborCount);
-            asyncCb.SetComputeIntParam(shader, "_ColoringMaxColors", ColoringMaxColors);
-            asyncCb.SetComputeIntParam(shader, "_ColoringSeed", unchecked((int)seed));
-
-            // Coloring buffers
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringProposed", coloringProposed);
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringPrio", coloringPrio);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringProposed", coloringProposed);
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringPrio", coloringPrio);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringApply, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringApply, "_ColoringProposed", coloringProposed);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringProposed", coloringProposed);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kColoringInit, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kColoringDetectConflicts, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kColoringChoose, "_ColoringDtNeighborCounts", dtLevel.NeighborCountsBuffer);
-
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", orderBuf);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", countsBuf);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", startsBuf);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringClearMeta, "_ColoringCounts", countsBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringClearMeta, "_ColoringStarts", startsBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringClearMeta, "_ColoringWrite", writeBuf);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildCounts, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildCounts, "_ColoringCounts", countsBuf);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildStarts, "_ColoringCounts", countsBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildStarts, "_ColoringStarts", startsBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildStarts, "_ColoringWrite", writeBuf);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringScatterOrder, "_ColoringColor", coloringColor);
-            asyncCb.SetComputeBufferParam(shader, kColoringScatterOrder, "_ColoringWrite", writeBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringScatterOrder, "_ColoringOrderOut", orderBuf);
-
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildRelaxArgs, "_ColoringCounts", countsBuf);
-            asyncCb.SetComputeBufferParam(shader, kColoringBuildRelaxArgs, "_RelaxArgs", relaxArgsBuf);
-        }
-
         void ReleaseBuffers() {
             pos?.Dispose(); pos = null;
             vel?.Dispose(); vel = null;
@@ -364,47 +205,6 @@ namespace GPU.Solver {
             coloringPrio?.Dispose(); coloringPrio = null;
 
             forceEvents?.Dispose(); forceEvents = null;
-
-            if (colorOrders != null) {
-                for (int i = 0; i < colorOrders.Length; i++) {
-                    colorOrders[i]?.Dispose();
-                    colorOrders[i] = null;
-                }
-                colorOrders = null;
-            }
-
-            if (colorCountsByLevel != null) {
-                for (int i = 0; i < colorCountsByLevel.Length; i++) {
-                    colorCountsByLevel[i]?.Dispose();
-                    colorCountsByLevel[i] = null;
-                }
-                colorCountsByLevel = null;
-            }
-
-            if (colorStartsByLevel != null) {
-                for (int i = 0; i < colorStartsByLevel.Length; i++) {
-                    colorStartsByLevel[i]?.Dispose();
-                    colorStartsByLevel[i] = null;
-                }
-                colorStartsByLevel = null;
-            }
-
-            if (colorWriteByLevel != null) {
-                for (int i = 0; i < colorWriteByLevel.Length; i++) {
-                    colorWriteByLevel[i]?.Dispose();
-                    colorWriteByLevel[i] = null;
-                }
-                colorWriteByLevel = null;
-            }
-
-            if (relaxArgsByLevel != null) {
-                for (int i = 0; i < relaxArgsByLevel.Length; i++) {
-                    relaxArgsByLevel[i]?.Dispose();
-                    relaxArgsByLevel[i] = null;
-                }
-                relaxArgsByLevel = null;
-            }
-
             initialized = false;
             initializedCount = -1;
             parentsBuilt = false;

@@ -1,12 +1,12 @@
 using System;
 using GPU.Delaunay;
 using Unity.Mathematics;
+using Unity.VisualScripting.FullSerializer;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace GPU.Solver {
     public sealed partial class XPBISolver : IDisposable {
-
         private bool initialized;
         private int initializedCount = -1;
         private bool parentsBuilt;
@@ -18,9 +18,15 @@ namespace GPU.Solver {
         public ComputeBuffer PositionBuffer => pos;
 
         private const uint FixedFlag = 1u;
-        private const int ColoringMaxColors = 64;
-        private const int ColoringConflictRounds = 24;
-        readonly ComputeShader shader;
+        private const int ColoringConflictRounds = 24;      // used for recoloring iterations
+
+        readonly ComputeShader shader;                       // main solver shader
+        private readonly ComputeShader coloringShader; 
+
+        // Per‑level coloring data
+        private DTColoring[] coloringPerLevel; 
+        private ComputeBuffer[] relaxArgsByLevel;            // already existed, used for indirect dispatch
+        private float[] levelCellSize; 
 
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         public struct ForceEvent {
@@ -28,8 +34,10 @@ namespace GPU.Solver {
             public float2 force;
         }
 
-        public XPBISolver(ComputeShader shader) {
-            this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
+        // Modified constructor – now accepts a separate coloring shader
+        public XPBISolver(ComputeShader solverShader, ComputeShader coloringShader = null) {
+            this.shader = solverShader ?? throw new ArgumentNullException(nameof(solverShader));
+            this.coloringShader = coloringShader; // can be null, but then coloring will fail
         }
 
         private delegate void DispatchAction(ComputeShader shader, int kernel, int x, int y, int z);
@@ -51,8 +59,8 @@ namespace GPU.Solver {
         public void ClearGameplayForces() {
             forceEventsCount = 0;
         }
+
         // Public entry point for asynchronous simulation
-        // Add writeSlot parameter to signature
         public GraphicsFence SubmitSolve(
             Meshless m,
             float dtPerTick,
@@ -63,8 +71,7 @@ namespace GPU.Solver {
             bool rebuildParents,
             bool updateDtPositionsForRender,
             ComputeQueueType queueType,
-            int writeSlot)                     // new parameter
-        {
+            int writeSlot) {
             if (!HasAllKernels()) {
                 if (!loggedKernelError) {
                     loggedKernelError = true;
@@ -85,6 +92,16 @@ namespace GPU.Solver {
             if (!initialized || initializedCount != total)
                 InitializeFromMeshless(m);
 
+            // Ensure per‑level coloring arrays are sized appropriately
+            if (coloringPerLevel == null || coloringPerLevel.Length <= m.maxLayer) {
+                int newSize = m.maxLayer + 1;
+                Array.Resize(ref coloringPerLevel, newSize);
+                Array.Resize(ref relaxArgsByLevel, newSize);
+                Array.Resize(ref levelCellSize, newSize);
+                for (int i = 0; i <= m.maxLayer; i++)
+                    levelCellSize[i] = m.layerRadii[i];
+            }
+
             if (asyncCb == null)
                 asyncCb = new CommandBuffer { name = "XPBI Async Batch" };
             asyncCb.Clear();
@@ -96,8 +113,6 @@ namespace GPU.Solver {
                 asyncCb.DispatchCompute(shader, kernel, args, offset);
 
             int maxSolveLevel = (useHierarchical && m.levelEndIndex != null) ? m.maxLayer : 0;
-            EnsurePerLevelCaches(maxSolveLevel + 1);
-
             int maxDtLevel = m.maxLayer;
 
             for (int tick = 0; tick < tickCount; tick++) {
@@ -206,14 +221,25 @@ namespace GPU.Solver {
             dispatch(shader, kComputeCorrectionL, (activeCount + 255) / 256, 1, 1);
             dispatch(shader, kCacheF0AndResetLambda, (activeCount + 255) / 256, 1, 1);
 
-            // Step 3: Coloring rebuild
-            RebuildColoringForLevel(level, dtLevel, activeCount, dtLevel.NeighborCount,
-                    tickIndex & 1, dispatch);
+            // Step 3: Coloring rebuild (using DTColoring)
+            RebuildColoringForLevel(level, dtLevel, activeCount, dtLevel.NeighborCount);
 
-            // Step 4: Relaxation iterations
+            var coloring = coloringPerLevel[level];
+            /*uint conflicts = coloring.GetLastConflictCount();
+            uint flips = dtLevel.GetLastFlipCount();
+            Debug.LogError($"Level {level} conflicts: {conflicts}, flips: {flips}");*/
+
+            // Step 4: Bind coloring buffers needed by the relaxation kernel
+            if (coloring != null) {
+                // These property names must match those used in the solver's relax kernel
+                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
+                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
+                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
+            }
+
             int iterations = level == 0 ? Const.Iterations : Const.HPBDIterations;
             for (int iter = 0; iter < iterations; iter++) {
-                for (int c = 0; c < ColoringMaxColors; c++) {
+                for (int c = 0; c < 16; c++) {
                     asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
                     dispatchIndirect(shader, kRelaxColored, relaxArgsByLevel[level], (uint)c * 12);
                 }
@@ -228,28 +254,33 @@ namespace GPU.Solver {
                 dispatch(shader, kCommitDeformation, (activeCount + 255) / 256, 1, 1);
         }
 
-        private void RebuildColoringForLevel(int level, DT dtLevel,
-            int activeCount, int neighborCount,
-            int pingBufferIndex, DispatchAction dispatch) {
-
-            PrepareColoringBuffers(dtLevel, level, activeCount, neighborCount, pingBufferIndex);
-
-            int groups = (activeCount + 255) / 256;
-
-            dispatch(shader, kColoringInit, groups, 1, 1);
-
-            for (int r = 0; r < ColoringConflictRounds; r++) {
-                dispatch(shader, kColoringDetectConflicts, groups, 1, 1);
-                dispatch(shader, kColoringApply, groups, 1, 1);
-                dispatch(shader, kColoringChoose, groups, 1, 1);
-                dispatch(shader, kColoringApply, groups, 1, 1);
+        private void RebuildColoringForLevel(int level, DT dtLevel, int activeCount, int dtNeighborCount) {
+            if (coloringShader == null) {
+                Debug.LogError("XPBISolver: No coloring shader provided. Cannot rebuild coloring.");
+                return;
             }
 
-            dispatch(shader, kColoringClearMeta, 1, 1, 1);
-            dispatch(shader, kColoringBuildCounts, groups, 1, 1);
-            dispatch(shader, kColoringBuildStarts, 1, 1, 1);
-            dispatch(shader, kColoringScatterOrder, groups, 1, 1);
-            dispatch(shader, kColoringBuildRelaxArgs, 1, 1, 1);
+            if (coloringPerLevel[level] == null) {
+                coloringPerLevel[level] = new DTColoring(coloringShader);
+            }
+
+            var coloring = coloringPerLevel[level];
+            uint seed = 12345u + (uint)level; // deterministic seed per level
+
+            // Initialize or update coloring
+            if (coloring.ColorBuffer == null) // first time
+            {
+                coloring.Init(activeCount, dtNeighborCount, seed);
+                coloring.EnqueueInitTriGrid(asyncCb, pos, dtLevel, levelCellSize[level]);
+                dtLevel.MarkAllDirty(asyncCb);
+            }
+            // Recoloring after DT maintain: use dirty flags
+            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, dtLevel, levelCellSize[level], ColoringConflictRounds);
+            // After updating, rebuild order and indirect arguments
+            coloring.EnqueueRebuildOrderAndArgs(asyncCb);
+
+            // Store the relax arguments buffer for this level (used in relaxation loop)
+            relaxArgsByLevel[level] = coloring.RelaxArgsBuffer;
         }
 
         private void IntegratePositions(int total, DispatchAction dispatch) {
@@ -272,11 +303,20 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
             dispatch(shader, kUpdateDtPositions, (activeCount + 255) / 256, 1, 1);
         }
+
         private int NodeCount(int level) {
             return meshless.NodeCount(level);
         }
 
         public void Dispose() {
+            // Dispose per‑level coloring instances
+            if (coloringPerLevel != null) {
+                foreach (var coloring in coloringPerLevel)
+                    coloring?.Dispose();
+                coloringPerLevel = null;
+            }
+            // relaxArgsByLevel buffers are owned by DTColoring, so no need to dispose separately
+
             Release();
         }
 
