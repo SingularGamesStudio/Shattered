@@ -20,9 +20,6 @@ public class Box : Meshless {
     public int[] levelNodeCounts;     // total nodes per level (including the 4 corners only on level 0)
 
     void Start() {
-        Debug.Log($"API: {SystemInfo.graphicsDeviceType}");
-        Debug.Log($"GPU: {SystemInfo.graphicsDeviceName} ({SystemInfo.graphicsDeviceVendor})");
-        Debug.Log($"supportsAsyncCompute: {SystemInfo.supportsAsyncCompute}");
         if (generateOnStart) Generate(pointCount, 0);
     }
 

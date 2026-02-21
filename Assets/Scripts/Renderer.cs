@@ -4,7 +4,8 @@ using UnityEngine;
 using GPU.Delaunay;
 
 [DefaultExecutionOrder(1000)]
-public sealed class Renderer : MonoBehaviour {
+public sealed class Renderer : MonoBehaviour
+{
     [Header("Shaders")]
     public Shader fillShader;
     public Shader wireShader;
@@ -29,7 +30,8 @@ public sealed class Renderer : MonoBehaviour {
     Material wireMaterial;
     MaterialPropertyBlock mpb;
 
-    sealed class MeshlessState {
+    sealed class MeshlessState
+    {
         public ComputeBuffer materialIds;
         public int[] materialIdsCpu;
 
@@ -43,12 +45,15 @@ public sealed class Renderer : MonoBehaviour {
 
     readonly Dictionary<Meshless, MeshlessState> states = new Dictionary<Meshless, MeshlessState>(64);
 
-    void Awake() {
+    void Awake()
+    {
         mpb ??= new MaterialPropertyBlock();
     }
 
-    void OnDisable() {
-        foreach (var kv in states) {
+    void OnDisable()
+    {
+        foreach (var kv in states)
+        {
             kv.Value.materialIds?.Dispose();
             kv.Value.restNorm?.Dispose();
         }
@@ -62,7 +67,8 @@ public sealed class Renderer : MonoBehaviour {
         mpb = null;
     }
 
-    void LateUpdate() {
+    void LateUpdate()
+    {
         if (!fillShader || !wireShader) return;
 
         mpb ??= new MaterialPropertyBlock();
@@ -74,7 +80,8 @@ public sealed class Renderer : MonoBehaviour {
         wireMaterial ??= new Material(wireShader);
 
         var list = Meshless.Active;
-        for (int mi = 0; mi < list.Count; mi++) {
+        for (int mi = 0; mi < list.Count; mi++)
+        {
             var m = list[mi];
             if (m == null || !m.isActiveAndEnabled) continue;
             if (m.nodes == null || m.nodes.Count < 3) continue;
@@ -82,9 +89,11 @@ public sealed class Renderer : MonoBehaviour {
             EnsurePerNodeBuffers(m);
 
             int maxLevel = m.maxLayer;
-            Bounds bounds = ComputeBoundsFromNodes(m.nodes);
+            Bounds bounds = preferGpuSnapshotBounds ? ComputeBoundsFromNorm(m) : ComputeBoundsFromNodes(m.nodes);
 
-            if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
+            // Fill: level 0 only.
+            if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0)
+            {
                 SetupCommon(m, dt0, lib, m.NodeCount(0));
 
                 mpb.SetFloat("_UvScale", uvScale);
@@ -93,7 +102,9 @@ public sealed class Renderer : MonoBehaviour {
 
             if (!showWireframe) continue;
 
-            for (int level = 0; level <= maxLevel; level++) {
+            // Wireframe: edges only, still per-level to keep coloring and layer control.
+            for (int level = 0; level <= maxLevel; level++)
+            {
                 if (level != 0 && !drawCoarseLevels) continue;
 
                 if (!m.TryGetLevelDt(level, out var dt) || dt == null) continue;
@@ -110,20 +121,25 @@ public sealed class Renderer : MonoBehaviour {
                 mpb.SetColor("_WireColor", wireColor);
                 mpb.SetFloat("_WireWidthPx", wireWidthPixels);
 
-                Graphics.DrawProcedural(wireMaterial, bounds, MeshTopology.Triangles, dt.TriCount * 3, 1, null, mpb);
+                // 3 edges per triangle, each edge is a quad (2 triangles = 6 vertices).
+                int vertexCount = dt.TriCount * 3 * 6;
+                Graphics.DrawProcedural(wireMaterial, bounds, MeshTopology.Triangles, vertexCount, 1, null, mpb);
             }
         }
     }
 
-    void EnsurePerNodeBuffers(Meshless m) {
-        if (!states.TryGetValue(m, out var st)) {
+    void EnsurePerNodeBuffers(Meshless m)
+    {
+        if (!states.TryGetValue(m, out var st))
+        {
             st = new MeshlessState();
             states[m] = st;
         }
 
         int n = m.nodes.Count;
         bool reallocated = st.capacity != n || st.materialIds == null || st.restNorm == null;
-        if (reallocated) {
+        if (reallocated)
+        {
             st.materialIds?.Dispose();
             st.restNorm?.Dispose();
 
@@ -139,9 +155,11 @@ public sealed class Renderer : MonoBehaviour {
         }
 
         bool materialIdsChanged = reallocated;
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++)
+        {
             int id = m.nodes[i].materialId;
-            if (st.materialIdsCpu[i] != id) {
+            if (st.materialIdsCpu[i] != id)
+            {
                 st.materialIdsCpu[i] = id;
                 materialIdsChanged = true;
             }
@@ -151,8 +169,10 @@ public sealed class Renderer : MonoBehaviour {
 
         float2 center = m.DtNormCenter;
         float inv = m.DtNormInvHalfExtent;
-        if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv) {
-            for (int i = 0; i < n; i++) {
+        if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv)
+        {
+            for (int i = 0; i < n; i++)
+            {
                 float2 p = m.nodes[i].originalPos;
                 float2 norm = (p - center) * inv;
                 st.restNormCpu[i] = new Vector2(norm.x, norm.y);
@@ -164,7 +184,8 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
-    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount) {
+    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount)
+    {
         if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
 
         float alpha = 0f;
@@ -194,11 +215,27 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetFloat("_NormInvHalfExtent", m.DtNormInvHalfExtent);
     }
 
-    static Bounds ComputeBoundsFromNodes(List<Node> nodes) {
+    static Bounds ComputeBoundsFromNorm(Meshless m)
+    {
+        float inv = m.DtNormInvHalfExtent;
+        if (!(inv > 0f) || float.IsNaN(inv) || float.IsInfinity(inv))
+            return ComputeBoundsFromNodes(m.nodes);
+
+        float halfExtent = 1f / inv;
+
+        float pad = 50f;
+        Vector3 center = new Vector3(m.DtNormCenter.x, m.DtNormCenter.y, 0f);
+        Vector3 size = new Vector3(halfExtent * 2f + pad, halfExtent * 2f + pad, 10f);
+        return new Bounds(center, size);
+    }
+
+    static Bounds ComputeBoundsFromNodes(List<Node> nodes)
+    {
         float2 min = nodes[0].pos;
         float2 max = nodes[0].pos;
 
-        for (int i = 1; i < nodes.Count; i++) {
+        for (int i = 1; i < nodes.Count; i++)
+        {
             float2 p = nodes[i].pos;
             min = math.min(min, p);
             max = math.max(max, p);

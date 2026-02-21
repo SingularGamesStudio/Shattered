@@ -364,7 +364,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 1000
+  pointCount: 20000
   generateOnStart: 1
   layerRatio: 0.1
   radiusScale: 0.85
