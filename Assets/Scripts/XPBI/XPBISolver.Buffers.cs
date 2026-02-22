@@ -61,13 +61,13 @@ namespace GPU.Solver {
             for (int i = 0; i < n; i++) {
                 var node = m.nodes[i];
                 posCpu[i] = node.pos;
-                velCpu[i] = node.vel;
+                velCpu[i] = float2.zero;
                 invMassCpu[i] = node.invMass;
                 flagsCpu[i] = node.isFixed || node.invMass <= 0f ? 1u : 0u;
                 restVolumeCpu[i] = node.restVolume;
                 parentIndexCpu[i] = -1;
-                FCpu[i] = new float4(node.F.c0, node.F.c1);
-                FpCpu[i] = new float4(node.Fp.c0, node.Fp.c1);
+                FCpu[i] = new float4(1f, 0f, 0f, 1f);
+                FpCpu[i] = new float4(1f, 0f, 0f, 1f);
             }
 
             pos.SetData(posCpu, 0, 0, n);
@@ -262,9 +262,14 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
+
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
+
+
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_InvMass", invMass);

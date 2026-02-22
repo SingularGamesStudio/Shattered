@@ -12,8 +12,6 @@ namespace GPU.Solver {
         private Meshless meshless;
         private CommandBuffer asyncCb;
 
-        public ComputeBuffer PositionBuffer => pos;
-
         private readonly ComputeShader shader;
         private readonly ComputeShader coloringShader;
         private DTColoring[] coloringPerLevel;
@@ -116,6 +114,7 @@ namespace GPU.Solver {
     float dtPerTick,
     int tickCount,
     bool useHierarchical,
+    bool ConvergenceDebugEnabled,
     ComputeQueueType queueType,
     int writeSlot
 ) {
@@ -137,7 +136,7 @@ namespace GPU.Solver {
             EnsureConvergenceDebugCapacity(maxSolveLevel + 1, Const.IterationsL0);
 
             for (int tick = 0; tick < tickCount; tick++) {
-                SetCommonShaderParams(dtPerTick, m.gravity, m.compliance, total);
+                SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, total);
 
                 // 1) Build parent relationships on first tick (TODO: each tick?).
                 if (tick == 0 && useHierarchical && m.maxLayer > 0)

@@ -19,10 +19,10 @@ public sealed class SimulationController : MonoBehaviour {
 
     [Header("UI")]
     public bool showTpsOverlay = true;
-    public Vector2 tpsOverlayPos = new Vector2(10f, 10f);
+    public bool ConvergenceDebugEnabled = true;
+    Vector2 tpsOverlayPos = new Vector2(10f, 10f);
 
     const float holdThreshold = 0.2f;
-    public bool useUnscaledTime = false;
 
     [Header("Hierarchy")]
     public bool useHierarchicalSolver = true;
@@ -32,36 +32,13 @@ public sealed class SimulationController : MonoBehaviour {
     public ComputeShader ColoringShader;
     public ComputeShader delaunayShader;
 
-    [Header("Async GPU (experimental)")]
-    [Tooltip("When enabled, submits XPBI ticks as async compute batches, and swaps DT position buffers only after a GPU fence passes.")]
-    public bool asyncGpu = true;
-
-    [Tooltip("Desired async compute queue; if the platform doesn't support async compute, Unity executes on the graphics queue.")]
+    [Header("GPU")]
     public ComputeQueueType asyncQueue = ComputeQueueType.Background;
-
     [Min(1)] public int maxTicksPerBatch = 32;
-
-    [Tooltip("Updates DT positions buffers for rendering after an async batch. Topology maintenance is disabled in async mode by default.")]
-    public bool asyncUpdateDtPositions = true;
-
-    [Tooltip("If enabled, still runs DT.Maintain() inside ticks. This will contend with rendering because DT topology buffers are shared.")]
-    public bool asyncRunDtMaintain = false;
-
-    [Header("CPU snapshots (AI)")]
-    [Min(1)] public int snapshotEveryTicks = 10;
 
     readonly List<Meshless> meshless = new List<Meshless>(64);
     readonly Dictionary<Meshless, XPBISolver> gpuSolverCache = new Dictionary<Meshless, XPBISolver>();
     readonly Dictionary<Meshless, int> tickCounters = new Dictionary<Meshless, int>();
-
-    struct ReadbackSlot {
-        public AsyncGPUReadbackRequest request;
-        public bool pending;
-        public int count;
-    }
-    readonly Dictionary<Meshless, ReadbackSlot> readbackSlots = new Dictionary<Meshless, ReadbackSlot>();
-    readonly Dictionary<Meshless, float2[]> latestSnapshot = new Dictionary<Meshless, float2[]>();
-    readonly Dictionary<Meshless, int> latestSnapshotTick = new Dictionary<Meshless, int>();
 
     // Triple‑buffer state per Meshless
     struct AsyncTripleState {
@@ -121,9 +98,6 @@ public sealed class SimulationController : MonoBehaviour {
         gpuSolverCache.Clear();
 
         tickCounters.Clear();
-        readbackSlots.Clear();
-        latestSnapshot.Clear();
-        latestSnapshotTick.Clear();
         asyncStates.Clear();
     }
 
@@ -131,7 +105,6 @@ public sealed class SimulationController : MonoBehaviour {
         if (m != null && !meshless.Contains(m)) {
             meshless.Add(m);
             tickCounters[m] = 0;
-            readbackSlots[m] = default;
 
             // Initialise triple‑buffer state
             asyncStates[m] = new AsyncTripleState {
@@ -150,9 +123,6 @@ public sealed class SimulationController : MonoBehaviour {
         if (m != null) {
             meshless.Remove(m);
             tickCounters.Remove(m);
-            readbackSlots.Remove(m);
-            latestSnapshot.Remove(m);
-            latestSnapshotTick.Remove(m);
             asyncStates.Remove(m);
 
             if (gpuSolverCache.TryGetValue(m, out XPBISolver solver)) {
@@ -162,25 +132,9 @@ public sealed class SimulationController : MonoBehaviour {
         }
     }
 
-    public bool TryGetLatestPositionsSnapshot(Meshless m, out float2[] positions, out int count, out int tickId) {
-        if (m != null && latestSnapshot.TryGetValue(m, out positions)) {
-            count = positions.Length;
-            tickId = latestSnapshotTick.TryGetValue(m, out int t) ? t : 0;
-            return true;
-        }
-
-        positions = null;
-        count = 0;
-        tickId = 0;
-        return false;
-    }
-
     void Update() {
         if (targetTPS <= 0f)
             return;
-
-        float frameDt = useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
-        if (frameDt < 0f) frameDt = 0f;
 
         float tickDt = 1f / targetTPS;
 
@@ -189,12 +143,12 @@ public sealed class SimulationController : MonoBehaviour {
         // Process completed async batches and try to promote finished slots
         ProcessAsyncBatchCompletions();
 
-        if (manual) ManualUpdateAsync(frameDt, tickDt);
-        else AutoUpdateAsync(frameDt, tickDt);
+        if (manual) ManualUpdateAsync(Time.deltaTime, tickDt);
+        else AutoUpdateAsync(Time.deltaTime, tickDt);
 
         renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
 
-        UpdateTpsDisplay(frameDt);
+        UpdateTpsDisplay(Time.deltaTime);
     }
 
     void LateUpdate() {
@@ -343,17 +297,13 @@ public sealed class SimulationController : MonoBehaviour {
             return;
         }
 
-        // Determine whether we need to rebuild adjacency after the batch.
-        bool rebuildParents = ((tickIdAfterBatch % Const.HierarchyRebuildInterval) == 0);
-        // dtSwapMaxLevel: -1 means no swap, 0 means swap positions only, >0 swaps topology as well.
-        int dtSwapMaxLevel = asyncUpdateDtPositions ? (asyncRunDtMaintain ? m.maxLayer : 0) : -1;
-
         // Submit the batch, writing into the free slot.
         GraphicsFence computeFence = solver.SubmitSolve(
             m,
             dtPerTick,
             ticksToRun,
             useHierarchicalSolver,
+            ConvergenceDebugEnabled,
             asyncQueue,
             freeSlot
         );
@@ -413,26 +363,6 @@ public sealed class SimulationController : MonoBehaviour {
         }
 
         ListPool<Meshless>.Release(keys);
-    }
-
-    void TryScheduleSnapshotReadback(Meshless m, XPBISolver solver, int count, int tickId) {
-
-        if (solver == null || solver.PositionBuffer == null) return;
-        if (count <= 0) return;
-
-        if (!readbackSlots.TryGetValue(m, out ReadbackSlot slot))
-            slot = default;
-
-        if (slot.pending)
-            return;
-
-        int bytes = count * 8; // float2
-        slot.request = AsyncGPUReadback.Request(solver.PositionBuffer, bytes, 0);
-        slot.pending = true;
-        slot.count = count;
-
-        readbackSlots[m] = slot;
-        latestSnapshotTick[m] = tickId;
     }
 
     void UpdateTpsDisplay(float frameDt) {

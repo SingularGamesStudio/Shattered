@@ -9,21 +9,18 @@ public sealed class Renderer : MonoBehaviour {
     public Shader fillShader;
     public Shader wireShader;
 
-    [Header("UV (rest normalized DT space)")]
+    [Header("UV")]
     public float uvScale = 0.25f;
 
     [Header("Wireframe")]
     public bool showWireframe = true;
-    public Color wireColorLevel0 = new Color(0.15f, 0.35f, 1f, 1f);
-    public Color wireColorMaxLevel = new Color(1f, 0.2f, 0.2f, 1f);
+    public bool drawCoarseLevels = true;
     [Range(0.5f, 10f)] public float wireWidthPixels = 1.5f;
+    Color wireColorLevel0 = new Color(0.15f, 0.35f, 1f, 1f);
+    Color wireColorMaxLevel = new Color(1f, 0.2f, 0.2f, 1f);
 
     [Header("Levels")]
     public bool drawLevel0Fill = true;
-    public bool drawCoarseLevels = true;
-
-    [Header("Culling bounds")]
-    public bool preferGpuSnapshotBounds = true;
 
     Material fillMaterial;
     Material wireMaterial;
@@ -82,7 +79,7 @@ public sealed class Renderer : MonoBehaviour {
             EnsurePerNodeBuffers(m);
 
             int maxLevel = m.maxLayer;
-            Bounds bounds = preferGpuSnapshotBounds ? ComputeBoundsFromNorm(m) : ComputeBoundsFromNodes(m.nodes);
+            Bounds bounds = ComputeBoundsFromNorm(m);
 
             // Fill: level 0 only.
             if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
@@ -182,7 +179,6 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetBuffer("_PositionsCurr", dt.PositionsBuffer);
         mpb.SetFloat("_RenderAlpha", alpha);
 
-        // Back-compat binding for any other debug shaders still using _Positions.
         mpb.SetBuffer("_Positions", dt.PositionsBuffer);
 
         mpb.SetBuffer("_HalfEdges", dt.HalfEdgesBuffer);

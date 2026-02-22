@@ -4,7 +4,6 @@ using Unity.Mathematics;
 using UnityEngine;
 
 public class Box : Meshless {
-    public float2 center;
     public float2 size;
 
     [Header("Generator")]
@@ -16,9 +15,8 @@ public class Box : Meshless {
     [Min(0.01f)] public float radiusScale = 0.85f;
     [Min(1)] public int poissonK = 30;
 
-    [Header("Debug/Output")]
-    public int[] levelNodeCounts;     // total nodes per level (including the 4 corners only on level 0)
-
+    [HideInInspector]
+    public int[] levelNodeCounts;
     void Start() {
         if (generateOnStart) Generate(pointCount, 0);
     }
@@ -44,30 +42,36 @@ public class Box : Meshless {
     }
 
     void GenerateHierarchy(int randomPointCount) {
-        if (maxLayer < 1) maxLayer = 1;
+        if (maxLayer < 0) maxLayer = 0;
 
         var half = size * 0.5f;
-        var min = center - half;
-        var max = center + half;
+        var min = new float2(transform.position.x, transform.position.y) - half;
+        var max = new float2(transform.position.x, transform.position.y) + half;
         var area = math.max(1e-12f, size.x * size.y);
+
+        int layerCount = maxLayer + 1;
 
         // Counts: level 0 total is fixed: random points + 4 corners.
         // Higher levels are computed only from the random points (corners do not propagate up).
-        var perLevelRandom = ComputeStrictlyDecreasingCounts(math.max(0, randomPointCount), maxLayer, layerRatio);
+        var perLevelRandom = ComputeStrictlyDecreasingCounts(
+            math.max(0, randomPointCount),
+            layerCount,
+            layerRatio
+        );
 
-        levelNodeCounts = new int[maxLayer];
-        levelNodeCounts[0] = perLevelRandom[0];
-        for (int l = 1; l < maxLayer; l++) levelNodeCounts[l] = perLevelRandom[l];
+        levelNodeCounts = new int[layerCount];
+        for (int l = 0; l < layerCount; l++)
+            levelNodeCounts[l] = perLevelRandom[l];
 
-        layerRadii = new float[maxLayer];
+        layerRadii = new float[layerCount];
 
         // Radii (initial guess). Level 0 uses total (random + fixed) because corners constrain it.
         layerRadii[0] = radiusScale * math.sqrt(area / math.max(1, levelNodeCounts[0]));
-        for (int l = 1; l < maxLayer; l++)
+        for (int l = 1; l < layerCount; l++)
             layerRadii[l] = radiusScale * math.sqrt(area / math.max(1, levelNodeCounts[l]));
 
         // Ensure non-decreasing radii with layer index (coarser layers should have >= radius).
-        for (int l = 1; l < maxLayer; l++)
+        for (int l = 1; l < layerCount; l++)
             layerRadii[l] = math.max(layerRadii[l], layerRadii[l - 1] * 1.01f);
 
         // Generate shared nodes (excluding fixed points) from coarse -> fine.
@@ -78,11 +82,8 @@ public class Box : Meshless {
         var pts = new List<float2>(perLevelRandom[0]);
         var ptsMaxLayer = new List<short>(perLevelRandom[0]);
 
-        // Coarsest level index.
-        int top = maxLayer - 1;
-
         // Start at top level (coarsest), then progressively densify down to level 0.
-        for (int l = top; l >= 0; l--) {
+        for (int l = maxLayer; l >= 0; l--) {
             int target = perLevelRandom[l];
             if (target == 0) continue;
 
@@ -102,12 +103,11 @@ public class Box : Meshless {
             layerRadii[l] = radius;
         }
 
-        // Commit into Meshless.nodes (fixed points first so FixNode(0) remains a boundary anchor).
+        // Commit into Meshless.nodes.
         nodes.Clear();
 
         for (int i = 0; i < pts.Count; i++)
             AddAndSetMaxLayer(pts[i], ptsMaxLayer[i]);
-        maxLayer = top;
     }
 
     int AddAndSetMaxLayer(float2 p, short maxLayer) {

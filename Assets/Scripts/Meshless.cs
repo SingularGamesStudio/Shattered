@@ -7,25 +7,20 @@ using GPU.Delaunay;
 public class Meshless : MonoBehaviour {
     public static readonly List<Meshless> Active = new List<Meshless>(64);
     public List<Node> nodes = new List<Node>();
-    public int maxLayer = 3;
-    [Header("Simulation parameters")]
-    public float gravity = -9.81f;
-    [Header("XPBI compliance")]
-    public float compliance = 0f;
+    public int maxLayer = 2;
+    [HideInInspector]
     public int[] levelEndIndex;
-    public float dtNormalizePadding = 2f;
-    public bool dtAutoNormalizeIncludeCamera = true;
-    [HideInInspector] public DTHierarchy delaunayHierarchy;
+    const float dtNormalizePadding = 2f;
+    const bool dtAutoNormalizeIncludeCamera = true;
+    [HideInInspector]
+    public DTHierarchy delaunayHierarchy;
 
     float2 dtNormCenter;
     float dtNormInvHalfExtent;
     float2 dtBoundsMinWorld;
     float2 dtBoundsMaxWorld;
+    [HideInInspector]
     public float[] layerRadii;
-
-    float2 dtSuper0 = new float2(0f, 3f);
-    float2 dtSuper1 = new float2(-3f, -3f);
-    float2 dtSuper2 = new float2(3f, -3f);
 
     [Header("Material")]
     public MaterialDef baseMaterialDef;
@@ -46,7 +41,6 @@ public class Meshless : MonoBehaviour {
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
         nodes[nodeIdx].invMass = 0.0f;
-        nodes[nodeIdx].vel = float2.zero;
     }
 
     public int Add(float2 pos) {
@@ -56,9 +50,6 @@ public class Meshless : MonoBehaviour {
 
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
-
-        for (int i = 0; i < nodes.Count; i++)
-            nodes[i].parentIndex = -1;
 
         BuildLevelEndIndex();
 
@@ -111,6 +102,7 @@ public class Meshless : MonoBehaviour {
     }
 
     void BuildDelaunayHierarchy() {
+        float2 dtSuper0, dtSuper1, dtSuper2;
         ComputeSuperTriangle(dtBoundsMinWorld, dtBoundsMaxWorld, 2f, out dtSuper0, out dtSuper1, out dtSuper2);
         delaunayHierarchy?.Dispose();
         delaunayHierarchy = new DTHierarchy(SimulationController.Instance.delaunayShader);

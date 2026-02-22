@@ -10,13 +10,9 @@ namespace GPU.Delaunay {
         DT[] levels;
         int[] levelEndIndex;
         int maxLevel;
-        int neighborCount;
         float2[] gpuAllScratch;
 
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
-
-        public int MaxLevel => maxLevel;
-        public int LevelCount => levels?.Length ?? 0;
 
         public DTHierarchy(ComputeShader shader) => this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
 
@@ -35,8 +31,6 @@ namespace GPU.Delaunay {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count < 3) throw new ArgumentException("Need at least 3 nodes.");
             if (neighborCount <= 0) throw new ArgumentOutOfRangeException(nameof(neighborCount));
-
-            this.neighborCount = neighborCount;
             this.levelEndIndex = precomputedLevelEndIndex;
             this.maxLevel = precomputedMaxLevel;
 

@@ -5,8 +5,6 @@ namespace GPU.Solver {
         private const int ConvergenceDebugIterBufSize = 8;
         private const float ConvergenceDebugScaleC = 1_000_000f;
         private const float ConvergenceDebugScaleDLambda = 1_000_000f;
-
-        public bool ConvergenceDebugEnabled = true;
         private void LogConvergenceStatsFromData(uint[] data, int maxSolveLevel, int maxIter) {
             if (data == null || data.Length == 0)
                 return;
