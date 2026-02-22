@@ -14,7 +14,7 @@ namespace GPU.Solver {
 
         private readonly ComputeShader shader;
         private readonly ComputeShader coloringShader;
-        private DTColoring[] coloringPerLevel;
+        private DTColoring[] coloringPerLayer;
 
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         public struct ForceEvent {
@@ -51,15 +51,15 @@ namespace GPU.Solver {
             asyncCb.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
         }
 
-        private void EnsurePerLevelStateCapacity(int maxLevel) {
-            int required = maxLevel + 1;
+        private void EnsurePerLayerStateCapacity(int maxLayer) {
+            int required = maxLayer + 1;
 
-            if (coloringPerLevel == null || coloringPerLevel.Length < required)
-                Array.Resize(ref coloringPerLevel, required);
+            if (coloringPerLayer == null || coloringPerLayer.Length < required)
+                Array.Resize(ref coloringPerLayer, required);
 
-            // relaxArgsByLevel is defined in another partial; ensure it is safe to index here.
-            if (relaxArgsByLevel == null || relaxArgsByLevel.Length < required)
-                Array.Resize(ref relaxArgsByLevel, required);
+            // relaxArgsByLayer is defined in another partial; ensure it is safe to index here.
+            if (relaxArgsByLayer == null || relaxArgsByLayer.Length < required)
+                Array.Resize(ref relaxArgsByLayer, required);
         }
 
         private void Dispatch(ComputeShader shader, int kernel, int x, int y, int z) {
@@ -100,7 +100,7 @@ namespace GPU.Solver {
         /// <param name="m">Meshless system to solve.</param>
         /// <param name="dtPerTick">Time step per tick.</param>
         /// <param name="tickCount">Number of ticks to execute in this submission.</param>
-        /// <param name="useHierarchical">Whether to use hierarchical (multi-level) solve.</param>
+        /// <param name="useHierarchical">Whether to use hierarchical (multi-layer) solve.</param>
         /// <param name="queueType">Async compute queue type to submit to.</param>
         /// <param name="writeSlot">Destination slot for cycled buffers.</param>
         /// <returns>
@@ -131,9 +131,9 @@ namespace GPU.Solver {
 
             EnsureAsyncCommandBufferForRecording();
 
-            int maxSolveLevel = (useHierarchical && m.levelEndIndex != null) ? m.maxLayer : 0;
-            EnsurePerLevelStateCapacity(maxSolveLevel);
-            EnsureConvergenceDebugCapacity(maxSolveLevel + 1, Const.IterationsL0);
+            int maxSolveLayer = (useHierarchical && m.layerEndIndex != null) ? m.maxLayer : 0;
+            EnsurePerLayerStateCapacity(maxSolveLayer);
+            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, Const.IterationsL0);
 
             for (int tick = 0; tick < tickCount; tick++) {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, total);
@@ -145,14 +145,14 @@ namespace GPU.Solver {
                 // 2) Apply gameplay events + continuous external forces.
                 ApplyForces(total, forceEventsCount);
 
-                // 3) Solve constraints level-by-level, from coarse to fine .
-                for (int level = maxSolveLevel; level >= 0; level--) {
-                    if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                // 3) Solve constraints layer-by-layer, from coarse to fine .
+                for (int layer = maxSolveLayer; layer >= 0; layer--) {
+                    if (!m.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                         continue;
-                    if (m.NodeCount(level) < 3)
+                    if (m.NodeCount(layer) < 3)
                         continue;
 
-                    ProcessLevel(m, level, dtLevel, total, tick, forceEventsCount, convergenceDebug);
+                    ProcessLayer(m, layer, dtLayer, total, tick, forceEventsCount, convergenceDebug);
                 }
 
                 // 4) Integrate positions on the full set of nodes.
@@ -160,18 +160,18 @@ namespace GPU.Solver {
                 Dispatch(shader, kIntegratePositions, Groups256(total), 1, 1);
 
                 // 5) Push integrated positions back into DT, then run DT maintenance (fix/legalize).
-                for (int level = m.maxLayer; level >= 0; level--) {
-                    if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+                for (int layer = m.maxLayer; layer >= 0; layer--) {
+                    if (!m.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                         continue;
 
-                    int activeCount = (level > 0) ? m.NodeCount(level) : total;
+                    int activeCount = (layer > 0) ? m.NodeCount(layer) : total;
                     if (activeCount < 3)
                         continue;
 
-                    PrepareUpdateDtPosParams(level, dtLevel, activeCount, m, writeSlot);
+                    PrepareUpdateDtPosParams(layer, dtLayer, activeCount, m, writeSlot);
                     Dispatch(shader, kUpdateDtPositions, Groups256(activeCount), 1, 1);
 
-                    dtLevel.EnqueueMaintain(asyncCb, dtLevel.GetPositionsBuffer(writeSlot),
+                    dtLayer.EnqueueMaintain(asyncCb, dtLayer.GetPositionsBuffer(writeSlot),
                         writeSlot, Const.DTFixIterations, Const.DTLegalizeIterations);
                 }
             }
@@ -185,7 +185,7 @@ namespace GPU.Solver {
             // 7) Optional convergence debug readback (CPU-blocking).
             if (ConvergenceDebugEnabled && convergenceDebug != null && convergenceDebugCpu != null && convergenceDebugRequiredUInts > 0) {
                 convergenceDebug.GetData(convergenceDebugCpu);
-                LogConvergenceStatsFromData(convergenceDebugCpu, maxSolveLevel, convergenceDebugMaxIter);
+                LogConvergenceStatsFromData(convergenceDebugCpu, maxSolveLayer, convergenceDebugMaxIter);
             }
 
             return fence;
@@ -193,20 +193,20 @@ namespace GPU.Solver {
 
 
         /// <summary>
-        /// Rebuilds parent relationships for all hierarchical levels where applicable.
+        /// Rebuilds parent relationships for all hierarchical layers where applicable.
         /// </summary>
         private void RebuildAllParents(Meshless m, int total) {
-            for (int level = m.maxLayer; level >= 1; level--) {
-                if (!m.TryGetLevelDt(level, out DT dtLevel) || dtLevel == null)
+            for (int layer = m.maxLayer; layer >= 1; layer--) {
+                if (!m.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                     continue;
 
-                int activeCount = m.NodeCount(level);
-                int fineCount = level > 1 ? m.NodeCount(level - 1) : total;
+                int activeCount = m.NodeCount(layer);
+                int fineCount = layer > 1 ? m.NodeCount(layer - 1) : total;
                 if (fineCount <= activeCount)
                     continue;
 
-                PrepareParentRebuildBuffers(dtLevel, activeCount, fineCount);
-                Dispatch(shader, kRebuildParentsAtLevel, Groups256(fineCount - activeCount), 1, 1);
+                PrepareParentRebuildBuffers(dtLayer, activeCount, fineCount);
+                Dispatch(shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
             }
         }
 
@@ -228,21 +228,21 @@ namespace GPU.Solver {
         }
 
         /// <summary>
-        /// Runs the hierarchical/colored relaxation and inter-level transfers for a single level.
+        /// Runs the hierarchical/colored relaxation and inter-layer transfers for a single layer.
         /// </summary>
-        private void ProcessLevel(
+        private void ProcessLayer(
     Meshless m,
-    int level,
-    DT dtLevel,
+    int layer,
+    DT dtLayer,
     int total,
     int tickIndex,
     int gameplayCountThisTick,
     ComputeBuffer debugBuffer
 ) {
-            int activeCount = level > 0 ? NodeCount(level) : total;
-            int fineCount = level > 1 ? NodeCount(level - 1) : total;
+            int activeCount = layer > 0 ? NodeCount(layer) : total;
+            int fineCount = layer > 1 ? NodeCount(layer - 1) : total;
 
-            PrepareRelaxBuffers(dtLevel, activeCount, fineCount, tickIndex);
+            PrepareRelaxBuffers(dtLayer, activeCount, fineCount, tickIndex);
 
             // 1) Snapshot prefix state / clear and cache hierarchical statistics used for correction.
             Dispatch(shader, kSaveVelPrefix, Groups256(activeCount), 1, 1);
@@ -250,9 +250,9 @@ namespace GPU.Solver {
             Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheHierarchicalStats, Groups256(total), 1, 1);
 
-            // 2) Optionally inject restricted gameplay forces into upper levels.
+            // 2) Optionally inject restricted gameplay forces into upper layers.
             bool injectRestricted =
-                level > 0 &&
+                layer > 0 &&
                 fineCount > activeCount &&
                 gameplayCountThisTick > 0 &&
                 Const.RestrictedDeltaVScale > 0f;
@@ -270,15 +270,15 @@ namespace GPU.Solver {
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", 0);
             }
 
-            // 3) Cache per-node constants and initialize/clear per-iteration accumulators for this level.
+            // 3) Cache per-node constants and initialize/clear per-iteration accumulators for this layer.
             Dispatch(shader, kCacheKernelH, Groups256(activeCount), 1, 1);
             Dispatch(shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
 
             // 4) Rebuild coloring used by the colored Gauss-Seidel.
-            RebuildColoringForLevel(level, dtLevel, activeCount, dtLevel.NeighborCount);
+            RebuildColoringForLayer(layer, dtLayer, activeCount, dtLayer.NeighborCount);
 
-            var coloring = coloringPerLevel[level];
+            var coloring = coloringPerLayer[layer];
             if (coloring != null) {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
@@ -286,15 +286,15 @@ namespace GPU.Solver {
             }
 
             int iterations = Const.IterationsLMid;
-            if (level == m.maxLayer)
+            if (layer == m.maxLayer)
                 iterations = Const.IterationsLMax;
-            if (level == 0)
+            if (layer == 0)
                 iterations = Const.IterationsL0;
 
             // 5) Optional convergence debug (first tick only).
             bool dbg = debugBuffer != null && tickIndex == 0;
             if (dbg) {
-                ClearDebugBuffer(level, iterations);
+                ClearDebugBuffer(layer, iterations);
             } else {
                 asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
             }
@@ -306,56 +306,56 @@ namespace GPU.Solver {
 
                 for (int c = 0; c < 16; c++) {
                     asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
-                    asyncCb.DispatchCompute(shader, kRelaxColored, relaxArgsByLevel[level], (uint)c * 12);
+                    asyncCb.DispatchCompute(shader, kRelaxColored, relaxArgsByLayer[layer], (uint)c * 12);
                 }
             }
 
-            // 7) Transfer results across hierarchy and finalize per-level outputs.
-            if (level > 0 && fineCount > activeCount)
+            // 7) Transfer results across hierarchy and finalize per-layer outputs.
+            if (layer > 0 && fineCount > activeCount)
                 Dispatch(shader, kProlongate, Groups256(fineCount - activeCount), 1, 1);
 
             if (injectRestricted)
                 Dispatch(shader, kRemoveRestrictedDeltaVFromActive, Groups256(activeCount), 1, 1);
 
-            if (level == 0)
+            if (layer == 0)
                 Dispatch(shader, kCommitDeformation, Groups256(activeCount), 1, 1);
         }
 
 
         /// <summary>
-        /// Ensures graph coloring exists and enqueues coloring maintenance/rebuild steps for this level.
+        /// Ensures graph coloring exists and enqueues coloring maintenance/rebuild steps for this layer.
         /// </summary>
-        private void RebuildColoringForLevel(int level, DT dtLevel, int activeCount, int dtNeighborCount) {
+        private void RebuildColoringForLayer(int layer, DT dtLayer, int activeCount, int dtNeighborCount) {
             if (coloringShader == null) {
                 Debug.LogError("XPBISolver: No coloring shader provided. Cannot rebuild coloring.");
                 return;
             }
 
-            if (coloringPerLevel == null || level < 0 || level >= coloringPerLevel.Length) {
-                Debug.LogError("XPBISolver: coloringPerLevel is not sized. Cannot rebuild coloring.");
+            if (coloringPerLayer == null || layer < 0 || layer >= coloringPerLayer.Length) {
+                Debug.LogError("XPBISolver: coloringPerLayer is not sized. Cannot rebuild coloring.");
                 return;
             }
 
-            if (coloringPerLevel[level] == null)
-                coloringPerLevel[level] = new DTColoring(coloringShader);
+            if (coloringPerLayer[layer] == null)
+                coloringPerLayer[layer] = new DTColoring(coloringShader);
 
-            var coloring = coloringPerLevel[level];
-            uint seed = 12345u + (uint)level; // deterministic seed per level
+            var coloring = coloringPerLayer[layer];
+            uint seed = 12345u + (uint)layer; // deterministic seed per layer
 
             if (coloring.ColorBuffer == null) {
                 coloring.Init(activeCount, dtNeighborCount, seed);
-                coloring.EnqueueInitTriGrid(asyncCb, pos, dtLevel, levelCellSizeCpu[level]);
-                dtLevel.MarkAllDirty(asyncCb);
+                coloring.EnqueueInitTriGrid(asyncCb, pos, dtLayer, layerCellSizeCpu[layer]);
+                dtLayer.MarkAllDirty(asyncCb);
             }
 
-            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, dtLevel, levelCellSizeCpu[level], Const.ColoringConflictRounds);
+            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, dtLayer, layerCellSizeCpu[layer], Const.ColoringConflictRounds);
             coloring.EnqueueRebuildOrderAndArgs(asyncCb);
 
-            relaxArgsByLevel[level] = coloring.RelaxArgsBuffer;
+            relaxArgsByLayer[layer] = coloring.RelaxArgsBuffer;
         }
 
-        private int NodeCount(int level) {
-            return meshless.NodeCount(level);
+        private int NodeCount(int layer) {
+            return meshless.NodeCount(layer);
         }
 
         /// <summary>
@@ -387,10 +387,10 @@ namespace GPU.Solver {
                 asyncCb = null;
             }
 
-            if (coloringPerLevel != null) {
-                foreach (var coloring in coloringPerLevel)
+            if (coloringPerLayer != null) {
+                foreach (var coloring in coloringPerLayer)
                     coloring?.Dispose();
-                coloringPerLevel = null;
+                coloringPerLayer = null;
             }
 
             kernelsCached = false;

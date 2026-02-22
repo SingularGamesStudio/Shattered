@@ -1,12 +1,12 @@
 #ifndef XPBI_SOLVER_RELAX_KERNELS_INCLUDED
     #define XPBI_SOLVER_RELAX_KERNELS_INCLUDED
 
-    static bool IsLevelFixed(uint gi)
+    static bool IsLayerFixed(uint gi)
     {
         if (IsFixedVertex(gi))
         return true;
 
-        // Only meaningful for active vertices in this level.
+        // Only meaningful for active vertices in this layer.
         if (gi >= _Base && gi < _Base + _ActiveCount)
         return _CoarseFixed[gi] != 0u;
 
@@ -87,7 +87,7 @@
 
         uint gi = _Base + li;
 
-        if (IsLevelFixed(gi))
+        if (IsLayerFixed(gi))
         return;
 
         float h = _KernelH[gi];
@@ -194,7 +194,7 @@
 
         uint gi = _Base + li;
 
-        if (IsLevelFixed(gi))
+        if (IsLayerFixed(gi))
         return;
         if (_RestVolume[gi] <= EPS)
         return;
@@ -279,7 +279,7 @@
             uint gj = ns[k1];
             if (gj < _Base || gj >= _Base + _ActiveCount)
             continue;
-            if (IsLevelFixed(gj))
+            if (IsLayerFixed(gj))
             continue;
             denom += _InvMass[gj] * dot(gradC_vj[k1], gradC_vj[k1]);
         }
@@ -311,7 +311,7 @@
             uint gj = ns[k2];
             if (gj < _Base || gj >= _Base + _ActiveCount)
             continue;
-            if (IsLevelFixed(gj))
+            if (IsLayerFixed(gj))
             continue;
             _Vel[gj] += _InvMass[gj] * velScale * gradC_vj[k2];
         }

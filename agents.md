@@ -35,7 +35,7 @@ XPBI:
 - XPBI explores extending XPBD-style ideas to continuum inelasticity using smoothing kernels and velocity-based formulations for updated Lagrangian deformation handling.
 
 HPBD / hierarchical acceleration:
-- Hierarchical Position-Based Dynamics (HPBD) uses a multilevel / multigrid-like hierarchy to improve convergence under tight iteration budgets.
+- Hierarchical Position-Based Dynamics (HPBD) uses a multilayer / multigrid-like hierarchy to improve convergence under tight iteration budgets.
 
 Neighborhood search motivation:
 - Shattered maintains a 2D Delaunay triangulation on GPU to keep per-node neighbor extraction predictable and to support a hierarchy of DTs.
@@ -95,15 +95,15 @@ Per tick (per Meshless):
 1) Apply gameplay forces (optional, event-based) to velocities on GPU.
 2) Apply external forces on GPU.
 3) Solve constraints hierarchically on GPU:
-   - Levels are processed coarse → fine (`maxLayer..0`) when hierarchical is enabled, else level 0 only.
-   - Active prefix size is `NodeCount(level)` (level 0 uses `total`).
+   - Layers are processed coarse → fine (`maxLayer..0`) when hierarchical is enabled, else layer 0 only.
+   - Active prefix size is `NodeCount(layer)` (layer 0 uses `total`).
    - Cache volumes hierarchically (leaf → owner prefix), cache kernel radii, compute correction matrix `L`, reset lambdas, then run relax iterations using GPU 2-hop coloring + indirect dispatch.
-   - Prolongate parent Δv to fine prefix when `level > 0`.
-   - Commit deformation on level 0.
+   - Prolongate parent Δv to fine prefix when `layer > 0`.
+   - Commit deformation on layer 0.
 4) Integrate positions on GPU once (`pos += vel * dt`) for all nodes.
 5) Update DT positions on GPU and maintain DT topology:
    - DT position buffers are updated from solver `pos` (normalized DT space).
-   - DT maintenance runs every tick for ALL DT levels that exist (0..maxLayer), independent of whether the solver is using hierarchy, because rendering may draw coarse DT levels.
+   - DT maintenance runs every tick for ALL DT layers that exist (0..maxLayer), independent of whether the solver is using hierarchy, because rendering may draw coarse DT layers.
    - DT adjacency rebuild increments `AdjacencyVersion`.
    - DT neighbor/count CPU readback is disabled in the per-tick path unless explicitly requested.
 6) Periodic maintenance (optional):
@@ -115,8 +115,8 @@ Per tick (per Meshless):
 
 Hierarchy:
 - Nodes must remain sorted by `maxLayer` descending after `Meshless.Build()`.
-- `levelEndIndex[L]` is a prefix count: nodes with `maxLayer >= L`.
-- `parentIndex` must refer to a valid parent on the next coarser level (or -1 if none).
+- `layerEndIndex[L]` is a prefix count: nodes with `maxLayer >= L`.
+- `parentIndex` must refer to a valid parent on the next coarser layer (or -1 if none).
 
 Neighborhoods:
 - Fixed-k neighborhood size is `Const.NeighborCount` (DT hierarchy is initialized with it).
@@ -132,13 +132,13 @@ Orchestration / entry points:
 - `Assets/Scripts/SimulationController.cs`
   Tick loop (fixed dt, drop-backlog), GPU solver ownership/caching, periodic async snapshots, TPS overlay.
 - `Assets/Scripts/Meshless.cs`
-  Nodes container, hierarchy metadata (`levelEndIndex`), DT normalization, DT hierarchy build/maintenance/readback, CPU-side hierarchy build helpers.
+  Nodes container, hierarchy metadata (`layerEndIndex`), DT normalization, DT hierarchy build/maintenance/readback, CPU-side hierarchy build helpers.
 - `Assets/Scripts/Node.cs`
   Node state: pos/vel/originalPos/invMass/isFixed, deformation (`F`, `Fp`), restVolume, `maxLayer`, `parentIndex`, `materialId`.
 
 GPU XPBI solver:
 - `Assets/Scripts/XPBI/XPBISolver.cs`
-  GPU buffers (persistent), per-level dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`, GPU integration, GPU DT position update, optional gameplay force events, optional GPU parent rebuild.
+  GPU buffers (persistent), per-layer dispatch schedule, 2-hop coloring build/cache keyed by `DT.AdjacencyVersion`, GPU integration, GPU DT position update, optional gameplay force events, optional GPU parent rebuild.
 - `Assets/Scripts/XPBI/Shaders/Solver.compute`
   Compute kernel entrypoints; includes shared code in:
   - `Solver.Shared.hlsl`
@@ -152,9 +152,9 @@ GPU XPBI solver:
 
 GPU Delaunay neighbors (hierarchical):
 - `Assets/Scripts/DT/DT.cs`
-  Per-level DT: GPU buffers for half-edge topology + adjacency, maintains adjacency, exposes neighbor buffers and optional CPU caches, bumps `AdjacencyVersion` on rebuild.
+  Per-layer DT: GPU buffers for half-edge topology + adjacency, maintains adjacency, exposes neighbor buffers and optional CPU caches, bumps `AdjacencyVersion` on rebuild.
 - `Assets/Scripts/DT/DTHierarchy.cs`
-  Builds DT per hierarchy level, updates positions from node prefix, maintains, optional readback for CPU features.
+  Builds DT per hierarchy layer, updates positions from node prefix, maintains, optional readback for CPU features.
 - `Assets/Scripts/DT/DTBuilder.cs`
   CPU bootstrap triangulation + half-edge build routines.
 - `Assets/Scripts/DT/DT.compute`
@@ -162,7 +162,7 @@ GPU Delaunay neighbors (hierarchical):
 
 Rendering / materials:
 - `Assets/Scripts/Renderer.cs`
-  Procedural draw of DT triangles (fill level 0; wire for coarse levels), uses rest positions in normalized DT space for UV anchoring.
+  Procedural draw of DT triangles (fill layer 0; wire for coarse layers), uses rest positions in normalized DT space for UV anchoring.
 - `Assets/Shaders/Triangulation.shader`
   Fill shader, converts normalized DT space to world via `_NormCenter` / `_NormInvHalfExtent`.
 - `Assets/Shaders/Wireframe.shader`
@@ -180,7 +180,7 @@ Utilities:
 ## 7) GPU solver notes
 
 Colored Gauss–Seidel:
-- Solve uses per-level 2-hop coloring and dispatches `RelaxColored` per color; within each color, constraints update velocities directly without overlap.
+- Solve uses per-layer 2-hop coloring and dispatches `RelaxColored` per color; within each color, constraints update velocities directly without overlap.
 - Coloring is rebuilt only when DT adjacency changes (`DT.AdjacencyVersion`) or when active prefix size changes.
 - Per-color scheduling does not use GPU→CPU readbacks; `DispatchIndirect` uses GPU-built args buffers.
 
@@ -196,7 +196,7 @@ Kernel presence:
 
 - Both fill and wireframe shaders interpret DT positions in normalized DT space and convert to world using `_NormCenter` and `_NormInvHalfExtent`.
 - Rest UV anchoring uses `Node.originalPos` normalized into DT space, so textures remain “painted” while nodes move.
-- Coarse levels are wireframe-only (fill is drawn only for level 0).
+- Coarse layers are wireframe-only (fill is drawn only for layer 0).
 
 
 ## 9) References (primary)

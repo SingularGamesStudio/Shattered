@@ -14,13 +14,13 @@ public sealed class Renderer : MonoBehaviour {
 
     [Header("Wireframe")]
     public bool showWireframe = true;
-    public bool drawCoarseLevels = true;
+    public bool drawCoarseLayers = true;
     [Range(0.5f, 10f)] public float wireWidthPixels = 1.5f;
-    Color wireColorLevel0 = new Color(0.15f, 0.35f, 1f, 1f);
-    Color wireColorMaxLevel = new Color(1f, 0.2f, 0.2f, 1f);
+    Color wireColorLayer0 = new Color(0.15f, 0.35f, 1f, 1f);
+    Color wireColorMaxLayer = new Color(1f, 0.2f, 0.2f, 1f);
 
-    [Header("Levels")]
-    public bool drawLevel0Fill = true;
+    [Header("Layers")]
+    public bool drawLayer0Fill = true;
 
     Material fillMaterial;
     Material wireMaterial;
@@ -78,11 +78,11 @@ public sealed class Renderer : MonoBehaviour {
 
             EnsurePerNodeBuffers(m);
 
-            int maxLevel = m.maxLayer;
+            int maxLayer = m.maxLayer;
             Bounds bounds = ComputeBoundsFromNorm(m);
 
-            // Fill: level 0 only.
-            if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
+            // Fill: layer 0 only.
+            if (drawLayer0Fill && m.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
                 SetupCommon(m, dt0, lib, m.NodeCount(0));
 
                 mpb.SetFloat("_UvScale", uvScale);
@@ -91,18 +91,18 @@ public sealed class Renderer : MonoBehaviour {
 
             if (!showWireframe || m.NodeCount(0) > 1000) continue;
 
-            // Wireframe: edges only, still per-level to keep coloring and layer control.
-            for (int level = 0; level <= maxLevel; level++) {
-                if (level != 0 && !drawCoarseLevels) continue;
+            // Wireframe: edges only, still per-layer to keep coloring and layer control.
+            for (int layer = 0; layer <= maxLayer; layer++) {
+                if (layer != 0 && !drawCoarseLayers) continue;
 
-                if (!m.TryGetLevelDt(level, out var dt) || dt == null) continue;
+                if (!m.TryGetLayerDt(layer, out var dt) || dt == null) continue;
                 if (dt.TriCount <= 0) continue;
 
-                int realCount = m.NodeCount(level);
+                int realCount = m.NodeCount(layer);
                 if (realCount <= 0) continue;
 
-                float t = maxLevel <= 0 ? 0f : (float)level / maxLevel;
-                Color wireColor = Color.Lerp(wireColorLevel0, wireColorMaxLevel, t);
+                float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
+                Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
 
                 SetupCommon(m, dt, lib, realCount);
 

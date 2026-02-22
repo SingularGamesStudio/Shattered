@@ -9,7 +9,7 @@ public class Meshless : MonoBehaviour {
     public List<Node> nodes = new List<Node>();
     public int maxLayer = 2;
     [HideInInspector]
-    public int[] levelEndIndex;
+    public int[] layerEndIndex;
     const float dtNormalizePadding = 2f;
     const bool dtAutoNormalizeIncludeCamera = true;
     [HideInInspector]
@@ -33,8 +33,8 @@ public class Meshless : MonoBehaviour {
         return lib == null ? 0 : lib.GetMaterialIndex(baseMaterialDef);
     }
 
-    public bool TryGetLevelDt(int level, out DT dt) {
-        dt = delaunayHierarchy?.GetLevelDt(level);
+    public bool TryGetLayerDt(int layer, out DT dt) {
+        dt = delaunayHierarchy?.GetLayerDt(layer);
         return dt != null;
     }
 
@@ -51,7 +51,7 @@ public class Meshless : MonoBehaviour {
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
-        BuildLevelEndIndex();
+        BuildLayerEndIndex();
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
 
@@ -59,19 +59,19 @@ public class Meshless : MonoBehaviour {
 
     }
 
-    void BuildLevelEndIndex() {
-        if (maxLayer < 0) { levelEndIndex = null; return; }
-        levelEndIndex = new int[maxLayer + 1];
+    void BuildLayerEndIndex() {
+        if (maxLayer < 0) { layerEndIndex = null; return; }
+        layerEndIndex = new int[maxLayer + 1];
         int idx = 0;
-        for (int level = maxLayer; level >= 0; level--) {
-            for (; idx < nodes.Count && nodes[idx].maxLayer >= level; idx++) { }
-            levelEndIndex[level] = idx;
+        for (int layer = maxLayer; layer >= 0; layer--) {
+            for (; idx < nodes.Count && nodes[idx].maxLayer >= layer; idx++) { }
+            layerEndIndex[layer] = idx;
         }
     }
 
-    public int NodeCount(int level) {
-        if (levelEndIndex == null || level < 0 || level > maxLayer) return 0;
-        return levelEndIndex[level];
+    public int NodeCount(int layer) {
+        if (layerEndIndex == null || layer < 0 || layer > maxLayer) return 0;
+        return layerEndIndex[layer];
     }
 
     void RecomputeDelaunayNormalizationBounds(Camera cam) {
@@ -108,7 +108,7 @@ public class Meshless : MonoBehaviour {
         delaunayHierarchy = new DTHierarchy(SimulationController.Instance.delaunayShader);
         delaunayHierarchy.InitFromMeshlessNodes(
             nodes,
-            levelEndIndex,
+            layerEndIndex,
             maxLayer,
             dtNormCenter,
             dtNormInvHalfExtent,

@@ -5,23 +5,23 @@ namespace GPU.Solver {
         private const int ConvergenceDebugIterBufSize = 8;
         private const float ConvergenceDebugScaleC = 1_000_000f;
         private const float ConvergenceDebugScaleDLambda = 1_000_000f;
-        private void LogConvergenceStatsFromData(uint[] data, int maxSolveLevel, int maxIter) {
+        private void LogConvergenceStatsFromData(uint[] data, int maxSolveLayer, int maxIter) {
             if (data == null || data.Length == 0)
                 return;
 
             float invScaleC = 1f / ConvergenceDebugScaleC;
             float invScaleDL = 1f / ConvergenceDebugScaleDLambda;
 
-            for (int level = maxSolveLevel; level >= 0; level--) {
+            for (int layer = maxSolveLayer; layer >= 0; layer--) {
                 int iterations = Const.IterationsLMid;
-                if (level == maxSolveLevel)
+                if (layer == maxSolveLayer)
                     iterations = Const.IterationsLMax;
-                if (level == 0)
+                if (layer == 0)
                     iterations = Const.IterationsL0;
-                int baseIter = level * maxIter;
+                int baseIter = layer * maxIter;
 
                 var table = new System.Text.StringBuilder();
-                table.AppendLine($"Level {level} convergence stats:");
+                table.AppendLine($"Layer {layer} convergence stats:");
                 table.AppendLine("Iter | Marker | Count | Avg|C|       | Max|C|       | Avg|dLambda| | Max|dLambda|");
                 table.AppendLine("-----|--------|-------|--------------|--------------|---------------|---------------");
 
@@ -59,11 +59,11 @@ namespace GPU.Solver {
             }
         }
 
-        void ClearDebugBuffer(int level, int iterations) {
+        void ClearDebugBuffer(int layer, int iterations) {
             asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 1);
             asyncCb.SetComputeFloatParam(shader, "_ConvergenceDebugScaleC", ConvergenceDebugScaleC);
             asyncCb.SetComputeFloatParam(shader, "_ConvergenceDebugScaleDLambda", ConvergenceDebugScaleDLambda);
-            asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugOffset", level * convergenceDebugMaxIter);
+            asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugOffset", layer * convergenceDebugMaxIter);
             asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIterCount", iterations);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebug);

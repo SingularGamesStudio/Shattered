@@ -16,7 +16,7 @@ public class Box : Meshless {
     [Min(1)] public int poissonK = 30;
 
     [HideInInspector]
-    public int[] levelNodeCounts;
+    public int[] layerNodeCounts;
     void Start() {
         if (generateOnStart) Generate(pointCount, 0);
     }
@@ -51,24 +51,24 @@ public class Box : Meshless {
 
         int layerCount = maxLayer + 1;
 
-        // Counts: level 0 total is fixed: random points + 4 corners.
-        // Higher levels are computed only from the random points (corners do not propagate up).
-        var perLevelRandom = ComputeStrictlyDecreasingCounts(
+        // Counts: layer 0 total is fixed: random points + 4 corners.
+        // Higher layers are computed only from the random points (corners do not propagate up).
+        var perLayerRandom = ComputeStrictlyDecreasingCounts(
             math.max(0, randomPointCount),
             layerCount,
             layerRatio
         );
 
-        levelNodeCounts = new int[layerCount];
+        layerNodeCounts = new int[layerCount];
         for (int l = 0; l < layerCount; l++)
-            levelNodeCounts[l] = perLevelRandom[l];
+            layerNodeCounts[l] = perLayerRandom[l];
 
         layerRadii = new float[layerCount];
 
-        // Radii (initial guess). Level 0 uses total (random + fixed) because corners constrain it.
-        layerRadii[0] = radiusScale * math.sqrt(area / math.max(1, levelNodeCounts[0]));
+        // Radii (initial guess). Layer 0 uses total (random + fixed) because corners constrain it.
+        layerRadii[0] = radiusScale * math.sqrt(area / math.max(1, layerNodeCounts[0]));
         for (int l = 1; l < layerCount; l++)
-            layerRadii[l] = radiusScale * math.sqrt(area / math.max(1, levelNodeCounts[l]));
+            layerRadii[l] = radiusScale * math.sqrt(area / math.max(1, layerNodeCounts[l]));
 
         // Ensure non-decreasing radii with layer index (coarser layers should have >= radius).
         for (int l = 1; l < layerCount; l++)
@@ -79,12 +79,12 @@ public class Box : Meshless {
         if (seed == 0) seed = 1;
         var rnd = new Unity.Mathematics.Random(seed);
 
-        var pts = new List<float2>(perLevelRandom[0]);
-        var ptsMaxLayer = new List<short>(perLevelRandom[0]);
+        var pts = new List<float2>(perLayerRandom[0]);
+        var ptsMaxLayer = new List<short>(perLayerRandom[0]);
 
-        // Start at top level (coarsest), then progressively densify down to level 0.
+        // Start at top layer (coarsest), then progressively densify down to layer 0.
         for (int l = maxLayer; l >= 0; l--) {
-            int target = perLevelRandom[l];
+            int target = perLayerRandom[l];
             if (target == 0) continue;
 
             float radius = layerRadii[l];
@@ -122,11 +122,11 @@ public class Box : Meshless {
         return idx;
     }
 
-    static int[] ComputeStrictlyDecreasingCounts(int baseCount, int levels, float ratio) {
-        var counts = new int[levels];
+    static int[] ComputeStrictlyDecreasingCounts(int baseCount, int layers, float ratio) {
+        var counts = new int[layers];
         counts[0] = baseCount;
 
-        for (int l = 1; l < levels; l++) {
+        for (int l = 1; l < layers; l++) {
             int next = (int)math.round(counts[l - 1] * ratio);
             next = math.max(1, next);
 
@@ -136,10 +136,10 @@ public class Box : Meshless {
             counts[l] = next;
         }
 
-        // If baseCount is 0, keep all levels at 0 (except we don't want negative).
+        // If baseCount is 0, keep all layers at 0 (except we don't want negative).
         if (baseCount == 0) {
             counts[0] = 0;
-            for (int l = 1; l < levels; l++) counts[l] = 0;
+            for (int l = 1; l < layers; l++) counts[l] = 0;
         }
 
         return counts;

@@ -29,7 +29,7 @@ namespace GPU.Solver {
         private ComputeBuffer restrictedDeltaVCount;
         private ComputeBuffer restrictedDeltaVAvg;
         private ComputeBuffer convergenceDebug;
-        private ComputeBuffer[] relaxArgsByLevel;
+        private ComputeBuffer[] relaxArgsByLayer;
 
 
         // CPU mirror arrays.
@@ -43,7 +43,7 @@ namespace GPU.Solver {
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
         private uint[] convergenceDebugCpu;
-        private float[] levelCellSizeCpu;
+        private float[] layerCellSizeCpu;
 
         // Capacity and event counts.
         private int capacity;
@@ -51,7 +51,7 @@ namespace GPU.Solver {
         private int forceEventsCount;
         private int convergenceDebugRequiredUInts;
         private int convergenceDebugMaxIter;
-        private int convergenceDebugLevels;
+        private int convergenceDebugLayers;
 
         private void InitializeFromMeshless(Meshless m) {
             meshless = m;
@@ -79,13 +79,13 @@ namespace GPU.Solver {
             F.SetData(FCpu, 0, 0, n);
             Fp.SetData(FpCpu, 0, 0, n);
 
-            if (coloringPerLevel == null || coloringPerLevel.Length <= m.maxLayer) {
+            if (coloringPerLayer == null || coloringPerLayer.Length <= m.maxLayer) {
                 int newSize = m.maxLayer + 1;
-                Array.Resize(ref coloringPerLevel, newSize);
-                Array.Resize(ref relaxArgsByLevel, newSize);
-                Array.Resize(ref levelCellSizeCpu, newSize);
+                Array.Resize(ref coloringPerLayer, newSize);
+                Array.Resize(ref relaxArgsByLayer, newSize);
+                Array.Resize(ref layerCellSizeCpu, newSize);
                 for (int i = 0; i <= m.maxLayer; i++)
-                    levelCellSizeCpu[i] = m.layerRadii[i];
+                    layerCellSizeCpu[i] = m.layerRadii[i];
             }
 
             initializedCount = n;
@@ -141,14 +141,14 @@ namespace GPU.Solver {
             initializedCount = -1;
         }
 
-        private void EnsureConvergenceDebugCapacity(int levels, int maxIter) {
-            int requiredUInts = levels * maxIter * ConvergenceDebugIterBufSize;
+        private void EnsureConvergenceDebugCapacity(int layers, int maxIter) {
+            int requiredUInts = layers * maxIter * ConvergenceDebugIterBufSize;
 
             if (convergenceDebug != null &&
                 convergenceDebug.IsValid() &&
                 convergenceDebug.count == requiredUInts &&
                 convergenceDebugMaxIter == maxIter &&
-                convergenceDebugLevels == levels &&
+                convergenceDebugLayers == layers &&
                 convergenceDebugCpu != null &&
                 convergenceDebugCpu.Length == requiredUInts)
                 return;
@@ -159,7 +159,7 @@ namespace GPU.Solver {
             convergenceDebugCpu = new uint[requiredUInts];
             convergenceDebugRequiredUInts = requiredUInts;
             convergenceDebugMaxIter = maxIter;
-            convergenceDebugLevels = levels;
+            convergenceDebugLayers = layers;
             return;
         }
 
@@ -184,16 +184,16 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_Base", 0);
         }
 
-        void PrepareParentRebuildBuffers(DT dtLevel, int activeCount, int fineCount) {
-            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
+        void PrepareParentRebuildBuffers(DT dtLayer, int activeCount, int fineCount) {
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
             asyncCb.SetComputeIntParam(shader, "_ParentRangeStart", activeCount);
             asyncCb.SetComputeIntParam(shader, "_ParentRangeEnd", fineCount);
             asyncCb.SetComputeIntParam(shader, "_ParentCoarseCount", activeCount);
 
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_Pos", pos);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_ParentIndex", parentIndex);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
         }
 
         void PrepareIntegratePosParams() {
@@ -203,13 +203,13 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Flags", flags);
         }
 
-        private void PrepareUpdateDtPosParams(int level, DT dtLevel, int activeCount,
+        private void PrepareUpdateDtPosParams(int layer, DT dtLayer, int activeCount,
             Meshless m, int pingWrite) {
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
-            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
             asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions",
-                dtLevel.GetPositionsBuffer(pingWrite));
+                dtLayer.GetPositionsBuffer(pingWrite));
             asyncCb.SetComputeVectorParam(shader, "_DtNormCenter",
                 new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
             asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
@@ -225,10 +225,10 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_Flags", flags);
         }
 
-        void PrepareRelaxBuffers(DT dtLevel, int activeCount, int fineCount, int tickIndex) {
+        void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex) {
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
-            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CoarseFixed", coarseFixed);
@@ -281,17 +281,17 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
 
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
 
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
 
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLevel.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CoarseFixed", coarseFixed);

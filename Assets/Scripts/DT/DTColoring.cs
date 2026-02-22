@@ -140,13 +140,13 @@ namespace GPU.Delaunay {
         /// <param name="cb">Command buffer to append to.</param>
         /// <param name="positions">Buffer of vertex positions (float2).</param>
         /// <param name="dt">Delaunay triangulation data (needed for neighbour info).</param>
-        /// <param name="levelCellSize">Grid cell size for the triangular pattern.</param>
-        public void EnqueueInitTriGrid(CommandBuffer cb, ComputeBuffer positions, DT dt, float levelCellSize) {
+        /// <param name="layerCellSize">Grid cell size for the triangular pattern.</param>
+        public void EnqueueInitTriGrid(CommandBuffer cb, ComputeBuffer positions, DT dt, float layerCellSize) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
 
-            SetCommonParams(cb, positions, levelCellSize);
+            SetCommonParams(cb, positions, layerCellSize);
 
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_ColoringProposed", proposed);
@@ -164,13 +164,13 @@ namespace GPU.Delaunay {
         /// <param name="cb">Command buffer to append to.</param>
         /// <param name="positions">Vertex positions (float2).</param>
         /// <param name="dt">Delaunay triangulation (neighbors, counts, dirty flags).</param>
-        /// <param name="levelCellSize">Grid cell size (unused in iterations but passed for consistency).</param>
+        /// <param name="layerCellSize">Grid cell size (unused in iterations but passed for consistency).</param>
         /// <param name="iterations">Number of coloring iterations to perform.</param>
         public void EnqueueUpdateAfterMaintain(
             CommandBuffer cb,
             ComputeBuffer positions,
             DT dt,
-            float levelCellSize,
+            float layerCellSize,
             int iterations
         ) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
@@ -179,7 +179,7 @@ namespace GPU.Delaunay {
             if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
             if (iterations <= 0) throw new ArgumentOutOfRangeException(nameof(iterations));
 
-            SetCommonParams(cb, positions, levelCellSize);
+            SetCommonParams(cb, positions, layerCellSize);
 
             // Bind neighbour buffers (needed by several kernels)
             cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtNeighbors", dt.NeighborsBuffer);
@@ -287,7 +287,7 @@ namespace GPU.Delaunay {
         }
 
         // Sets parameters common to most kernels (positions, counts, seed, etc.)
-        void SetCommonParams(CommandBuffer cb, ComputeBuffer positions, float levelCellSize) {
+        void SetCommonParams(CommandBuffer cb, ComputeBuffer positions, float layerCellSize) {
             // Use SetComputeIntParams where possible to reduce API calls (but only for contiguous arrays)
             // Here we only have a few ints, so separate calls are fine.
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
@@ -295,7 +295,7 @@ namespace GPU.Delaunay {
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
             cb.SetComputeIntParam(shader, "_ColoringSeed", unchecked((int)seed));
             cb.SetComputeIntParam(shader, "_ColoringEpoch", unchecked((int)epoch));
-            cb.SetComputeFloatParam(shader, "_ColoringLevelCellSize", levelCellSize);
+            cb.SetComputeFloatParam(shader, "_ColoringLayerCellSize", layerCellSize);
 
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_Positions", positions);
         }

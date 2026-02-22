@@ -7,21 +7,21 @@ using System.Diagnostics;
 namespace GPU.Delaunay {
     public sealed class DTHierarchy : IDisposable {
         readonly ComputeShader shader;
-        DT[] levels;
-        int[] levelEndIndex;
-        int maxLevel;
+        DT[] layers;
+        int[] layerEndIndex;
+        int maxLayer;
         float2[] gpuAllScratch;
 
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
 
         public DTHierarchy(ComputeShader shader) => this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
 
-        public DT GetLevelDt(int level) => (levels != null && (uint)level < (uint)levels.Length) ? levels[level] : null;
+        public DT GetLayerDt(int layer) => (layers != null && (uint)layer < (uint)layers.Length) ? layers[layer] : null;
 
         public void InitFromMeshlessNodes(
             List<Node> nodes,
-            int[] precomputedLevelEndIndex,
-            int precomputedMaxLevel,
+            int[] precomputedLayerEndIndex,
+            int precomputedMaxLayer,
             float2 normCenter,
             float normInvHalfExtent,
             float2 super0,
@@ -31,18 +31,18 @@ namespace GPU.Delaunay {
             if (nodes == null) throw new ArgumentNullException(nameof(nodes));
             if (nodes.Count < 3) throw new ArgumentException("Need at least 3 nodes.");
             if (neighborCount <= 0) throw new ArgumentOutOfRangeException(nameof(neighborCount));
-            this.levelEndIndex = precomputedLevelEndIndex;
-            this.maxLevel = precomputedMaxLevel;
+            this.layerEndIndex = precomputedLayerEndIndex;
+            this.maxLayer = precomputedMaxLayer;
 
-            DisposeLevels();
-            levels = new DT[maxLevel + 1];
+            DisposeLayers();
+            layers = new DT[maxLayer + 1];
 
             float worldAreaScale = 1f / (normInvHalfExtent * normInvHalfExtent);
 
-            for (int level = 0; level <= maxLevel; level++) {
-                int n = levelEndIndex[level];
+            for (int layer = 0; layer <= maxLayer; layer++) {
+                int n = layerEndIndex[layer];
                 if (n < 3) {
-                    levels[level] = null;
+                    layers[layer] = null;
                     continue;
                 }
 
@@ -60,7 +60,7 @@ namespace GPU.Delaunay {
                 triangles.Clear();
                 DTBuilder.BuildDelaunay(gpuAllScratch, n, triangles);
 
-                if (level == 0) {
+                if (layer == 0) {
                     for (int i = 0; i < n; i++)
                         nodes[i].restVolume = 0f;
 
@@ -84,7 +84,7 @@ namespace GPU.Delaunay {
                 var he = DTBuilder.BuildHalfEdges(gpuAllScratch, triangles);
                 var dt = new DT(shader);
                 dt.Init(gpuAllScratch, n, he, triangles.Count, neighborCount);
-                levels[level] = dt;
+                layers[layer] = dt;
             }
         }
 
@@ -93,16 +93,16 @@ namespace GPU.Delaunay {
                 gpuAllScratch = new float2[required];
         }
 
-        void DisposeLevels() {
-            if (levels == null) return;
-            foreach (var dt in levels)
+        void DisposeLayers() {
+            if (layers == null) return;
+            foreach (var dt in layers)
                 dt?.Dispose();
         }
 
         public void Dispose() {
-            DisposeLevels();
-            levels = null;
-            levelEndIndex = null;
+            DisposeLayers();
+            layers = null;
+            layerEndIndex = null;
             gpuAllScratch = null;
         }
     }

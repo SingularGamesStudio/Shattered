@@ -50,7 +50,7 @@ uint _ColoringDtNeighborCount;                      // Max neighbors per vertex 
 uint _ColoringMaxColors;                            // Must be 16
 uint _ColoringSeed;                                 // Seed for priority hash
 uint _ColoringEpoch;                                // Current epoch for work-list deduplication
-float _ColoringLevelCellSize;                        // Grid cell size for initial color assignment
+float _ColoringLayerCellSize;                        // Grid cell size for initial color assignment
 
 static const float SQRT3 = 1.7320508075688772f;
 
@@ -86,7 +86,7 @@ uint TriGridInitColor(float2 p)
     // Basis vectors:
     // u = (s, 0)
     // v = (0.5s, sqrt(3)/2 * s)
-    float invS = 1.0f / max(_ColoringLevelCellSize, 1e-12f);
+    float invS = 1.0f / max(_ColoringLayerCellSize, 1e-12f);
 
     float jf = (2.0f / SQRT3) * (p.y * invS);
     int j = (int)floor(jf + 0.5f);

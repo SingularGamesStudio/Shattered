@@ -71,9 +71,9 @@
     }
 
     // ----------------------------------------------------------------------------
-    // RebuildParentsAtLevel: find nearest coarse particle using local search
+    // RebuildParentsAtLayer: find nearest coarse particle using local search
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void RebuildParentsAtLevel(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)] void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
     {
         uint gi = _ParentRangeStart + id.x;
         if (gi >= _ParentRangeEnd)
