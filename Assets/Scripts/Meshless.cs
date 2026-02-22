@@ -33,9 +33,9 @@ public class Meshless : MonoBehaviour {
     float2 dtBoundsMaxWorld;
     public float[] layerRadii;
 
-    readonly float2 dtSuper0 = new float2(0f, 3f);
-    readonly float2 dtSuper1 = new float2(-3f, -3f);
-    readonly float2 dtSuper2 = new float2(3f, -3f);
+    float2 dtSuper0 = new float2(0f, 3f);
+    float2 dtSuper1 = new float2(-3f, -3f);
+    float2 dtSuper2 = new float2(3f, -3f);
 
     [Header("Material")]
     public MaterialDef baseMaterialDef;
@@ -124,6 +124,7 @@ public class Meshless : MonoBehaviour {
     }
 
     void BuildDelaunayHierarchy() {
+        ComputeSuperTriangle(dtBoundsMinWorld, dtBoundsMaxWorld, 2f, out dtSuper0, out dtSuper1, out dtSuper2);
         delaunayHierarchy?.Dispose();
         delaunayHierarchy = new DTHierarchy(delaunayShader);
         delaunayHierarchy.InitFromMeshlessNodes(
@@ -137,6 +138,16 @@ public class Meshless : MonoBehaviour {
             dtSuper2,
             Const.NeighborCount
         );
+    }
+
+    static void ComputeSuperTriangle(float2 min, float2 max, float scale, out float2 p0, out float2 p1, out float2 p2) {
+        float2 center = 0.5f * (min + max);
+        float2 extent = max - min;
+        float d = math.max(extent.x, extent.y);
+        float s = math.max(1f, scale) * math.max(1e-6f, d);
+        p0 = center + new float2(0f, 2f * s);
+        p1 = center + new float2(-2f * s, -2f * s);
+        p2 = center + new float2(2f * s, -2f * s);
     }
 
     void OnEnable() {

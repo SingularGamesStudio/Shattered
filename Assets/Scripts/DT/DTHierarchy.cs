@@ -58,29 +58,30 @@ namespace GPU.Delaunay {
                 for (int i = 0; i < n; i++)
                     gpuAllScratch[i] = (nodes[i].pos - normCenter) * normInvHalfExtent;
 
-                gpuAllScratch[n + 0] = super0;
-                gpuAllScratch[n + 1] = super1;
-                gpuAllScratch[n + 2] = super2;
+                gpuAllScratch[n + 0] = (super0 - normCenter) * normInvHalfExtent;
+                gpuAllScratch[n + 1] = (super1 - normCenter) * normInvHalfExtent;
+                gpuAllScratch[n + 2] = (super2 - normCenter) * normInvHalfExtent;
 
                 // Build triangulation using the unified builder
                 triangles.Clear();
                 DTBuilder.BuildDelaunay(gpuAllScratch, n, triangles);
 
-                // For the top level (all nodes), compute rest volumes in world space
-                if (level == maxLevel) {
+                if (level == 0) {
                     for (int i = 0; i < n; i++)
                         nodes[i].restVolume = 0f;
 
                     foreach (var tri in triangles) {
+                        if ((uint)tri.a >= (uint)n || (uint)tri.b >= (uint)n || (uint)tri.c >= (uint)n)
+                            continue;
                         float2 a = gpuAllScratch[tri.a];
                         float2 b = gpuAllScratch[tri.b];
                         float2 c = gpuAllScratch[tri.c];
                         float areaNorm = 0.5f * math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
                         float areaWorld = areaNorm * worldAreaScale;
                         float share = areaWorld / 3f;
-                        if (tri.a < n) nodes[tri.a].restVolume += share;
-                        if (tri.b < n) nodes[tri.b].restVolume += share;
-                        if (tri.c < n) nodes[tri.c].restVolume += share;
+                        nodes[tri.a].restVolume += share;
+                        nodes[tri.b].restVolume += share;
+                        nodes[tri.c].restVolume += share;
                     }
                 }
 

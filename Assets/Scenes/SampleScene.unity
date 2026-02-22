@@ -220,7 +220,7 @@ MonoBehaviour:
   wireWidthPixels: 0.74
   drawLevel0Fill: 1
   drawCoarseLevels: 1
-  preferGpuSnapshotBounds: 0
+  preferGpuSnapshotBounds: 1
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -364,7 +364,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 20000
+  pointCount: 100
   generateOnStart: 1
   layerRatio: 0.1
   radiusScale: 0.85
