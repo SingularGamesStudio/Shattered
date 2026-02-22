@@ -372,7 +372,6 @@ namespace GPU.Solver {
             posCpu = null;
             velCpu = null;
             invMassCpu = null;
-            flagsCpu = null;
             restVolumeCpu = null;
             parentIndexCpu = null;
             FCpu = null;

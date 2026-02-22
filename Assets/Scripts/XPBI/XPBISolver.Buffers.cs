@@ -8,7 +8,6 @@ namespace GPU.Solver {
         private ComputeBuffer pos;
         private ComputeBuffer vel;
         private ComputeBuffer invMass;
-        private ComputeBuffer flags;
         private ComputeBuffer restVolume;
         private ComputeBuffer parentIndex;
         private ComputeBuffer F;
@@ -36,7 +35,6 @@ namespace GPU.Solver {
         private float2[] posCpu;
         private float2[] velCpu;
         private float[] invMassCpu;
-        private uint[] flagsCpu;
         private float[] restVolumeCpu;
         private int[] parentIndexCpu;
         private float4[] FCpu;
@@ -63,7 +61,6 @@ namespace GPU.Solver {
                 posCpu[i] = node.pos;
                 velCpu[i] = float2.zero;
                 invMassCpu[i] = node.invMass;
-                flagsCpu[i] = node.isFixed || node.invMass <= 0f ? 1u : 0u;
                 restVolumeCpu[i] = node.restVolume;
                 parentIndexCpu[i] = -1;
                 FCpu[i] = new float4(1f, 0f, 0f, 1f);
@@ -73,7 +70,6 @@ namespace GPU.Solver {
             pos.SetData(posCpu, 0, 0, n);
             vel.SetData(velCpu, 0, 0, n);
             invMass.SetData(invMassCpu, 0, 0, n);
-            flags.SetData(flagsCpu, 0, 0, n);
             restVolume.SetData(restVolumeCpu, 0, 0, n);
             parentIndex.SetData(parentIndexCpu, 0, 0, n);
             F.SetData(FCpu, 0, 0, n);
@@ -103,7 +99,6 @@ namespace GPU.Solver {
             pos = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             vel = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             invMass = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
-            flags = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
             restVolume = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             parentIndex = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             F = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -130,7 +125,6 @@ namespace GPU.Solver {
             posCpu = new float2[capacity];
             velCpu = new float2[capacity];
             invMassCpu = new float[capacity];
-            flagsCpu = new uint[capacity];
             restVolumeCpu = new float[capacity];
             parentIndexCpu = new int[capacity];
             FCpu = new float4[capacity];
@@ -200,7 +194,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Flags", flags);
         }
 
         private void PrepareUpdateDtPosParams(int layer, DT dtLayer, int activeCount,
@@ -218,11 +211,9 @@ namespace GPU.Solver {
         void PrepareApplyForcesParams() {
             asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_Flags", flags);
 
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kExternalForces, "_Flags", flags);
         }
 
         void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex) {
@@ -239,7 +230,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CoarseFixed", coarseFixed);
-            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_Pos", pos);
@@ -255,7 +245,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_RestVolume", restVolume);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_L", L);
@@ -265,7 +254,6 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
-            asyncCb.SetComputeBufferParam(shader, kProlongate, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
 
@@ -273,7 +261,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_L", L);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_KernelH", kernelH);
@@ -303,7 +290,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_RestrictedDeltaVBits", restrictedDeltaVBits);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_RestrictedDeltaVCount", restrictedDeltaVCount);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
 
@@ -322,7 +308,6 @@ namespace GPU.Solver {
             pos?.Dispose(); pos = null;
             vel?.Dispose(); vel = null;
             invMass?.Dispose(); invMass = null;
-            flags?.Dispose(); flags = null;
             restVolume?.Dispose(); restVolume = null;
             parentIndex?.Dispose(); parentIndex = null;
             F?.Dispose(); F = null;

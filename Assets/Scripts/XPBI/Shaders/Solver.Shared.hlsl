@@ -13,7 +13,6 @@
     // Material and state
     RWStructuredBuffer<uint> _CoarseFixed;
     StructuredBuffer<float> _InvMass;
-    StructuredBuffer<uint> _Flags;
     StructuredBuffer<float> _RestVolume;
     RWStructuredBuffer<int> _ParentIndex;
 
@@ -82,7 +81,7 @@
     // ----------------------------------------------------------------------------
     static bool IsFixedVertex(uint gi)
     {
-        return (_Flags[gi] & 1u) != 0u || _InvMass[gi] <= 0.0;
+        return _InvMass[gi] <= 0.0;
     }
 
     static float ReadCurrentVolume(uint gi)

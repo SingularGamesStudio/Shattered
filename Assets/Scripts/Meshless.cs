@@ -40,7 +40,7 @@ public class Meshless : MonoBehaviour {
 
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
-        nodes[nodeIdx].invMass = 0.0f;
+        nodes[nodeIdx].invMass = -1f;
     }
 
     public int Add(float2 pos) {

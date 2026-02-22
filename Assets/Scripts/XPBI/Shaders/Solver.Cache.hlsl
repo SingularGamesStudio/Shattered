@@ -18,11 +18,7 @@
         if (IsFixedVertex(gi))
         return;
 
-        float invM = _InvMass[gi];
-        if (invM <= 0.0)
-        return;
-
-        _Vel[gi] += e.force * (invM * _Dt);
+        _Vel[gi] += e.force  * (_InvMass[gi] * _Dt);
     }
 
     // ----------------------------------------------------------------------------
@@ -379,11 +375,7 @@
         if (IsFixedVertex(gi))
         return;
 
-        float invM = _InvMass[gi];
-        if (invM <= 0.0)
-        return;
-
-        float2 leafDeltaV = e.force * (invM * _Dt);
+        float2 leafDeltaV = e.force * (_InvMass[gi] * _Dt);
 
         int owner = int(gi - _Base);
         [loop] for (uint it = 0; it < 64; it++)
