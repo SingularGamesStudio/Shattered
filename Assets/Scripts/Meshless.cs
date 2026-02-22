@@ -13,17 +13,7 @@ public class Meshless : MonoBehaviour {
     [Header("XPBI compliance")]
     public float compliance = 0f;
     public int[] levelEndIndex;
-    [Header("GPU Delaunay hierarchy")]
-    public ComputeShader delaunayShader;
-    public int dtFixIterationsPerTick = 1;
-    public int dtLegalizeIterationsPerTick = 1;
-    public int dtWarmupFixIterations = 64;
-    public int dtWarmupLegalizeIterations = 128;
     public float dtNormalizePadding = 2f;
-    [Header("DT normalization (runtime)")]
-    public bool dtAutoNormalizeAtRuntime = true;
-    [Range(1.0f, 2.0f)] public float dtAutoNormalizeGrowFactor = 1.15f;
-    [Range(0.0f, 1.0f)] public float dtAutoNormalizeRecenterThreshold = 0.25f;
     public bool dtAutoNormalizeIncludeCamera = true;
     [HideInInspector] public DTHierarchy delaunayHierarchy;
 
@@ -71,9 +61,6 @@ public class Meshless : MonoBehaviour {
             nodes[i].parentIndex = -1;
 
         BuildLevelEndIndex();
-
-        if (!delaunayShader)
-            throw new System.InvalidOperationException("Meshless: delaunayShader is not assigned.");
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
 
@@ -126,7 +113,7 @@ public class Meshless : MonoBehaviour {
     void BuildDelaunayHierarchy() {
         ComputeSuperTriangle(dtBoundsMinWorld, dtBoundsMaxWorld, 2f, out dtSuper0, out dtSuper1, out dtSuper2);
         delaunayHierarchy?.Dispose();
-        delaunayHierarchy = new DTHierarchy(delaunayShader);
+        delaunayHierarchy = new DTHierarchy(SimulationController.Instance.delaunayShader);
         delaunayHierarchy.InitFromMeshlessNodes(
             nodes,
             levelEndIndex,

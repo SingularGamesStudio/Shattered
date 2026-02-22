@@ -1,10 +1,9 @@
 namespace GPU.Solver {
     public sealed partial class XPBISolver {
-        // Kernel IDs – cached after first successful HasAllKernels().
         private int kApplyGameplayForces;
         private int kExternalForces;
-        private int kClearCurrentVolume;
-        private int kCacheVolumesHierarchical;
+        private int kClearHierarchicalStats;
+        private int kCacheHierarchicalStats;
         private int kCacheKernelH;
         private int kComputeCorrectionL;
         private int kCacheF0AndResetLambda;
@@ -16,28 +15,13 @@ namespace GPU.Solver {
         private int kIntegratePositions;
         private int kUpdateDtPositions;
         private int kRebuildParentsAtLevel;
+        private int kClearConvergenceDebugStats;
+        private int kClearRestrictedDeltaV;
+        private int kRestrictGameplayDeltaVFromEvents;
+        private int kApplyRestrictedDeltaVToActiveAndPrefix;
+        private int kRemoveRestrictedDeltaVFromActive;
 
         private bool kernelsCached;
-
-        bool HasAllKernels() {
-            return
-                shader.HasKernel("ClearCurrentVolume") &&
-                shader.HasKernel("CacheVolumesHierarchical") &&
-                shader.HasKernel("CacheKernelH") &&
-                shader.HasKernel("ComputeCorrectionL") &&
-                shader.HasKernel("CacheF0AndResetLambda") &&
-                shader.HasKernel("SaveVelPrefix") &&
-                shader.HasKernel("ClearVelDelta") &&
-                shader.HasKernel("RelaxColored") &&
-                shader.HasKernel("Prolongate") &&
-                shader.HasKernel("CommitDeformation") &&
-                shader.HasKernel("ExternalForces") &&
-
-                shader.HasKernel("ApplyGameplayForces") &&
-                shader.HasKernel("IntegratePositions") &&
-                shader.HasKernel("UpdateDtPositions") &&
-                shader.HasKernel("RebuildParentsAtLevel");
-        }
 
         void EnsureKernelsCached() {
             if (kernelsCached) return;
@@ -45,8 +29,8 @@ namespace GPU.Solver {
             kApplyGameplayForces = shader.FindKernel("ApplyGameplayForces");
             kExternalForces = shader.FindKernel("ExternalForces");
 
-            kClearCurrentVolume = shader.FindKernel("ClearCurrentVolume");
-            kCacheVolumesHierarchical = shader.FindKernel("CacheVolumesHierarchical");
+            kClearHierarchicalStats = shader.FindKernel("ClearHierarchicalStats");
+            kCacheHierarchicalStats = shader.FindKernel("CacheHierarchicalStats");
             kCacheKernelH = shader.FindKernel("CacheKernelH");
             kComputeCorrectionL = shader.FindKernel("ComputeCorrectionL");
             kCacheF0AndResetLambda = shader.FindKernel("CacheF0AndResetLambda");
@@ -59,6 +43,12 @@ namespace GPU.Solver {
             kIntegratePositions = shader.FindKernel("IntegratePositions");
             kUpdateDtPositions = shader.FindKernel("UpdateDtPositions");
             kRebuildParentsAtLevel = shader.FindKernel("RebuildParentsAtLevel");
+            kClearConvergenceDebugStats = shader.FindKernel("ClearConvergenceDebugStats");
+
+            kClearRestrictedDeltaV = shader.FindKernel("ClearRestrictedDeltaV");
+            kRestrictGameplayDeltaVFromEvents = shader.FindKernel("RestrictGameplayDeltaVFromEvents");
+            kApplyRestrictedDeltaVToActiveAndPrefix = shader.FindKernel("ApplyRestrictedDeltaVToActiveAndPrefix");
+            kRemoveRestrictedDeltaVFromActive = shader.FindKernel("RemoveRestrictedDeltaVFromActive");
 
             kernelsCached = true;
         }

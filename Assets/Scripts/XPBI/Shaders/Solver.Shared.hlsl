@@ -11,6 +11,7 @@
     RWStructuredBuffer<float2> _Vel;
 
     // Material and state
+    RWStructuredBuffer<uint> _CoarseFixed;
     StructuredBuffer<float> _InvMass;
     StructuredBuffer<uint> _Flags;
     StructuredBuffer<float> _RestVolume;
@@ -41,9 +42,16 @@
     StructuredBuffer<uint> _ColorStarts;
     uint _ColorIndex;
 
-    uint _DtNeighborCount;
+    // Inherited forces for upper layers
+    RWStructuredBuffer<uint>   _RestrictedDeltaVBits;
+    RWStructuredBuffer<uint>   _RestrictedDeltaVCount;
+    RWStructuredBuffer<float2> _RestrictedDeltaVAvg;
+
+    float _RestrictedDeltaVScale;
+
 
     // Simulation ranges
+    uint _DtNeighborCount;
     uint _Base;
     uint _ActiveCount;
     uint _TotalCount;

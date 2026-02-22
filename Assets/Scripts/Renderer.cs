@@ -4,8 +4,7 @@ using UnityEngine;
 using GPU.Delaunay;
 
 [DefaultExecutionOrder(1000)]
-public sealed class Renderer : MonoBehaviour
-{
+public sealed class Renderer : MonoBehaviour {
     [Header("Shaders")]
     public Shader fillShader;
     public Shader wireShader;
@@ -30,8 +29,7 @@ public sealed class Renderer : MonoBehaviour
     Material wireMaterial;
     MaterialPropertyBlock mpb;
 
-    sealed class MeshlessState
-    {
+    sealed class MeshlessState {
         public ComputeBuffer materialIds;
         public int[] materialIdsCpu;
 
@@ -45,15 +43,12 @@ public sealed class Renderer : MonoBehaviour
 
     readonly Dictionary<Meshless, MeshlessState> states = new Dictionary<Meshless, MeshlessState>(64);
 
-    void Awake()
-    {
+    void Awake() {
         mpb ??= new MaterialPropertyBlock();
     }
 
-    void OnDisable()
-    {
-        foreach (var kv in states)
-        {
+    void OnDisable() {
+        foreach (var kv in states) {
             kv.Value.materialIds?.Dispose();
             kv.Value.restNorm?.Dispose();
         }
@@ -67,8 +62,7 @@ public sealed class Renderer : MonoBehaviour
         mpb = null;
     }
 
-    void LateUpdate()
-    {
+    void LateUpdate() {
         if (!fillShader || !wireShader) return;
 
         mpb ??= new MaterialPropertyBlock();
@@ -80,8 +74,7 @@ public sealed class Renderer : MonoBehaviour
         wireMaterial ??= new Material(wireShader);
 
         var list = Meshless.Active;
-        for (int mi = 0; mi < list.Count; mi++)
-        {
+        for (int mi = 0; mi < list.Count; mi++) {
             var m = list[mi];
             if (m == null || !m.isActiveAndEnabled) continue;
             if (m.nodes == null || m.nodes.Count < 3) continue;
@@ -92,19 +85,17 @@ public sealed class Renderer : MonoBehaviour
             Bounds bounds = preferGpuSnapshotBounds ? ComputeBoundsFromNorm(m) : ComputeBoundsFromNodes(m.nodes);
 
             // Fill: level 0 only.
-            if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0)
-            {
+            if (drawLevel0Fill && m.TryGetLevelDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
                 SetupCommon(m, dt0, lib, m.NodeCount(0));
 
                 mpb.SetFloat("_UvScale", uvScale);
                 Graphics.DrawProcedural(fillMaterial, bounds, MeshTopology.Triangles, dt0.TriCount * 3, 1, null, mpb);
             }
 
-            if (!showWireframe) continue;
+            if (!showWireframe || m.NodeCount(0) > 1000) continue;
 
             // Wireframe: edges only, still per-level to keep coloring and layer control.
-            for (int level = 0; level <= maxLevel; level++)
-            {
+            for (int level = 0; level <= maxLevel; level++) {
                 if (level != 0 && !drawCoarseLevels) continue;
 
                 if (!m.TryGetLevelDt(level, out var dt) || dt == null) continue;
@@ -128,18 +119,15 @@ public sealed class Renderer : MonoBehaviour
         }
     }
 
-    void EnsurePerNodeBuffers(Meshless m)
-    {
-        if (!states.TryGetValue(m, out var st))
-        {
+    void EnsurePerNodeBuffers(Meshless m) {
+        if (!states.TryGetValue(m, out var st)) {
             st = new MeshlessState();
             states[m] = st;
         }
 
         int n = m.nodes.Count;
         bool reallocated = st.capacity != n || st.materialIds == null || st.restNorm == null;
-        if (reallocated)
-        {
+        if (reallocated) {
             st.materialIds?.Dispose();
             st.restNorm?.Dispose();
 
@@ -155,11 +143,9 @@ public sealed class Renderer : MonoBehaviour
         }
 
         bool materialIdsChanged = reallocated;
-        for (int i = 0; i < n; i++)
-        {
+        for (int i = 0; i < n; i++) {
             int id = m.nodes[i].materialId;
-            if (st.materialIdsCpu[i] != id)
-            {
+            if (st.materialIdsCpu[i] != id) {
                 st.materialIdsCpu[i] = id;
                 materialIdsChanged = true;
             }
@@ -169,10 +155,8 @@ public sealed class Renderer : MonoBehaviour
 
         float2 center = m.DtNormCenter;
         float inv = m.DtNormInvHalfExtent;
-        if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv)
-        {
-            for (int i = 0; i < n; i++)
-            {
+        if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv) {
+            for (int i = 0; i < n; i++) {
                 float2 p = m.nodes[i].originalPos;
                 float2 norm = (p - center) * inv;
                 st.restNormCpu[i] = new Vector2(norm.x, norm.y);
@@ -184,8 +168,7 @@ public sealed class Renderer : MonoBehaviour
         }
     }
 
-    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount)
-    {
+    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount) {
         if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
 
         float alpha = 0f;
@@ -215,8 +198,7 @@ public sealed class Renderer : MonoBehaviour
         mpb.SetFloat("_NormInvHalfExtent", m.DtNormInvHalfExtent);
     }
 
-    static Bounds ComputeBoundsFromNorm(Meshless m)
-    {
+    static Bounds ComputeBoundsFromNorm(Meshless m) {
         float inv = m.DtNormInvHalfExtent;
         if (!(inv > 0f) || float.IsNaN(inv) || float.IsInfinity(inv))
             return ComputeBoundsFromNodes(m.nodes);
@@ -229,13 +211,11 @@ public sealed class Renderer : MonoBehaviour
         return new Bounds(center, size);
     }
 
-    static Bounds ComputeBoundsFromNodes(List<Node> nodes)
-    {
+    static Bounds ComputeBoundsFromNodes(List<Node> nodes) {
         float2 min = nodes[0].pos;
         float2 max = nodes[0].pos;
 
-        for (int i = 1; i < nodes.Count; i++)
-        {
+        for (int i = 1; i < nodes.Count; i++) {
             float2 p = nodes[i].pos;
             min = math.min(min, p);
             max = math.max(max, p);

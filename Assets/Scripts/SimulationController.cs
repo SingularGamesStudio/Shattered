@@ -30,6 +30,7 @@ public sealed class SimulationController : MonoBehaviour {
     [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
     public ComputeShader gpuXpbiSolverShader;
     public ComputeShader ColoringShader;
+    public ComputeShader delaunayShader;
 
     [Header("Async GPU (experimental)")]
     [Tooltip("When enabled, submits XPBI ticks as async compute batches, and swaps DT position buffers only after a GPU fence passes.")]
@@ -353,12 +354,8 @@ public sealed class SimulationController : MonoBehaviour {
             dtPerTick,
             ticksToRun,
             useHierarchicalSolver,
-            m.dtFixIterationsPerTick,
-            m.dtLegalizeIterationsPerTick,
-            rebuildParents,
-            asyncUpdateDtPositions,
             asyncQueue,
-            freeSlot                     // new parameter: target write slot
+            freeSlot
         );
 
         // Update state
@@ -419,7 +416,7 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void TryScheduleSnapshotReadback(Meshless m, XPBISolver solver, int count, int tickId) {
-        // (unchanged)
+
         if (solver == null || solver.PositionBuffer == null) return;
         if (count <= 0) return;
 
@@ -439,7 +436,6 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void UpdateTpsDisplay(float frameDt) {
-        // (unchanged)
         float k = 1f - Mathf.Exp(-frameDt * 8f);
 
         float fpsInst = frameDt > 0f ? (1f / frameDt) : 0f;
@@ -453,7 +449,6 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void OnGUI() {
-        // (unchanged)
         if (!showTpsOverlay) return;
 
         bool paused = manual && !Input.GetKey(KeyCode.T) && lastFrameTicks == 0;

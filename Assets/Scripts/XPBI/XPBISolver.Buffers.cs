@@ -24,6 +24,13 @@ namespace GPU.Solver {
         private ComputeBuffer coloringProposed;
         private ComputeBuffer coloringPrio;
         private ComputeBuffer forceEvents;
+        private ComputeBuffer coarseFixed;
+        private ComputeBuffer restrictedDeltaVBits;
+        private ComputeBuffer restrictedDeltaVCount;
+        private ComputeBuffer restrictedDeltaVAvg;
+        private ComputeBuffer convergenceDebug;
+        private ComputeBuffer[] relaxArgsByLevel;
+
 
         // CPU mirror arrays.
         private float2[] posCpu;
@@ -35,11 +42,54 @@ namespace GPU.Solver {
         private float4[] FCpu;
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
+        private uint[] convergenceDebugCpu;
+        private float[] levelCellSizeCpu;
 
         // Capacity and event counts.
         private int capacity;
         private int forceEventsCapacity;
         private int forceEventsCount;
+        private int convergenceDebugRequiredUInts;
+        private int convergenceDebugMaxIter;
+        private int convergenceDebugLevels;
+
+        private void InitializeFromMeshless(Meshless m) {
+            meshless = m;
+            int n = m.nodes.Count;
+            EnsureCapacity(n);
+
+            for (int i = 0; i < n; i++) {
+                var node = m.nodes[i];
+                posCpu[i] = node.pos;
+                velCpu[i] = node.vel;
+                invMassCpu[i] = node.invMass;
+                flagsCpu[i] = node.isFixed || node.invMass <= 0f ? 1u : 0u;
+                restVolumeCpu[i] = node.restVolume;
+                parentIndexCpu[i] = -1;
+                FCpu[i] = new float4(node.F.c0, node.F.c1);
+                FpCpu[i] = new float4(node.Fp.c0, node.Fp.c1);
+            }
+
+            pos.SetData(posCpu, 0, 0, n);
+            vel.SetData(velCpu, 0, 0, n);
+            invMass.SetData(invMassCpu, 0, 0, n);
+            flags.SetData(flagsCpu, 0, 0, n);
+            restVolume.SetData(restVolumeCpu, 0, 0, n);
+            parentIndex.SetData(parentIndexCpu, 0, 0, n);
+            F.SetData(FCpu, 0, 0, n);
+            Fp.SetData(FpCpu, 0, 0, n);
+
+            if (coloringPerLevel == null || coloringPerLevel.Length <= m.maxLayer) {
+                int newSize = m.maxLayer + 1;
+                Array.Resize(ref coloringPerLevel, newSize);
+                Array.Resize(ref relaxArgsByLevel, newSize);
+                Array.Resize(ref levelCellSizeCpu, newSize);
+                for (int i = 0; i <= m.maxLayer; i++)
+                    levelCellSizeCpu[i] = m.layerRadii[i];
+            }
+
+            initializedCount = n;
+        }
 
         public void EnsureCapacity(int n) {
             if (n <= capacity) return;
@@ -72,6 +122,11 @@ namespace GPU.Solver {
             coloringProposed = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             coloringPrio = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
 
+            coarseFixed = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
+            restrictedDeltaVBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
+            restrictedDeltaVCount = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
+            restrictedDeltaVAvg = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
+
             posCpu = new float2[capacity];
             velCpu = new float2[capacity];
             invMassCpu = new float[capacity];
@@ -83,10 +138,31 @@ namespace GPU.Solver {
 
             EnsureForceEventCapacity(64);
 
-            initialized = false;
             initializedCount = -1;
-            parentsBuilt = false;
         }
+
+        private void EnsureConvergenceDebugCapacity(int levels, int maxIter) {
+            int requiredUInts = levels * maxIter * ConvergenceDebugIterBufSize;
+
+            if (convergenceDebug != null &&
+                convergenceDebug.IsValid() &&
+                convergenceDebug.count == requiredUInts &&
+                convergenceDebugMaxIter == maxIter &&
+                convergenceDebugLevels == levels &&
+                convergenceDebugCpu != null &&
+                convergenceDebugCpu.Length == requiredUInts)
+                return;
+
+            convergenceDebug?.Dispose();
+
+            convergenceDebug = new ComputeBuffer(requiredUInts, sizeof(uint), ComputeBufferType.Structured);
+            convergenceDebugCpu = new uint[requiredUInts];
+            convergenceDebugRequiredUInts = requiredUInts;
+            convergenceDebugMaxIter = maxIter;
+            convergenceDebugLevels = levels;
+            return;
+        }
+
         void EnsureForceEventCapacity(int n) {
             if (n <= forceEventsCapacity) return;
 
@@ -120,17 +196,50 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLevel, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
         }
 
+        void PrepareIntegratePosParams() {
+            asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Flags", flags);
+        }
+
+        private void PrepareUpdateDtPosParams(int level, DT dtLevel, int activeCount,
+            Meshless m, int pingWrite) {
+            asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions",
+                dtLevel.GetPositionsBuffer(pingWrite));
+            asyncCb.SetComputeVectorParam(shader, "_DtNormCenter",
+                new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
+            asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
+        }
+
+        void PrepareApplyForcesParams() {
+            asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_Flags", flags);
+
+            asyncCb.SetComputeBufferParam(shader, kExternalForces, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kExternalForces, "_Flags", flags);
+        }
+
         void PrepareRelaxBuffers(DT dtLevel, int activeCount, int fineCount, int tickIndex) {
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLevel.NeighborCount);
 
-            // Common buffers that are used by multiple kernels
-            asyncCb.SetComputeBufferParam(shader, kClearCurrentVolume, "_CurrentVolumeBits", currentVolumeBits);
-            asyncCb.SetComputeBufferParam(shader, kCacheVolumesHierarchical, "_RestVolume", restVolume);
-            asyncCb.SetComputeBufferParam(shader, kCacheVolumesHierarchical, "_F", F);
-            asyncCb.SetComputeBufferParam(shader, kCacheVolumesHierarchical, "_ParentIndex", parentIndex);
-            asyncCb.SetComputeBufferParam(shader, kCacheVolumesHierarchical, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Flags", flags);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_Pos", pos);
@@ -167,7 +276,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
-            // DT neighbor buffers
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLevel.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
 
@@ -179,6 +287,30 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLevel.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLevel.NeighborCountsBuffer);
+
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CoarseFixed", coarseFixed);
+
+            asyncCb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVBits", restrictedDeltaVBits);
+            asyncCb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVCount", restrictedDeltaVCount);
+            asyncCb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVAvg", restrictedDeltaVAvg);
+
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_RestrictedDeltaVBits", restrictedDeltaVBits);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_RestrictedDeltaVCount", restrictedDeltaVCount);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_Flags", flags);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
+
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVBits", restrictedDeltaVBits);
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVCount", restrictedDeltaVCount);
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVAvg", restrictedDeltaVAvg);
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_SavedVelPrefix", savedVelPrefix);
+
+            asyncCb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_RestrictedDeltaVAvg", restrictedDeltaVAvg);
+            asyncCb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_Vel", vel);
         }
 
         void ReleaseBuffers() {
@@ -205,9 +337,14 @@ namespace GPU.Solver {
             coloringPrio?.Dispose(); coloringPrio = null;
 
             forceEvents?.Dispose(); forceEvents = null;
-            initialized = false;
+
+            coarseFixed?.Dispose(); coarseFixed = null;
+            restrictedDeltaVBits?.Dispose(); restrictedDeltaVBits = null;
+            restrictedDeltaVCount?.Dispose(); restrictedDeltaVCount = null;
+            restrictedDeltaVAvg?.Dispose(); restrictedDeltaVAvg = null;
+            convergenceDebug?.Dispose(); convergenceDebug = null;
+
             initializedCount = -1;
-            parentsBuilt = false;
         }
     }
 }

@@ -1,6 +1,18 @@
 #ifndef XPBI_SOLVER_RELAX_KERNELS_INCLUDED
     #define XPBI_SOLVER_RELAX_KERNELS_INCLUDED
 
+    static bool IsLevelFixed(uint gi)
+    {
+        if (IsFixedVertex(gi))
+        return true;
+
+        // Only meaningful for active vertices in this level.
+        if (gi >= _Base && gi < _Base + _ActiveCount)
+        return _CoarseFixed[gi] != 0u;
+
+        return false;
+    }
+
     // ----------------------------------------------------------------------------
     // Helper: estimate velocity gradient using SPH
     // ----------------------------------------------------------------------------
@@ -14,7 +26,7 @@
         GetNeighbors(gi, nCount, n0, n1, n2, n3, n4, n5);
         if (nCount == 0)
         return gradV;
-        
+
         uint ns[targetNeighborCount] = {n0, n1, n2, n3, n4, n5};
 
         [unroll] for (uint k = 0; k < nCount; k++)
@@ -52,11 +64,14 @@
         if (childGi >= _Base + _FineCount)
         return;
 
+        if (IsFixedVertex(childGi))
+        return;
+
         int p = _ParentIndex[childGi]; // may be -1
         if (p < int(_Base) || p >= int(_Base + _ActiveCount))
         return;
 
-        uint parent = uint(p); // safe now
+        uint parent = uint(p);
         float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
         _Vel[childGi] += parentDeltaV;
     }
@@ -72,7 +87,7 @@
 
         uint gi = _Base + li;
 
-        if (IsFixedVertex(gi))
+        if (IsLevelFixed(gi))
         return;
 
         float h = _KernelH[gi];
@@ -111,6 +126,50 @@
         _F[gi] = Float4FromMat2(Fel);
     }
 
+    StructuredBuffer<uint> _ConvergenceDebugSrc;
+    RWStructuredBuffer<uint> _ConvergenceDebugDst;
+    uint _ConvergenceDebugCopyCount;
+
+    [numthreads(256, 1, 1)]
+    void CopyConvergenceDebug(uint3 id : SV_DispatchThreadID)
+    {
+        uint i = id.x;
+        if (i >= _ConvergenceDebugCopyCount)
+        return;
+
+        _ConvergenceDebugDst[i] = _ConvergenceDebugSrc[i];
+    }
+
+    // ----------------------------------------------------------------------------
+    // Convergence debug (optional)
+    // Layout per-iteration: [sumAbsC, maxAbsC, sumAbsDLambda, maxAbsDLambda, count, 0, 0, 0]
+    // ----------------------------------------------------------------------------
+    #define CONV_DEBUG_UINTS_PER_ITER 8u
+
+    RWStructuredBuffer<uint> _ConvergenceDebug;
+    int   _ConvergenceDebugEnable;
+    uint  _ConvergenceDebugOffset;       // in "iterations" (not uint elements); baseIter = offset + iter
+    uint  _ConvergenceDebugIter;
+    uint  _ConvergenceDebugIterCount;
+    float _ConvergenceDebugScaleC;
+    float _ConvergenceDebugScaleDLambda;
+
+    [numthreads(256, 1, 1)] void ClearConvergenceDebugStats(uint3 id : SV_DispatchThreadID)
+    {
+        if (_ConvergenceDebugEnable == 0)
+        return;
+
+        uint iter = id.x;
+        if (iter >= _ConvergenceDebugIterCount)
+        return;
+
+        uint baseIter = _ConvergenceDebugOffset + iter;
+        uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
+
+        [unroll] for (uint k = 0; k < CONV_DEBUG_UINTS_PER_ITER; k++)
+        _ConvergenceDebug[baseU + k] = 0u;
+    }
+
     // ----------------------------------------------------------------------------
     // RelaxColored: XPBI iteration for a single colour
     // ----------------------------------------------------------------------------
@@ -118,6 +177,13 @@
     {
         uint idx = id.x;
         uint count = _ColorCounts[_ColorIndex];
+
+        if (_ConvergenceDebugEnable != 0 && idx == 0)
+        {
+            uint baseIter = _ConvergenceDebugOffset + _ConvergenceDebugIter;
+            uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
+            InterlockedAdd(_ConvergenceDebug[baseU + 7], 1u);
+        }
         if (idx >= count)
         return;
 
@@ -128,7 +194,7 @@
 
         uint gi = _Base + li;
 
-        if (IsFixedVertex(gi))
+        if (IsLevelFixed(gi))
         return;
         if (_RestVolume[gi] <= EPS)
         return;
@@ -157,6 +223,19 @@
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
         float C = XPBI_ConstraintC(Fel, MU, LAMBDA, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+
+        if (_ConvergenceDebugEnable != 0)
+        {
+            uint baseIter = _ConvergenceDebugOffset + _ConvergenceDebugIter;
+            uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
+
+            uint uAbsC = (uint)min(abs(C) * _ConvergenceDebugScaleC, 4294967295.0);
+
+            InterlockedAdd(_ConvergenceDebug[baseU + 0], uAbsC);
+            InterlockedMax(_ConvergenceDebug[baseU + 1], uAbsC);
+            InterlockedAdd(_ConvergenceDebug[baseU + 4], 1u);
+        }
+
         if (abs(C) < EPS)
         return;
 
@@ -200,7 +279,7 @@
             uint gj = ns[k1];
             if (gj < _Base || gj >= _Base + _ActiveCount)
             continue;
-            if (IsFixedVertex(gj))
+            if (IsLevelFixed(gj))
             continue;
             denom += _InvMass[gj] * dot(gradC_vj[k1], gradC_vj[k1]);
         }
@@ -212,6 +291,17 @@
         if (isnan(dLambda) || isinf(dLambda))
         return;
 
+        if (_ConvergenceDebugEnable != 0)
+        {
+            uint baseIter = _ConvergenceDebugOffset + _ConvergenceDebugIter;
+            uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
+
+            uint uAbsDL = (uint)min(abs(dLambda) * _ConvergenceDebugScaleDLambda, 4294967295.0);
+
+            InterlockedAdd(_ConvergenceDebug[baseU + 2], uAbsDL);
+            InterlockedMax(_ConvergenceDebug[baseU + 3], uAbsDL);
+        }
+
         float velScale = dLambda * invDt;
 
         _Vel[gi] += _InvMass[gi] * velScale * gradC_vi;
@@ -221,7 +311,7 @@
             uint gj = ns[k2];
             if (gj < _Base || gj >= _Base + _ActiveCount)
             continue;
-            if (IsFixedVertex(gj))
+            if (IsLevelFixed(gj))
             continue;
             _Vel[gj] += _InvMass[gj] * velScale * gradC_vj[k2];
         }

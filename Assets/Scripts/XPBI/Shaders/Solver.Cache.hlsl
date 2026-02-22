@@ -129,20 +129,21 @@
     }
 
     // ----------------------------------------------------------------------------
-    // ClearCurrentVolume: zero out volume accumulation buffer
+    // ClearHierarchicalStats: zero out volume accumulation buffer
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void ClearCurrentVolume(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)] void ClearHierarchicalStats(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
         if (li >= _ActiveCount)
         return;
         _CurrentVolumeBits[_Base + li] = 0u;
+        _CoarseFixed[_Base + li] = 0u;
     }
 
     // ----------------------------------------------------------------------------
-    // CacheVolumesHierarchical: accumulate leaf volumes to their active ancestor
+    // CacheHierarchicalStats: accumulate leaf volumes, fixedness to their active ancestor
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void CacheVolumesHierarchical(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)] void CacheHierarchicalStats(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
         if (li >= _TotalCount)
@@ -151,14 +152,10 @@
         uint gi = _Base + li;
 
         float restV = _RestVolume[gi];
-        if (restV <= EPS)
-        return;
 
         Mat2 F = Mat2FromFloat4(_F[gi]);
         float detF = DetMat2(F);
         float leafVol = restV * abs(detF);
-        if (leafVol <= EPS)
-        return;
 
         int owner = int(li);
         [loop] for (uint it = 0; it < 64; it++)
@@ -175,6 +172,13 @@
         }
 
         if (owner < 0 || owner >= int(_ActiveCount))
+        return;
+
+        if (IsFixedVertex(gi))
+        {
+            InterlockedOr(_CoarseFixed[_Base + uint(owner)], 1u);
+        }
+        if (leafVol <= EPS)
         return;
 
         AtomicAddFloatBits(_CurrentVolumeBits, _Base + uint(owner), leafVol);
@@ -225,7 +229,7 @@
             _KernelH[gi] = 0.0;
             return;
         }
-        
+
         [unroll] for (uint a = 1; a < n; a++)
         {
             float key = d[a];
@@ -341,6 +345,117 @@
         uint gi = _Base + li;
         _VelDeltaBits[gi * 2u + 0u] = 0u;
         _VelDeltaBits[gi * 2u + 1u] = 0u;
+    }
+
+    // ----------------------------------------------------------------------------
+    // Clear restricted dV
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void ClearRestrictedDeltaV(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint gi = _Base + li;
+        _RestrictedDeltaVBits[gi * 2u + 0u] = 0u;
+        _RestrictedDeltaVBits[gi * 2u + 1u] = 0u;
+        _RestrictedDeltaVCount[gi] = 0u;
+        _RestrictedDeltaVAvg[gi] = 0.0f;
+    }
+    // ----------------------------------------------------------------------------
+    // Restrict from force events directly: event -> leaf deltaV -> active owner accumulation.
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void RestrictGameplayDeltaVFromEvents(uint3 id : SV_DispatchThreadID)
+    {
+        uint ei = id.x;
+        if (ei >= _ForceEventCount)
+        return;
+
+        XPBI_ForceEvent e = _ForceEvents[ei];
+        uint gi = e.node;
+
+        if (gi < _Base || gi >= _Base + _FineCount)
+        return;
+        if (IsFixedVertex(gi))
+        return;
+
+        float invM = _InvMass[gi];
+        if (invM <= 0.0)
+        return;
+
+        float2 leafDeltaV = e.force * (invM * _Dt);
+
+        int owner = int(gi - _Base);
+        [loop] for (uint it = 0; it < 64; it++)
+        {
+            if (owner < 0)
+            return;
+            if (owner < int(_ActiveCount))
+            break;
+
+            int p = _ParentIndex[_Base + uint(owner)];
+            if (p < 0)
+            return;
+            owner = p - int(_Base);
+        }
+
+        if (owner < 0 || owner >= int(_ActiveCount))
+        return;
+
+        uint ownerGi = _Base + uint(owner);
+
+        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, leafDeltaV.x);
+        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, leafDeltaV.y);
+        InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+    }
+
+    // ----------------------------------------------------------------------------
+    // Add the normalized hint to both Vel and SavedVelPrefix.
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void ApplyRestrictedDeltaVToActiveAndPrefix(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint gi = _Base + li;
+
+        if (_CoarseFixed[gi] != 0u)
+        {
+            _RestrictedDeltaVAvg[gi] = 0.0f;
+            return;
+        }
+
+        uint cnt = _RestrictedDeltaVCount[gi];
+        if (cnt == 0u)
+        {
+            _RestrictedDeltaVAvg[gi] = 0.0f;
+            return;
+        }
+
+        float2 sum;
+        sum.x = asfloat(_RestrictedDeltaVBits[gi * 2u + 0u]);
+        sum.y = asfloat(_RestrictedDeltaVBits[gi * 2u + 1u]);
+
+        float invCnt = 1.0 / max((float)cnt, 1.0);
+        float2 dv = sum * (invCnt * _RestrictedDeltaVScale);
+
+        _RestrictedDeltaVAvg[gi] = dv;
+        _Vel[gi] += dv;
+        _SavedVelPrefix[gi] += dv;
+    }
+
+    // ----------------------------------------------------------------------------
+    // remove the hint again after prolongation so it doesn't persist into the physical state.
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void RemoveRestrictedDeltaVFromActive(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint gi = _Base + li;
+        _Vel[gi] -= _RestrictedDeltaVAvg[gi];
     }
 
 #endif // XPBI_SOLVER_CACHE_KERNELS_INCLUDED
