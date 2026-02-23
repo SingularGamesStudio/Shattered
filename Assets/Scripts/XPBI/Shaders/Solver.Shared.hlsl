@@ -12,6 +12,9 @@
 
     // Material and state
     RWStructuredBuffer<uint> _CoarseFixed;
+    StructuredBuffer<int> _MaterialIds;
+    StructuredBuffer<float4> _PhysicalParams; // young, poisson, yieldHencky, volumetricHenckyLimit
+    int _PhysicalParamCount;
     StructuredBuffer<float> _InvMass;
     StructuredBuffer<float> _RestVolume;
     RWStructuredBuffer<int> _ParentIndex;
@@ -74,12 +77,10 @@
     static const float EIGEN_OFFDIAG_EPS = 1e-5;
     static const float INV_DET_EPS = 1e-8;
 
-    static const float YOUNGS = 5e4;
-    static const float POISSON = 0.3;
-    static const float MU = (YOUNGS / (2.0 * (1.0 + POISSON)));
-    static const float LAMBDA = ((YOUNGS * POISSON) / ((1.0 + POISSON) * (1.0 - 2.0 * POISSON)));
-    static const float YIELD_HENCKY = 0.05;
-    static const float VOL_HENCKY_LIMIT = 0.3;
+    static const float DEFAULT_YOUNGS = 5e4;
+    static const float DEFAULT_POISSON = 0.3;
+    static const float DEFAULT_YIELD_HENCKY = 0.05;
+    static const float DEFAULT_VOL_HENCKY_LIMIT = 0.3;
 
     // ----------------------------------------------------------------------------
     // Utility functions
@@ -130,6 +131,40 @@
 
     static uint LocalIndexFromGlobal(uint gi) { return gi - _Base; }
     static uint GlobalIndexFromLocal(uint li) { return _Base + li; }
+
+    static float4 ReadMaterialPhysical(uint gi)
+    {
+        if (_PhysicalParamCount <= 0)
+        return float4(DEFAULT_YOUNGS, DEFAULT_POISSON, DEFAULT_YIELD_HENCKY, DEFAULT_VOL_HENCKY_LIMIT);
+
+        int materialId = _MaterialIds[gi];
+        if (materialId < 0 || materialId >= _PhysicalParamCount)
+        return float4(DEFAULT_YOUNGS, DEFAULT_POISSON, DEFAULT_YIELD_HENCKY, DEFAULT_VOL_HENCKY_LIMIT);
+
+        return _PhysicalParams[materialId];
+    }
+
+    static void ComputeMaterialLame(uint gi, out float mu, out float lambda)
+    {
+        float4 mp = ReadMaterialPhysical(gi);
+        float young = mp.x > EPS ? mp.x : DEFAULT_YOUNGS;
+        float poisson = (mp.y > -0.5 && mp.y < 0.5) ? mp.y : DEFAULT_POISSON;
+        poisson = clamp(poisson, -0.499, 0.499);
+        mu = young / (2.0 * (1.0 + poisson));
+        lambda = (young * poisson) / ((1.0 + poisson) * max(1.0 - 2.0 * poisson, EPS));
+    }
+
+    static float ReadMaterialYieldHencky(uint gi)
+    {
+        float yieldHencky = ReadMaterialPhysical(gi).z;
+        return yieldHencky > EPS ? yieldHencky : DEFAULT_YIELD_HENCKY;
+    }
+
+    static float ReadMaterialVolHenckyLimit(uint gi)
+    {
+        float volHenckyLimit = ReadMaterialPhysical(gi).w;
+        return volHenckyLimit > EPS ? volHenckyLimit : DEFAULT_VOL_HENCKY_LIMIT;
+    }
 
     // ----------------------------------------------------------------------------
     // Neighbour access – returns up to targetNeighborCount (16) neighbours (global indices) and count.

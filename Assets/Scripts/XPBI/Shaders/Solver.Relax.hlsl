@@ -90,9 +90,12 @@
             float rpLen = length(rp);
             if (rpLen > EPS)
             {
+                float parentMu, parentLambda;
+                ComputeMaterialLame(parent, parentMu, parentLambda);
+
                 float2 radial = rp / rpLen;
                 float radialDV = dot(parentDeltaV, radial);
-                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (MU + LAMBDA) / EffectiveVolumeForCompliance(parent)));
+                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (parentMu + parentLambda) / EffectiveVolumeForCompliance(parent)));
                 parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
 
                 if (_UseAffineProlongation != 0u)
@@ -188,7 +191,9 @@
 
         Mat2 dF = Mat2FromCols(I.c0 + gradV.c0 * _Dt, I.c1 + gradV.c1 * _Dt);
         Mat2 Ftrial = MulMat2(dF, F0);
-        Mat2 Fel = ApplyPlasticityReturn(Ftrial, YIELD_HENCKY, VOL_HENCKY_LIMIT,
+        float yieldHencky = ReadMaterialYieldHencky(gi);
+        float volHenckyLimit = ReadMaterialVolHenckyLimit(gi);
+        Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
         Mat2 FpOld = Mat2FromFloat4(_Fp[gi]);
@@ -305,10 +310,15 @@
 
         Mat2 dF = Mat2FromCols(I.c0 + gradV.c0 * _Dt, I.c1 + gradV.c1 * _Dt);
         Mat2 Ftrial = MulMat2(dF, F0);
-        Mat2 Fel = ApplyPlasticityReturn(Ftrial, YIELD_HENCKY, VOL_HENCKY_LIMIT,
+        float yieldHencky = ReadMaterialYieldHencky(gi);
+        float volHenckyLimit = ReadMaterialVolHenckyLimit(gi);
+        Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
-        float C = XPBI_ConstraintC(Fel, MU, LAMBDA, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+        float mu, lambda;
+        ComputeMaterialLame(gi, mu, lambda);
+
+        float C = XPBI_ConstraintC(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
         if (_ConvergenceDebugEnable != 0)
         {
@@ -325,7 +335,7 @@
         if (abs(C) < EPS)
         return;
 
-        Mat2 dCdF = XPBI_ComputeGradient(Fel, MU, LAMBDA, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+        Mat2 dCdF = XPBI_ComputeGradient(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
         Mat2 FT = TransposeMat2(Fel);
 
         float invDt = 1.0 / max(_Dt, EPS);
@@ -416,7 +426,7 @@
             {
                 float2 radial = r / rLen;
                 float vr = dot(_Vel[gi], radial);
-                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (MU + LAMBDA) / EffectiveVolumeForCompliance(gi)));
+                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (mu + lambda) / EffectiveVolumeForCompliance(gi)));
                 _Vel[gi] -= radial * vr * (1.0 - radialKeep);
             }
         }

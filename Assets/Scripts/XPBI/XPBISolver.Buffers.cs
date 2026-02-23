@@ -7,6 +7,7 @@ namespace GPU.Solver {
     public sealed partial class XPBISolver {
         private ComputeBuffer pos;
         private ComputeBuffer vel;
+        private ComputeBuffer materialIds;
         private ComputeBuffer invMass;
         private ComputeBuffer restVolume;
         private ComputeBuffer parentIndex;
@@ -37,6 +38,7 @@ namespace GPU.Solver {
         // CPU mirror arrays.
         private float2[] posCpu;
         private float2[] velCpu;
+        private int[] materialIdsCpu;
         private float[] invMassCpu;
         private float[] restVolumeCpu;
         private int[] parentIndexCpu;
@@ -63,6 +65,7 @@ namespace GPU.Solver {
                 var node = m.nodes[i];
                 posCpu[i] = node.pos;
                 velCpu[i] = float2.zero;
+                materialIdsCpu[i] = node.materialId;
                 invMassCpu[i] = node.invMass;
                 restVolumeCpu[i] = node.restVolume;
                 parentIndexCpu[i] = -1;
@@ -72,6 +75,7 @@ namespace GPU.Solver {
 
             pos.SetData(posCpu, 0, 0, n);
             vel.SetData(velCpu, 0, 0, n);
+            materialIds.SetData(materialIdsCpu, 0, 0, n);
             invMass.SetData(invMassCpu, 0, 0, n);
             restVolume.SetData(restVolumeCpu, 0, 0, n);
             parentIndex.SetData(parentIndexCpu, 0, 0, n);
@@ -101,6 +105,7 @@ namespace GPU.Solver {
 
             pos = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             vel = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            materialIds = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             invMass = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             restVolume = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             parentIndex = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
@@ -130,6 +135,7 @@ namespace GPU.Solver {
 
             posCpu = new float2[capacity];
             velCpu = new float2[capacity];
+            materialIdsCpu = new int[capacity];
             invMassCpu = new float[capacity];
             restVolumeCpu = new float[capacity];
             parentIndexCpu = new int[capacity];
@@ -250,9 +256,14 @@ namespace GPU.Solver {
         }
 
         void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex) {
+            var matLib = MaterialLibrary.Instance;
+            var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
+            int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
+
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
+            asyncCb.SetComputeIntParam(shader, "_PhysicalParamCount", physicalParamCount);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
@@ -286,6 +297,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kClearVelDelta, "_VelDeltaBits", velDeltaBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_MaterialIds", materialIds);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_RestVolume", restVolume);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_F0", F0);
@@ -300,6 +312,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_MaterialIds", materialIds);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_RestVolume", restVolume);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildCount", fixedChildCount);
@@ -309,6 +322,7 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_MaterialIds", materialIds);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_L", L);
@@ -362,11 +376,18 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+
+            if (physicalParams != null) {
+                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_PhysicalParams", physicalParams);
+                asyncCb.SetComputeBufferParam(shader, kProlongate, "_PhysicalParams", physicalParams);
+                asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_PhysicalParams", physicalParams);
+            }
         }
 
         void ReleaseBuffers() {
             pos?.Dispose(); pos = null;
             vel?.Dispose(); vel = null;
+            materialIds?.Dispose(); materialIds = null;
             invMass?.Dispose(); invMass = null;
             restVolume?.Dispose(); restVolume = null;
             parentIndex?.Dispose(); parentIndex = null;

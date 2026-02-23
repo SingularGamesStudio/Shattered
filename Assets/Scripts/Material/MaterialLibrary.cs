@@ -21,8 +21,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
     public int MaterialCount => materials != null ? materials.Length : 0;
 
     struct MaterialGpu {
-        public Vector4 p0; // density, young, poisson, friction
-        public Vector4 p1; // restitution, damping, unused, unused
+        public Vector4 p0; // young, poisson, yieldHencky, volumetricHenckyLimit
     }
 
     void Awake() {
@@ -120,8 +119,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
             if (def != null) {
                 gpu[i] = new MaterialGpu {
-                    p0 = new Vector4(def.physical.density, def.physical.youngModulus, def.physical.poissonRatio, def.physical.friction),
-                    p1 = new Vector4(def.physical.restitution, def.physical.damping, 0f, 0f),
+                    p0 = new Vector4(def.physical.youngModulus, def.physical.poissonRatio, def.physical.yieldHencky, def.physical.volumetricHenckyLimit),
                 };
             }
 
@@ -177,7 +175,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
         albedoArray.Apply(false, true);
 
-        physicalParams = new ComputeBuffer(materials.Length, sizeof(float) * 8, ComputeBufferType.Structured);
+        physicalParams = new ComputeBuffer(materials.Length, sizeof(float) * 4, ComputeBufferType.Structured);
         physicalParams.SetData(gpu);
     }
 }
