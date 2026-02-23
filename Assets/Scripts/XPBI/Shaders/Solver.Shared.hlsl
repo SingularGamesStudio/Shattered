@@ -23,6 +23,8 @@
     // SPH and plasticity
     RWStructuredBuffer<uint> _CurrentVolumeBits;
     RWStructuredBuffer<uint> _CurrentTotalMassBits;
+    RWStructuredBuffer<uint> _FixedChildPosBits;
+    RWStructuredBuffer<uint> _FixedChildCount;
     RWStructuredBuffer<float> _KernelH;
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
@@ -48,6 +50,9 @@
     RWStructuredBuffer<float2> _RestrictedDeltaVAvg;
 
     float _RestrictedDeltaVScale;
+    float _ProlongationScale;
+    float _PostProlongSmoothing;
+    uint _UseAffineProlongation; 
 
     // Simulation ranges
     uint _DtNeighborCount;
@@ -92,6 +97,27 @@
     static float ReadCurrentTotalMass(uint gi)
     {
         return asfloat(_CurrentTotalMassBits[gi]);
+    }
+
+    static uint ReadFixedChildCount(uint gi)
+    {
+        return _FixedChildCount[gi];
+    }
+
+    static float2 ReadFixedChildPosSum(uint gi)
+    {
+        float2 s;
+        s.x = asfloat(_FixedChildPosBits[gi * 2u + 0u]);
+        s.y = asfloat(_FixedChildPosBits[gi * 2u + 1u]);
+        return s;
+    }
+
+    static float2 ReadFixedChildAnchor(uint gi)
+    {
+        uint cnt = ReadFixedChildCount(gi);
+        if (cnt == 0u)
+        return 0.0;
+        return ReadFixedChildPosSum(gi) / max((float)cnt, 1.0);
     }
 
     static float ReadEffectiveInvMass(uint gi)

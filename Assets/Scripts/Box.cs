@@ -10,6 +10,9 @@ public class Box : Meshless {
     public int pointCount;
     public bool generateOnStart = false;
 
+    [Header("Seed")]
+    public uint seed = 1;
+
     [Header("Hierarchy")]
     [Range(0.01f, 0.99f)] public float layerRatio = 0.10f;
     [Min(0.01f)] public float radiusScale = 0.85f;
@@ -75,9 +78,10 @@ public class Box : Meshless {
             layerRadii[l] = math.max(layerRadii[l], layerRadii[l - 1] * 1.01f);
 
         // Generate shared nodes (excluding fixed points) from coarse -> fine.
-        uint seed = (uint)Guid.NewGuid().GetHashCode();
-        if (seed == 0) seed = 1;
-        var rnd = new Unity.Mathematics.Random(seed);
+        // Use the fixed seed instead of a random GUID.
+        uint rndSeed = seed;
+        if (rndSeed == 0) rndSeed = 1;   // Random constructor requires non-zero seed
+        var rnd = new Unity.Mathematics.Random(rndSeed);
 
         var pts = new List<float2>(perLayerRandom[0]);
         var ptsMaxLayer = new List<short>(perLayerRandom[0]);

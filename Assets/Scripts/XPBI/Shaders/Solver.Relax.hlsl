@@ -13,6 +13,14 @@
         return false;
     }
 
+    static float EffectiveVolumeForCompliance(uint gi)
+    {
+        float currentVol = ReadCurrentVolume(gi);
+        if (currentVol > EPS)
+        return currentVol;
+        return max(_RestVolume[gi], EPS);
+    }
+
     // ----------------------------------------------------------------------------
     // Helper: estimate velocity gradient using SPH
     // ----------------------------------------------------------------------------
@@ -73,7 +81,77 @@
 
         uint parent = uint(p);
         float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
-        _Vel[childGi] += parentDeltaV;
+
+        uint parentFixedCount = ReadFixedChildCount(parent);
+        if (parentFixedCount == 1u)
+        {
+            float2 anchor = ReadFixedChildAnchor(parent);
+            float2 rp = _Pos[parent] - anchor;
+            float rpLen = length(rp);
+            if (rpLen > EPS)
+            {
+                float2 radial = rp / rpLen;
+                float radialDV = dot(parentDeltaV, radial);
+                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (MU + LAMBDA) / EffectiveVolumeForCompliance(parent)));
+                parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
+
+                if (_UseAffineProlongation != 0u)
+                {
+                    float2 rc = _Pos[childGi] - anchor;
+                    float invRpSq = 1.0 / max(dot(rp, rp), EPS);
+                    float omega = (rp.x * parentDeltaV.y - rp.y * parentDeltaV.x) * invRpSq;
+
+                    float2 rotParent = omega * float2(-rp.y, rp.x);
+                    float2 transl = parentDeltaV - rotParent;
+                    float2 rotChild = omega * float2(-rc.y, rc.x);
+
+                    parentDeltaV = transl + rotChild;
+                }
+            }
+        }
+
+        _Vel[childGi] += parentDeltaV * _ProlongationScale;
+    }
+
+    [numthreads(256, 1, 1)]
+    void SmoothProlongatedFineVel(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = _ActiveCount + id.x;
+        if (li >= _FineCount)
+        return;
+
+        uint gi = _Base + li;
+        if (IsFixedVertex(gi))
+        return;
+
+        float w = saturate(_PostProlongSmoothing);
+        if (w <= 0.0)
+        return;
+
+        uint nCount;
+        uint ns[targetNeighborCount];
+        GetNeighbors(gi, nCount, ns);
+        if (nCount == 0)
+        return;
+
+        float2 sum = 0.0;
+        float total = 0.0;
+
+        [unroll] for (uint k = 0; k < nCount; k++)
+        {
+            uint gj = ns[k];
+            if (gj < _Base || gj >= _Base + _FineCount)
+            continue;
+
+            sum += _Vel[gj];
+            total += 1.0;
+        }
+
+        if (total <= 0.0)
+        return;
+
+        float2 avg = sum / total;
+        _Vel[gi] = lerp(_Vel[gi], avg, w);
     }
 
     // ----------------------------------------------------------------------------
@@ -87,6 +165,10 @@
         return;
 
         uint gi = _Base + li;
+
+        uint fixedChildCount = ReadFixedChildCount(gi);
+        bool singleFixedAnchor = (fixedChildCount == 1u);
+        float2 fixedAnchor = singleFixedAnchor ? ReadFixedChildAnchor(gi) : 0.0;
 
         if (IsLayerFixed(gi))
         return;
@@ -247,7 +329,7 @@
         Mat2 FT = TransposeMat2(Fel);
 
         float invDt = 1.0 / max(_Dt, EPS);
-        float alphaTilde = (_Compliance / max(_RestVolume[gi], EPS)) * (invDt * invDt);
+        float alphaTilde = (_Compliance / EffectiveVolumeForCompliance(gi)) * (invDt * invDt);
 
         float2 gradC_vi = 0.0f;
         float2 gradC_vj[targetNeighborCount];
@@ -321,6 +403,23 @@
         }
 
         _Lambda[gi] = lambdaBefore + dLambda;
+
+        uint fixedChildCount = ReadFixedChildCount(gi);
+        bool singleFixedAnchor = (fixedChildCount == 1u);
+
+        if (singleFixedAnchor)
+        {
+            float2 fixedAnchor = ReadFixedChildAnchor(gi);
+            float2 r = _Pos[gi] - fixedAnchor;
+            float rLen = length(r);
+            if (rLen > EPS)
+            {
+                float2 radial = r / rLen;
+                float vr = dot(_Vel[gi], radial);
+                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (MU + LAMBDA) / EffectiveVolumeForCompliance(gi)));
+                _Vel[gi] -= radial * vr * (1.0 - radialKeep);
+            }
+        }
     }
 
 #endif // XPBI_SOLVER_RELAX_KERNELS_INCLUDED

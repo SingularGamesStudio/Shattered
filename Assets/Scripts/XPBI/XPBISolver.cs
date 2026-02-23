@@ -133,26 +133,28 @@ namespace GPU.Solver {
 
             int maxSolveLayer = (useHierarchical && m.layerEndIndex != null) ? m.maxLayer : 0;
             EnsurePerLayerStateCapacity(maxSolveLayer);
-            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, Const.IterationsL0);
+            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, GetMaxIterationsForSolve(maxSolveLayer));
 
             for (int tick = 0; tick < tickCount; tick++) {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, total);
 
                 // 1) Build parent relationships on first tick (TODO: each tick?).
-                if (useHierarchical && m.maxLayer > 0)
-                    RebuildAllParents(m, total);
+                RebuildAllParents(m, total);
 
                 // 2) Apply gameplay events + continuous external forces.
                 ApplyForces(total, forceEventsCount);
 
-                // 3) Solve constraints layer-by-layer, from coarse to fine .
-                for (int layer = maxSolveLayer; layer >= 0; layer--) {
-                    if (!m.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
-                        continue;
-                    if (m.NodeCount(layer) < 3)
-                        continue;
+                // 3) Solve constraints by V-cycle sweeps, each from coarse to fine.
+                int vCycles = useHierarchical ? Mathf.Max(1, Const.HierarchyVCyclesPerTick) : 1;
+                for (int cycle = 0; cycle < vCycles; cycle++) {
+                    for (int layer = maxSolveLayer; layer >= 0; layer--) {
+                        if (!m.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
+                            continue;
+                        if (m.NodeCount(layer) < 3)
+                            continue;
 
-                    ProcessLayer(m, layer, dtLayer, total, tick, forceEventsCount, convergenceDebug);
+                        ProcessLayer(m, layer, dtLayer, total, tick, forceEventsCount, convergenceDebug, maxSolveLayer);
+                    }
                 }
 
                 // 4) Integrate positions on the full set of nodes.
@@ -237,45 +239,59 @@ namespace GPU.Solver {
     int total,
     int tickIndex,
     int gameplayCountThisTick,
-    ComputeBuffer debugBuffer
+    ComputeBuffer debugBuffer,
+    int maxSolveLayer
 ) {
             int activeCount = layer > 0 ? NodeCount(layer) : total;
             int fineCount = layer > 1 ? NodeCount(layer - 1) : total;
 
             PrepareRelaxBuffers(dtLayer, activeCount, fineCount, tickIndex);
 
-            // 1) Snapshot prefix state / clear and cache hierarchical statistics used for correction.
+            // 1) Rebuild hierarchical stats (CoarseFixed, volumes, fixed-child anchors) for this layer.
+            Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
+            Dispatch(shader, kCacheHierarchicalStats, Groups256(fineCount), 1, 1);
+            Dispatch(shader, kFinalizeHierarchicalStats, Groups256(activeCount), 1, 1);
+
+            // 2) Snapshot prefix state.
             Dispatch(shader, kSaveVelPrefix, Groups256(activeCount), 1, 1);
 
-            Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
-            Dispatch(shader, kCacheHierarchicalStats, Groups256(total), 1, 1);
-
-            // 2) Optionally inject restricted gameplay forces into upper layers.
-            bool injectRestricted =
-                layer > 0 &&
-                fineCount > activeCount &&
+            // 3) XPBI-aware coarse pre-correction via restricted residual + optional restricted gameplay events.
+            bool useHierarchyTransfer = layer > 0 && fineCount > activeCount;
+            bool injectRestrictedGameplay =
+                useHierarchyTransfer &&
                 gameplayCountThisTick > 0 &&
                 Const.RestrictedDeltaVScale > 0f;
+            bool injectRestrictedResidual =
+                useHierarchyTransfer &&
+                Const.UseResidualVCycle &&
+                Const.RestrictResidualDeltaVScale > 0f;
 
-            if (injectRestricted) {
+            if (injectRestrictedResidual) {
+                Dispatch(shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
+                Dispatch(shader, kRestrictFineVelocityResidualToActive, Groups256(fineCount - activeCount), 1, 1);
+                asyncCb.SetComputeFloatParam(shader, "_RestrictedDeltaVScale", Const.RestrictResidualDeltaVScale);
+                Dispatch(shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
+            }
+
+            if (injectRestrictedGameplay) {
+                Dispatch(shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", gameplayCountThisTick);
                 asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
-
-                Dispatch(shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
                 Dispatch(shader, kRestrictGameplayDeltaVFromEvents, Groups256(gameplayCountThisTick), 1, 1);
-
                 asyncCb.SetComputeFloatParam(shader, "_RestrictedDeltaVScale", Const.RestrictedDeltaVScale);
                 Dispatch(shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
-            } else {
+            }
+
+            if (!injectRestrictedGameplay) {
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", 0);
             }
 
-            // 3) Cache per-node constants and initialize/clear per-iteration accumulators for this layer.
+            // 4) Cache per-node constants and initialize/clear per-iteration accumulators for this layer.
             Dispatch(shader, kCacheKernelH, Groups256(activeCount), 1, 1);
             Dispatch(shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
 
-            // 4) Rebuild coloring used by the colored Gauss-Seidel.
+            // 5) Rebuild coloring used by the colored Gauss-Seidel.
             RebuildColoringForLayer(layer, dtLayer, activeCount, dtLayer.NeighborCount);
 
             var coloring = coloringPerLayer[layer];
@@ -285,13 +301,9 @@ namespace GPU.Solver {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
             }
 
-            int iterations = Const.IterationsLMid;
-            if (layer == m.maxLayer)
-                iterations = Const.IterationsLMax;
-            if (layer == 0)
-                iterations = Const.IterationsL0;
+            int iterations = GetIterationsForLayer(layer, maxSolveLayer);
 
-            // 5) Optional convergence debug (first tick only).
+            // 6) Optional convergence debug (first tick only).
             bool dbg = debugBuffer != null && tickIndex == 0;
             if (dbg) {
                 ClearDebugBuffer(layer, iterations);
@@ -299,7 +311,7 @@ namespace GPU.Solver {
                 asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
             }
 
-            // 6) Main solve: run multiple iterations; each iteration performs colored relaxation passes.
+            // 7) Main solve: run multiple iterations; each iteration performs colored relaxation passes.
             for (int iter = 0; iter < iterations; iter++) {
                 if (dbg)
                     asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
@@ -310,15 +322,35 @@ namespace GPU.Solver {
                 }
             }
 
-            // 7) Transfer results across hierarchy and finalize per-layer outputs.
-            if (layer > 0 && fineCount > activeCount)
+            // 8) Transfer results across hierarchy and finalize per-layer outputs.
+            if (layer > 0 && fineCount > activeCount) {
                 Dispatch(shader, kProlongate, Groups256(fineCount - activeCount), 1, 1);
+                if (Const.PostProlongSmoothing > 0f)
+                    Dispatch(shader, kSmoothProlongatedFineVel, Groups256(fineCount - activeCount), 1, 1);
+            }
 
-            if (injectRestricted)
+            if (injectRestrictedGameplay || injectRestrictedResidual)
                 Dispatch(shader, kRemoveRestrictedDeltaVFromActive, Groups256(activeCount), 1, 1);
 
             if (layer == 0)
                 Dispatch(shader, kCommitDeformation, Groups256(activeCount), 1, 1);
+        }
+
+        private int GetIterationsForLayer(int layer, int maxSolveLayer) {
+            int iterations = Const.IterationsLMid;
+            if (layer == maxSolveLayer)
+                iterations = Const.IterationsLMax;
+            if (layer == 0)
+                iterations = Const.IterationsL0;
+
+            return Mathf.Max(1, iterations);
+        }
+
+        private int GetMaxIterationsForSolve(int maxSolveLayer) {
+            int maxIterations = 1;
+            for (int layer = 0; layer <= maxSolveLayer; layer++)
+                maxIterations = Mathf.Max(maxIterations, GetIterationsForLayer(layer, maxSolveLayer));
+            return maxIterations;
         }
 
 

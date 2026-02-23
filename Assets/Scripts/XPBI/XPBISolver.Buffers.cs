@@ -14,6 +14,8 @@ namespace GPU.Solver {
         private ComputeBuffer Fp;
         private ComputeBuffer currentVolumeBits;
         private ComputeBuffer currentTotalMassBits;
+        private ComputeBuffer fixedChildPosBits;
+        private ComputeBuffer fixedChildCount;
         private ComputeBuffer kernelH;
         private ComputeBuffer L;
         private ComputeBuffer F0;
@@ -107,6 +109,8 @@ namespace GPU.Solver {
 
             currentVolumeBits = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
             currentTotalMassBits = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
+            fixedChildPosBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
+            fixedChildCount = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
             kernelH = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             L = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -178,6 +182,9 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_Compliance", compliance);
             asyncCb.SetComputeIntParam(shader, "_TotalCount", total);
             asyncCb.SetComputeIntParam(shader, "_Base", 0);
+            asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
+            asyncCb.SetComputeFloatParam(shader, "_PostProlongSmoothing", Const.PostProlongSmoothing);
+            asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
         void PrepareParentRebuildBuffers(DT dtLayer, int activeCount, int fineCount) {
@@ -190,6 +197,30 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+        }
+
+        void PrepareHierarchicalStatsBuffers(int activeCount, int fineCount) {
+            asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
+            asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
+
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CoarseFixed", coarseFixed);
+
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildCount", fixedChildCount);
+
+            asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_CoarseFixed", coarseFixed);
         }
 
         void PrepareIntegratePosParams() {
@@ -225,15 +256,22 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_Pos", pos);
@@ -255,10 +293,16 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
 
@@ -298,6 +342,12 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
 
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_RestrictedDeltaVBits", restrictedDeltaVBits);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_RestrictedDeltaVCount", restrictedDeltaVCount);
+
             asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVBits", restrictedDeltaVBits);
             asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVCount", restrictedDeltaVCount);
             asyncCb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_RestrictedDeltaVAvg", restrictedDeltaVAvg);
@@ -307,6 +357,11 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_RestrictedDeltaVAvg", restrictedDeltaVAvg);
             asyncCb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_Vel", vel);
+
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
         }
 
         void ReleaseBuffers() {
@@ -320,6 +375,8 @@ namespace GPU.Solver {
 
             currentVolumeBits?.Dispose(); currentVolumeBits = null;
             currentTotalMassBits?.Dispose(); currentTotalMassBits = null;
+            fixedChildPosBits?.Dispose(); fixedChildPosBits = null;
+            fixedChildCount?.Dispose(); fixedChildCount = null;
             kernelH?.Dispose(); kernelH = null;
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;

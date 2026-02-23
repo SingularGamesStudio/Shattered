@@ -13,11 +13,7 @@ namespace GPU.Solver {
             float invScaleDL = 1f / ConvergenceDebugScaleDLambda;
 
             for (int layer = maxSolveLayer; layer >= 0; layer--) {
-                int iterations = Const.IterationsLMid;
-                if (layer == maxSolveLayer)
-                    iterations = Const.IterationsLMax;
-                if (layer == 0)
-                    iterations = Const.IterationsL0;
+                int iterations = GetIterationsForLayer(layer, maxSolveLayer);
                 int baseIter = layer * maxIter;
 
                 var table = new System.Text.StringBuilder();

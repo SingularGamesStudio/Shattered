@@ -159,7 +159,7 @@ MonoBehaviour:
   manual: 1
   showTpsOverlay: 1
   ConvergenceDebugEnabled: 1
-  useHierarchicalSolver: 0
+  useHierarchicalSolver: 1
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
@@ -335,15 +335,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9d14631452deebe4aabf97a144ad34fe, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  maxLayer: 1
+  maxLayer: 2
   layerEndIndex: 
   layerRadii: []
   baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   size:
     x: 3
     y: 3
-  pointCount: 100
+  pointCount: 1000
   generateOnStart: 1
+  seed: 1
   layerRatio: 0.1
   radiusScale: 0.85
   poissonK: 30

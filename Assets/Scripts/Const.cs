@@ -1,7 +1,7 @@
 public static class Const {
     public const int NeighborCount = 16;
 
-    public static int IterationsL0 = 16;
+    public static int IterationsL0 = 25;
     public const int IterationsLMax = 2;
     public const int IterationsLMid = 4;
 
@@ -12,4 +12,11 @@ public static class Const {
 
     public const float Gravity = -0.01f;
     public const float Compliance = 1.0f;
+
+    public const float ProlongationScale = 0.5f;
+    public const bool UseAffineProlongation = true;
+    public const bool UseResidualVCycle = true;
+    public const int HierarchyVCyclesPerTick = 1;
+    public const float RestrictResidualDeltaVScale = 0.35f;
+    public const float PostProlongSmoothing = 0.2f;
 }

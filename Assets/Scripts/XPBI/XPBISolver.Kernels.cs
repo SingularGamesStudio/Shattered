@@ -4,6 +4,7 @@ namespace GPU.Solver {
         private int kExternalForces;
         private int kClearHierarchicalStats;
         private int kCacheHierarchicalStats;
+        private int kFinalizeHierarchicalStats;
         private int kCacheKernelH;
         private int kComputeCorrectionL;
         private int kCacheF0AndResetLambda;
@@ -18,8 +19,10 @@ namespace GPU.Solver {
         private int kClearConvergenceDebugStats;
         private int kClearRestrictedDeltaV;
         private int kRestrictGameplayDeltaVFromEvents;
+        private int kRestrictFineVelocityResidualToActive;
         private int kApplyRestrictedDeltaVToActiveAndPrefix;
         private int kRemoveRestrictedDeltaVFromActive;
+        private int kSmoothProlongatedFineVel;
 
         private bool kernelsCached;
 
@@ -31,6 +34,7 @@ namespace GPU.Solver {
 
             kClearHierarchicalStats = shader.FindKernel("ClearHierarchicalStats");
             kCacheHierarchicalStats = shader.FindKernel("CacheHierarchicalStats");
+            kFinalizeHierarchicalStats = shader.FindKernel("FinalizeHierarchicalStats");
             kCacheKernelH = shader.FindKernel("CacheKernelH");
             kComputeCorrectionL = shader.FindKernel("ComputeCorrectionL");
             kCacheF0AndResetLambda = shader.FindKernel("CacheF0AndResetLambda");
@@ -47,8 +51,10 @@ namespace GPU.Solver {
 
             kClearRestrictedDeltaV = shader.FindKernel("ClearRestrictedDeltaV");
             kRestrictGameplayDeltaVFromEvents = shader.FindKernel("RestrictGameplayDeltaVFromEvents");
+            kRestrictFineVelocityResidualToActive = shader.FindKernel("RestrictFineVelocityResidualToActive");
             kApplyRestrictedDeltaVToActiveAndPrefix = shader.FindKernel("ApplyRestrictedDeltaVToActiveAndPrefix");
             kRemoveRestrictedDeltaVFromActive = shader.FindKernel("RemoveRestrictedDeltaVFromActive");
+            kSmoothProlongatedFineVel = shader.FindKernel("SmoothProlongatedFineVel");
 
             kernelsCached = true;
         }

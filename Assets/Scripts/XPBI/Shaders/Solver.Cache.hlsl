@@ -132,9 +132,13 @@
         uint li = id.x;
         if (li >= _ActiveCount)
         return;
-        _CurrentVolumeBits[_Base + li] = 0u;
-        _CurrentTotalMassBits[_Base + li] = 0u;
-        _CoarseFixed[_Base + li] = 0u;
+        uint gi = _Base + li;
+        _CurrentVolumeBits[gi] = 0u;
+        _CurrentTotalMassBits[gi] = 0u;
+        _FixedChildPosBits[gi * 2u + 0u] = 0u;
+        _FixedChildPosBits[gi * 2u + 1u] = 0u;
+        _FixedChildCount[gi] = 0u;
+        _CoarseFixed[gi] = 0u;
     }
 
     // ----------------------------------------------------------------------------
@@ -143,7 +147,7 @@
     [numthreads(256, 1, 1)] void CacheHierarchicalStats(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
-        if (li >= _TotalCount)
+        if (li >= _FineCount)
         return;
 
         uint gi = _Base + li;
@@ -178,7 +182,9 @@
 
         if (IsFixedVertex(gi))
         {
-            InterlockedOr(_CoarseFixed[ownerGi], 1u);
+            AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 0u, _Pos[gi].x);
+            AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 1u, _Pos[gi].y);
+            InterlockedAdd(_FixedChildCount[ownerGi], 1u);
         }
         if (leafMass > EPS)
         AtomicAddFloatBits(_CurrentTotalMassBits, ownerGi, leafMass);
@@ -187,6 +193,20 @@
         return;
 
         AtomicAddFloatBits(_CurrentVolumeBits, ownerGi, leafVol);
+    }
+
+    // ----------------------------------------------------------------------------
+    // FinalizeHierarchicalStats: derive coarse fixed mask from fixed-child count.
+    // single fixed child => hinge-like (not fully fixed), multiple => fixed.
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void FinalizeHierarchicalStats(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint gi = _Base + li;
+        _CoarseFixed[gi] = (_FixedChildCount[gi] > 1u) ? 1u : 0u;
     }
 
     // ----------------------------------------------------------------------------
@@ -408,6 +428,32 @@
 
         AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, leafDeltaV.x);
         AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, leafDeltaV.y);
+        InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+    }
+
+    // ----------------------------------------------------------------------------
+    // Restrict fine residual velocity to active owner: childVel - parentVel
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void RestrictFineVelocityResidualToActive(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = _ActiveCount + id.x;
+        if (li >= _FineCount)
+        return;
+
+        uint gi = _Base + li;
+        if (IsFixedVertex(gi))
+        return;
+
+        int p = _ParentIndex[gi];
+        if (p < int(_Base) || p >= int(_Base + _ActiveCount))
+        return;
+
+        uint ownerGi = uint(p);
+
+        float2 residual = _Vel[gi] - _Vel[ownerGi];
+
+        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, residual.x);
+        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, residual.y);
         InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
     }
 

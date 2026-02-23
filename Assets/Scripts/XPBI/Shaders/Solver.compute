@@ -1,5 +1,6 @@
 #pragma kernel ClearHierarchicalStats
 #pragma kernel CacheHierarchicalStats
+#pragma kernel FinalizeHierarchicalStats
 #pragma kernel CacheKernelH
 #pragma kernel ComputeCorrectionL
 #pragma kernel CacheF0AndResetLambda
@@ -19,8 +20,10 @@
 
 #pragma kernel ClearRestrictedDeltaV
 #pragma kernel RestrictGameplayDeltaVFromEvents
+#pragma kernel RestrictFineVelocityResidualToActive
 #pragma kernel ApplyRestrictedDeltaVToActiveAndPrefix
 #pragma kernel RemoveRestrictedDeltaVFromActive
+#pragma kernel SmoothProlongatedFineVel
 
 
 #include "Solver.Shared.hlsl"
