@@ -1,0 +1,1 @@
+Whenever you get a non-simple request, read agents.md first for project context and guidelines.
