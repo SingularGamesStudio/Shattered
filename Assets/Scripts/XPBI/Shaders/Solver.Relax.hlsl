@@ -22,12 +22,11 @@
         if (h <= EPS)
         return gradV;
 
-        uint nCount, n0, n1, n2, n3, n4, n5;
-        GetNeighbors(gi, nCount, n0, n1, n2, n3, n4, n5);
+        uint nCount;
+        uint ns[targetNeighborCount];
+        GetNeighbors(gi, nCount, ns);
         if (nCount == 0)
         return gradV;
-
-        uint ns[targetNeighborCount] = {n0, n1, n2, n3, n4, n5};
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
@@ -57,7 +56,8 @@
     // ----------------------------------------------------------------------------
     // Prolongation for multigrid: add parent velocity change to child
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void Prolongate(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)]
+    void Prolongate(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
         uint childGi = _Base + (_ActiveCount + li);
@@ -79,7 +79,8 @@
     // ----------------------------------------------------------------------------
     // Commit deformation: update F and Fp after velocity integration
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void CommitDeformation(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)]
+    void CommitDeformation(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
         if (li >= _ActiveCount)
@@ -154,7 +155,8 @@
     float _ConvergenceDebugScaleC;
     float _ConvergenceDebugScaleDLambda;
 
-    [numthreads(256, 1, 1)] void ClearConvergenceDebugStats(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)]
+    void ClearConvergenceDebugStats(uint3 id : SV_DispatchThreadID)
     {
         if (_ConvergenceDebugEnable == 0)
         return;
@@ -173,7 +175,8 @@
     // ----------------------------------------------------------------------------
     // RelaxColored: XPBI iteration for a single colour
     // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void RelaxColored(uint3 id : SV_DispatchThreadID)
+    [numthreads(256, 1, 1)]
+    void RelaxColored(uint3 id : SV_DispatchThreadID)
     {
         uint idx = id.x;
         uint count = _ColorCounts[_ColorIndex];
@@ -203,8 +206,9 @@
         if (h <= EPS)
         return;
 
-        uint nCount, n0, n1, n2, n3, n4, n5;
-        GetNeighbors(gi, nCount, n0, n1, n2, n3, n4, n5);
+        uint nCount;
+        uint ns[targetNeighborCount];
+        GetNeighbors(gi, nCount, ns);
         if (nCount == 0)
         return;
 
@@ -246,24 +250,21 @@
         float alphaTilde = (_Compliance / max(_RestVolume[gi], EPS)) * (invDt * invDt);
 
         float2 gradC_vi = 0.0f;
-        float2 gradC_vj[targetNeighborCount] = {(float2)0, (float2)0, (float2)0, (float2)0, (float2)0, (float2)0};
-
-        uint ns[targetNeighborCount] = {n0, n1, n2, n3, n4, n5};
+        float2 gradC_vj[targetNeighborCount];
+        [unroll] for (uint kInit = 0; kInit < targetNeighborCount; kInit++)
+        gradC_vj[kInit] = 0.0f;
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
             uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
-            continue;
+            if (gj < _Base || gj >= _Base + _ActiveCount) continue;
 
             float2 xij = _Pos[gj] - xi;
             float2 gradW = GradWendlandC2(xij, h, EPS);
-            if (dot(gradW, gradW) <= EPS * EPS)
-            continue;
+            if (dot(gradW, gradW) <= EPS * EPS) continue;
 
             float Vb = ReadCurrentVolume(gj);
-            if (Vb <= EPS)
-            continue;
+            if (Vb <= EPS) continue;
 
             float2 correctedGrad = MulMat2Vec(Lm, gradW);
             float2 t = MulMat2Vec(FT, correctedGrad);
@@ -273,7 +274,8 @@
             gradC_vj[k] = q;
         }
 
-        float denom = _InvMass[gi] * dot(gradC_vi, gradC_vi);
+        float invMassI = ReadEffectiveInvMass(gi);
+        float denom = invMassI * dot(gradC_vi, gradC_vi);
         [unroll] for (uint k1 = 0; k1 < nCount; k1++)
         {
             uint gj = ns[k1];
@@ -281,7 +283,8 @@
             continue;
             if (IsLayerFixed(gj))
             continue;
-            denom += _InvMass[gj] * dot(gradC_vj[k1], gradC_vj[k1]);
+            float invMassJ = ReadEffectiveInvMass(gj);
+            denom += invMassJ * dot(gradC_vj[k1], gradC_vj[k1]);
         }
         if (denom < EPS)
         return;
@@ -304,7 +307,7 @@
 
         float velScale = dLambda * invDt;
 
-        _Vel[gi] += _InvMass[gi] * velScale * gradC_vi;
+        _Vel[gi] += invMassI * velScale * gradC_vi;
 
         [unroll] for (uint k2 = 0; k2 < nCount; k2++)
         {
@@ -313,7 +316,8 @@
             continue;
             if (IsLayerFixed(gj))
             continue;
-            _Vel[gj] += _InvMass[gj] * velScale * gradC_vj[k2];
+            float invMassJ = ReadEffectiveInvMass(gj);
+            _Vel[gj] += invMassJ * velScale * gradC_vj[k2];
         }
 
         _Lambda[gi] = lambdaBefore + dLambda;

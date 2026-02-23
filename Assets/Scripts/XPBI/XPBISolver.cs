@@ -139,7 +139,7 @@ namespace GPU.Solver {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, total);
 
                 // 1) Build parent relationships on first tick (TODO: each tick?).
-                if (tick == 0 && useHierarchical && m.maxLayer > 0)
+                if (useHierarchical && m.maxLayer > 0)
                     RebuildAllParents(m, total);
 
                 // 2) Apply gameplay events + continuous external forces.

@@ -13,6 +13,7 @@ namespace GPU.Solver {
         private ComputeBuffer F;
         private ComputeBuffer Fp;
         private ComputeBuffer currentVolumeBits;
+        private ComputeBuffer currentTotalMassBits;
         private ComputeBuffer kernelH;
         private ComputeBuffer L;
         private ComputeBuffer F0;
@@ -105,6 +106,7 @@ namespace GPU.Solver {
             Fp = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
 
             currentVolumeBits = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
+            currentTotalMassBits = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
             kernelH = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             L = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -222,6 +224,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_InvMass", invMass);
@@ -229,6 +232,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_KernelH", kernelH);
@@ -250,6 +254,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_L", L);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
@@ -314,6 +319,7 @@ namespace GPU.Solver {
             Fp?.Dispose(); Fp = null;
 
             currentVolumeBits?.Dispose(); currentVolumeBits = null;
+            currentTotalMassBits?.Dispose(); currentTotalMassBits = null;
             kernelH?.Dispose(); kernelH = null;
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;

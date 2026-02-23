@@ -4,7 +4,7 @@
     #include "Utils.hlsl"
     #include "Deformation.hlsl"
 
-    #define targetNeighborCount 6
+    #define targetNeighborCount 16
 
     // Core particle data
     RWStructuredBuffer<float2> _Pos;
@@ -22,6 +22,7 @@
 
     // SPH and plasticity
     RWStructuredBuffer<uint> _CurrentVolumeBits;
+    RWStructuredBuffer<uint> _CurrentTotalMassBits;
     RWStructuredBuffer<float> _KernelH;
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
@@ -47,7 +48,6 @@
     RWStructuredBuffer<float2> _RestrictedDeltaVAvg;
 
     float _RestrictedDeltaVScale;
-
 
     // Simulation ranges
     uint _DtNeighborCount;
@@ -89,16 +89,26 @@
         return asfloat(_CurrentVolumeBits[gi]);
     }
 
+    static float ReadCurrentTotalMass(uint gi)
+    {
+        return asfloat(_CurrentTotalMassBits[gi]);
+    }
+
+    static float ReadEffectiveInvMass(uint gi)
+    {
+        float totalMass = ReadCurrentTotalMass(gi);
+        if (totalMass > EPS)
+        return 1.0 / totalMass;
+        return 0.0;
+    }
+
     static uint LocalIndexFromGlobal(uint gi) { return gi - _Base; }
     static uint GlobalIndexFromLocal(uint li) { return _Base + li; }
 
     // ----------------------------------------------------------------------------
-    // Neighbour access – returns up to 6 neighbours (global indices) and count.
+    // Neighbour access – returns up to targetNeighborCount (16) neighbours (global indices) and count.
     // ----------------------------------------------------------------------------
-    [forceinline] static void GetNeighbors(uint gi,
-    out uint nCount,
-    out uint n0, out uint n1, out uint n2,
-    out uint n3, out uint n4, out uint n5)
+    [forceinline] static void GetNeighbors(uint gi, out uint nCount, out uint ns[targetNeighborCount])
     {
         uint li = LocalIndexFromGlobal(gi);
 
@@ -108,12 +118,13 @@
 
         uint baseIdx = li * _DtNeighborCount;
 
-        n0 = (nCount > 0) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 0u]) : ~0u;
-        n1 = (nCount > 1) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 1u]) : ~0u;
-        n2 = (nCount > 2) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 2u]) : ~0u;
-        n3 = (nCount > 3) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 3u]) : ~0u;
-        n4 = (nCount > 4) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 4u]) : ~0u;
-        n5 = (nCount > 5) ? GlobalIndexFromLocal(_DtNeighbors[baseIdx + 5u]) : ~0u;
+        [unroll] for (uint i = 0; i < targetNeighborCount; i++)
+        {
+            if (i < nCount)
+            ns[i] = GlobalIndexFromLocal(_DtNeighbors[baseIdx + i]);
+            else
+            ns[i] = ~0u;
+        }
     }
 
     // ----------------------------------------------------------------------------

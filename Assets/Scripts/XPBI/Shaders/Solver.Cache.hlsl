@@ -18,7 +18,7 @@
         if (IsFixedVertex(gi))
         return;
 
-        _Vel[gi] += e.force  * (_InvMass[gi] * _Dt);
+        _Vel[gi] += e.force * (_InvMass[gi] * _Dt);
     }
 
     // ----------------------------------------------------------------------------
@@ -133,6 +133,7 @@
         if (li >= _ActiveCount)
         return;
         _CurrentVolumeBits[_Base + li] = 0u;
+        _CurrentTotalMassBits[_Base + li] = 0u;
         _CoarseFixed[_Base + li] = 0u;
     }
 
@@ -146,6 +147,9 @@
         return;
 
         uint gi = _Base + li;
+
+        float invM = _InvMass[gi];
+        float leafMass = (invM > EPS) ? (1.0 / invM) : 0.0;
 
         float restV = _RestVolume[gi];
 
@@ -170,14 +174,19 @@
         if (owner < 0 || owner >= int(_ActiveCount))
         return;
 
+        uint ownerGi = _Base + uint(owner);
+
         if (IsFixedVertex(gi))
         {
-            InterlockedOr(_CoarseFixed[_Base + uint(owner)], 1u);
+            InterlockedOr(_CoarseFixed[ownerGi], 1u);
         }
+        if (leafMass > EPS)
+        AtomicAddFloatBits(_CurrentTotalMassBits, ownerGi, leafMass);
+
         if (leafVol <= EPS)
         return;
 
-        AtomicAddFloatBits(_CurrentVolumeBits, _Base + uint(owner), leafVol);
+        AtomicAddFloatBits(_CurrentVolumeBits, ownerGi, leafVol);
     }
 
     // ----------------------------------------------------------------------------
@@ -191,8 +200,9 @@
 
         uint gi = _Base + li;
 
-        uint nCount, n0, n1, n2, n3, n4, n5;
-        GetNeighbors(gi, nCount, n0, n1, n2, n3, n4, n5);
+        uint nCount;
+        uint ns[targetNeighborCount];
+        GetNeighbors(gi, nCount, ns);
         if (nCount == 0)
         {
             _KernelH[gi] = 0.0;
@@ -203,8 +213,6 @@
 
         float d[targetNeighborCount];
         uint n = 0;
-
-        uint ns[targetNeighborCount] = {n0, n1, n2, n3, n4, n5};
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
@@ -226,6 +234,7 @@
             return;
         }
 
+        // Simple insertion sort (n <= targetNeighborCount, typically small)
         [unroll] for (uint a = 1; a < n; a++)
         {
             float key = d[a];
@@ -265,8 +274,9 @@
             return;
         }
 
-        uint nCount, n0, n1, n2, n3, n4, n5;
-        GetNeighbors(gi, nCount, n0, n1, n2, n3, n4, n5);
+        uint nCount;
+        uint ns[targetNeighborCount];
+        GetNeighbors(gi, nCount, ns);
         if (nCount == 0)
         {
             _L[gi] = float4(0, 0, 0, 0);
@@ -276,7 +286,6 @@
         float2 xi = _Pos[gi];
 
         Mat2 sum = Mat2Zero();
-        uint ns[targetNeighborCount] = {n0, n1, n2, n3, n4, n5};
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
@@ -358,6 +367,7 @@
         _RestrictedDeltaVCount[gi] = 0u;
         _RestrictedDeltaVAvg[gi] = 0.0f;
     }
+
     // ----------------------------------------------------------------------------
     // Restrict from force events directly: event -> leaf deltaV -> active owner accumulation.
     // ----------------------------------------------------------------------------

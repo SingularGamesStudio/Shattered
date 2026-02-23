@@ -1,5 +1,5 @@
 public static class Const {
-    public const int NeighborCount = 6;
+    public const int NeighborCount = 16;
 
     public static int IterationsL0 = 16;
     public const int IterationsLMax = 2;
