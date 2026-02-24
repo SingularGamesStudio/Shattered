@@ -265,73 +265,6 @@
     }
 
     // ----------------------------------------------------------------------------
-    // CacheKernelH: compute median neighbour distance and scale
-    // ----------------------------------------------------------------------------
-    [numthreads(256, 1, 1)] void CacheKernelH(uint3 id : SV_DispatchThreadID)
-    {
-        uint li = id.x;
-        if (li >= _ActiveCount)
-        return;
-
-        uint gi = _Base + li;
-
-        uint nCount;
-        uint ns[targetNeighborCount];
-        GetNeighbors(gi, nCount, ns);
-        if (nCount == 0)
-        {
-            _KernelH[gi] = 0.0;
-            return;
-        }
-
-        float2 xi = _Pos[gi];
-
-        float d[targetNeighborCount];
-        uint n = 0;
-
-        [unroll] for (uint k = 0; k < nCount; k++)
-        {
-            uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
-            continue;
-
-            float2 xij = _Pos[gj] - xi;
-            float r = length(xij);
-            if (r <= EPS)
-            continue;
-
-            d[n++] = r;
-        }
-
-        if (n == 0)
-        {
-            _KernelH[gi] = 0.0;
-            return;
-        }
-
-        // Simple insertion sort (n <= targetNeighborCount, typically small)
-        [unroll] for (uint a = 1; a < n; a++)
-        {
-            float key = d[a];
-            uint b = a;
-            while (b > 0 && d[b - 1] > key)
-            {
-                d[b] = d[b - 1];
-                b--;
-            }
-            d[b] = key;
-        }
-
-        float median;
-        if ((n & 1) == 1)
-        median = d[n >> 1];
-        else
-        median = 0.5f * (d[(n >> 1) - 1] + d[n >> 1]);
-
-        _KernelH[gi] = max(median * KERNEL_H_SCALE, 1e-4);
-    }
-
-    // ----------------------------------------------------------------------------
     // ComputeCorrectionL: compute SPH correction matrix
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void ComputeCorrectionL(uint3 id : SV_DispatchThreadID)
@@ -342,8 +275,15 @@
 
         uint gi = _Base + li;
 
-        float h = _KernelH[gi];
+        float h = max(_LayerKernelH, 1e-4);
         if (h <= EPS)
+        {
+            _L[gi] = float4(0, 0, 0, 0);
+            return;
+        }
+
+        float kernelH = WendlandKernelHFromSupport(h);
+        if (kernelH <= EPS)
         {
             _L[gi] = float4(0, 0, 0, 0);
             return;
@@ -371,7 +311,7 @@
 
             float2 xij = _Pos[gj] - xi;
 
-            float2 gradW = GradWendlandC2(xij, h, EPS);
+            float2 gradW = GradWendlandC2(xij, kernelH, EPS);
             if (dot(gradW, gradW) <= EPS * EPS)
             continue;
 

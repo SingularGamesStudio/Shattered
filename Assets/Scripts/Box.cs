@@ -113,6 +113,7 @@ public class Box : Meshless {
             layerNodeCounts[l] = perLayerRandom[l];
 
         layerRadii = new float[layerCount];
+        layerKernelH = new float[layerCount];
 
         // Radii (initial guess). Layer 0 uses total (random + fixed) because corners constrain it.
         layerRadii[0] = radiusScale * math.sqrt(area / math.max(1, layerNodeCounts[0]));
@@ -152,6 +153,9 @@ public class Box : Meshless {
 
             layerRadii[l] = radius;
         }
+
+        for (int l = 0; l < layerCount; l++)
+            layerKernelH[l] = math.max(layerRadii[l] * Const.LayerKernelHFromPoissonRadius, 1e-4f);
 
         // Commit into Meshless.nodes.
         nodes.Clear();

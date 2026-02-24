@@ -30,6 +30,9 @@ public sealed class Renderer : MonoBehaviour {
         public ComputeBuffer materialIds;
         public int[] materialIdsCpu;
 
+        public ComputeBuffer restVolumes;
+        public float[] restVolumesCpu;
+
         public ComputeBuffer restNorm;
         public Vector2[] restNormCpu;
 
@@ -47,6 +50,7 @@ public sealed class Renderer : MonoBehaviour {
     void OnDisable() {
         foreach (var kv in states) {
             kv.Value.materialIds?.Dispose();
+            kv.Value.restVolumes?.Dispose();
             kv.Value.restNorm?.Dispose();
         }
         states.Clear();
@@ -83,10 +87,10 @@ public sealed class Renderer : MonoBehaviour {
 
             // Fill: layer 0 only.
             if (drawLayer0Fill && m.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
-                SetupCommon(m, dt0, lib, m.NodeCount(0));
+                SetupCommon(m, dt0, lib, m.NodeCount(0), 0);
 
                 mpb.SetFloat("_UvScale", uvScale);
-                Graphics.DrawProcedural(fillMaterial, bounds, MeshTopology.Triangles, dt0.TriCount * 3, 1, null, mpb);
+                Graphics.DrawProcedural(fillMaterial, bounds, MeshTopology.Triangles, dt0.TriCount * 15, 1, null, mpb);
             }
 
             if (!showWireframe || m.NodeCount(0) > 1000) continue;
@@ -104,7 +108,7 @@ public sealed class Renderer : MonoBehaviour {
                 float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
                 Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
 
-                SetupCommon(m, dt, lib, realCount);
+                SetupCommon(m, dt, lib, realCount, layer);
 
                 mpb.SetColor("_WireColor", wireColor);
                 mpb.SetFloat("_WireWidthPx", wireWidthPixels);
@@ -126,10 +130,14 @@ public sealed class Renderer : MonoBehaviour {
         bool reallocated = st.capacity != n || st.materialIds == null || st.restNorm == null;
         if (reallocated) {
             st.materialIds?.Dispose();
+            st.restVolumes?.Dispose();
             st.restNorm?.Dispose();
 
             st.materialIds = new ComputeBuffer(n, sizeof(int), ComputeBufferType.Structured);
             st.materialIdsCpu = new int[n];
+
+            st.restVolumes = new ComputeBuffer(n, sizeof(float), ComputeBufferType.Structured);
+            st.restVolumesCpu = new float[n];
 
             st.restNorm = new ComputeBuffer(n, sizeof(float) * 2, ComputeBufferType.Structured);
             st.restNormCpu = new Vector2[n];
@@ -150,6 +158,17 @@ public sealed class Renderer : MonoBehaviour {
         if (materialIdsChanged)
             st.materialIds.SetData(st.materialIdsCpu);
 
+        bool restVolumesChanged = reallocated;
+        for (int i = 0; i < n; i++) {
+            float v = m.nodes[i].restVolume;
+            if (!Mathf.Approximately(st.restVolumesCpu[i], v)) {
+                st.restVolumesCpu[i] = v;
+                restVolumesChanged = true;
+            }
+        }
+        if (restVolumesChanged)
+            st.restVolumes.SetData(st.restVolumesCpu);
+
         float2 center = m.DtNormCenter;
         float inv = m.DtNormInvHalfExtent;
         if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv) {
@@ -165,7 +184,7 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
-    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount) {
+    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount, int layer) {
         if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
 
         float alpha = 0f;
@@ -185,7 +204,13 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetBuffer("_TriToHE", dt.TriToHEBuffer);
 
         mpb.SetBuffer("_MaterialIds", st.materialIds);
+        mpb.SetBuffer("_RestVolumes", st.restVolumes);
         mpb.SetBuffer("_RestNormPositions", st.restNorm);
+
+        float layerKernelH = m.GetLayerKernelH(layer);
+        float layerKernelHNorm = layerKernelH * m.DtNormInvHalfExtent;
+        mpb.SetFloat("_LayerKernelH", layerKernelHNorm);
+        mpb.SetFloat("_WendlandSupportScale", Const.WendlandSupport);
 
         mpb.SetInt("_MaterialCount", lib.MaterialCount);
         mpb.SetInt("_RealPointCount", realPointCount);

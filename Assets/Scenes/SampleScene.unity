@@ -158,13 +158,13 @@ MonoBehaviour:
   simulationSpeed: 10
   manual: 1
   showTpsOverlay: 1
-  ConvergenceDebugEnabled: 0
-  useHierarchicalSolver: 1
+  ConvergenceDebugEnabled: 1
+  useHierarchicalSolver: 0
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   asyncQueue: 1
-  maxTicksPerBatch: 32
+  maxTicksPerBatch: 2
   enableContinuousCpuReadback: 1
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
@@ -211,11 +211,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   fillShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
   wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
+  metaballDensityShader: {fileID: 4800000, guid: 025c54116d76c19449e85e1394b73a69, type: 3}
+  metaballCompositeShader: {fileID: 4800000, guid: e91d80488279a6146a1596efc36d1ae6, type: 3}
   uvScale: 5
   showWireframe: 1
   drawCoarseLayers: 1
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
+  drawMetaballUnderlay: 1
+  metaballDensityScale: 1
+  metaballIsoLevel: 0.6
+  metaballIsoFeather: 0.08
+  metaballFillColor: {r: 0.95, g: 0.95, b: 0.98, a: 0.85}
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -340,6 +347,7 @@ MonoBehaviour:
   maxLayer: 2
   layerEndIndex: 
   layerRadii: []
+  layerKernelH: []
   baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   size:
     x: 3
@@ -396,7 +404,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 2
+  scenario: 1
   generateOnStart: 1
   pointCount: 450
   maxLayer: 2

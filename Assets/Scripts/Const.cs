@@ -1,5 +1,6 @@
 public static class Const {
     public const int NeighborCount = 16;
+    public const float LayerKernelHFromPoissonRadius = 2f;
 
     public static int IterationsL0 = 25;
     public const int IterationsLMax = 2;
@@ -11,6 +12,8 @@ public static class Const {
     public const int DTLegalizeIterations = 2;
     public const bool EnablePerTickDTMaintain = true;
 
+
+    public const float WendlandSupport = 2.0f;
     public const float Gravity = -0.01f;
     public const float Compliance = 1.0f;
     public const float MaxVelocity = 0.0f;

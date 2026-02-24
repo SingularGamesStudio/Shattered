@@ -30,6 +30,10 @@
         if (h <= EPS)
         return gradV;
 
+        float kernelH = WendlandKernelHFromSupport(h);
+        if (kernelH <= EPS)
+        return gradV;
+
         uint nCount;
         uint ns[targetNeighborCount];
         GetNeighbors(gi, nCount, ns);
@@ -43,7 +47,7 @@
             continue;
 
             float2 xij = _Pos[gj] - xi;
-            float2 gradW = GradWendlandC2(xij, h, EPS);
+            float2 gradW = GradWendlandC2(xij, kernelH, EPS);
             if (dot(gradW, gradW) <= EPS * EPS)
             continue;
 
@@ -176,7 +180,7 @@
         if (IsLayerFixed(gi))
         return;
 
-        float h = _KernelH[gi];
+        float h = max(_LayerKernelH, 1e-4);
         if (h <= EPS)
         return;
 
@@ -296,7 +300,7 @@
         if (_RestVolume[gi] <= EPS)
         return;
 
-        float h = _KernelH[gi];
+        float h = max(_LayerKernelH, 1e-4);
         if (h <= EPS)
         return;
 
@@ -369,7 +373,7 @@
             if (gj < _Base || gj >= _Base + _ActiveCount) continue;
 
             float2 xij = _Pos[gj] - xi;
-            float2 gradW = GradWendlandC2(xij, h, EPS);
+            float2 gradW = GradWendlandC2(xij, WendlandKernelHFromSupport(h), EPS);
             if (dot(gradW, gradW) <= EPS * EPS) continue;
 
             float Vb = ReadCurrentVolume(gj);
@@ -430,8 +434,9 @@
         }
 
         float velScale = dLambda * invDt;
-        float maxDeltaVPerIter = 2.0 * h * invDt;
-        float maxSpeedLocal = 8.0 * h * invDt;
+        float support = WendlandSupportRadius(h);
+        float maxDeltaVPerIter = support * invDt;
+        float maxSpeedLocal = (4.0 * support) * invDt;
 
         float predictedMaxDv = abs(velScale) * maxInvMassLocal * sqrt(max(maxGradNorm2Local, 1e-12));
         if (predictedMaxDv > maxDeltaVPerIter)

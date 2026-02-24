@@ -1,7 +1,6 @@
 #pragma kernel ClearHierarchicalStats
 #pragma kernel CacheHierarchicalStats
 #pragma kernel FinalizeHierarchicalStats
-#pragma kernel CacheKernelH
 #pragma kernel ComputeCorrectionL
 #pragma kernel CacheF0AndResetLambda
 #pragma kernel SaveVelPrefix

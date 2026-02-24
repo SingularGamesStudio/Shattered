@@ -28,7 +28,6 @@
     RWStructuredBuffer<uint> _CurrentTotalMassBits;
     RWStructuredBuffer<uint> _FixedChildPosBits;
     RWStructuredBuffer<uint> _FixedChildCount;
-    RWStructuredBuffer<float> _KernelH;
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
@@ -55,6 +54,8 @@
     float _RestrictedDeltaVScale;
     float _ProlongationScale;
     float _PostProlongSmoothing;
+    float _LayerKernelH;
+    float _WendlandSupport;
     uint _UseAffineProlongation; 
 
     // Simulation ranges
@@ -85,6 +86,16 @@
     static const float DEFAULT_VOL_HENCKY_LIMIT = 0.3;
     static const float MIN_EFFECTIVE_MASS = 1e-4;
     static const float MAX_EFFECTIVE_INV_MASS = 1e4;
+
+    static float WendlandSupportRadius(float h)
+    {
+        return max(_WendlandSupport, 0.0) * h;
+    }
+
+    static float WendlandKernelHFromSupport(float h)
+    {
+        return 0.5 * max(_WendlandSupport, 0.0) * h;
+    }
 
     // ----------------------------------------------------------------------------
     // Utility functions
@@ -171,9 +182,9 @@
     }
 
     // ----------------------------------------------------------------------------
-    // Neighbour access – returns up to targetNeighborCount (16) neighbours (global indices) and count.
+    // Neighbour access
     // ----------------------------------------------------------------------------
-    [forceinline] static void GetNeighbors(uint gi, out uint nCount, out uint ns[targetNeighborCount])
+    [forceinline] static void GetNeighborsRaw(uint gi, out uint nCount, out uint ns[targetNeighborCount])
     {
         uint li = LocalIndexFromGlobal(gi);
 
@@ -190,6 +201,49 @@
             else
             ns[i] = ~0u;
         }
+    }
+
+    [forceinline] static void GetNeighbors(uint gi, out uint nCount, out uint ns[targetNeighborCount])
+    {
+        uint rawCount;
+        uint rawNs[targetNeighborCount];
+        GetNeighborsRaw(gi, rawCount, rawNs);
+
+        if (rawCount == 0u)
+        {
+            nCount = 0u;
+            [unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+            return;
+        }
+
+        float h = max(_LayerKernelH, 1e-4);
+        float support = WendlandSupportRadius(h);
+        if (support <= EPS)
+        {
+            nCount = 0u;
+            [unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+            return;
+        }
+
+        float supportSq = support * support;
+        float2 xi = _Pos[gi];
+
+        uint outCount = 0u;
+        [unroll] for (uint i = 0u; i < targetNeighborCount; i++)
+        {
+            if (i >= rawCount) break;
+
+            uint gj = rawNs[i];
+            if (gj == ~0u) continue;
+
+            float2 d = _Pos[gj] - xi;
+            if (dot(d, d) > supportSq) continue;
+
+            ns[outCount++] = gj;
+        }
+
+        nCount = outCount;
+        [unroll] for (uint i = outCount; i < targetNeighborCount; i++) ns[i] = ~0u;
     }
 
     // ----------------------------------------------------------------------------

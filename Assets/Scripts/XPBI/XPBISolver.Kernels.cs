@@ -6,7 +6,6 @@ namespace GPU.Solver {
         private int kClearHierarchicalStats;
         private int kCacheHierarchicalStats;
         private int kFinalizeHierarchicalStats;
-        private int kCacheKernelH;
         private int kComputeCorrectionL;
         private int kCacheF0AndResetLambda;
         private int kSaveVelPrefix;
@@ -37,7 +36,6 @@ namespace GPU.Solver {
             kClearHierarchicalStats = shader.FindKernel("ClearHierarchicalStats");
             kCacheHierarchicalStats = shader.FindKernel("CacheHierarchicalStats");
             kFinalizeHierarchicalStats = shader.FindKernel("FinalizeHierarchicalStats");
-            kCacheKernelH = shader.FindKernel("CacheKernelH");
             kComputeCorrectionL = shader.FindKernel("ComputeCorrectionL");
             kCacheF0AndResetLambda = shader.FindKernel("CacheF0AndResetLambda");
             kSaveVelPrefix = shader.FindKernel("SaveVelPrefix");

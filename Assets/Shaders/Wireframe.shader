@@ -37,6 +37,8 @@ Shader "Unlit/Wireframe"
             StructuredBuffer<int> _TriToHE;
 
             int _RealPointCount;
+            float _LayerKernelH;
+            float _WendlandSupportScale;
 
             float2 _NormCenter;
             float _NormInvHalfExtent;

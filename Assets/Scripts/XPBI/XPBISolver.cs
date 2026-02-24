@@ -246,7 +246,8 @@ namespace GPU.Solver {
             int activeCount = layer > 0 ? NodeCount(layer) : total;
             int fineCount = layer > 1 ? NodeCount(layer - 1) : total;
 
-            PrepareRelaxBuffers(dtLayer, activeCount, fineCount, tickIndex);
+            float layerKernelH = m.GetLayerKernelH(layer);
+            PrepareRelaxBuffers(dtLayer, activeCount, fineCount, tickIndex, layerKernelH);
 
             // 1) Rebuild hierarchical stats (CoarseFixed, volumes, fixed-child anchors) for this layer.
             Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
@@ -289,7 +290,6 @@ namespace GPU.Solver {
             }
 
             // 4) Cache per-node constants and initialize/clear per-iteration accumulators for this layer.
-            Dispatch(shader, kCacheKernelH, Groups256(activeCount), 1, 1);
             Dispatch(shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
 

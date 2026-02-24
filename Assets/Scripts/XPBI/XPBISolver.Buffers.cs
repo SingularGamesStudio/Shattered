@@ -17,7 +17,6 @@ namespace GPU.Solver {
         private ComputeBuffer currentTotalMassBits;
         private ComputeBuffer fixedChildPosBits;
         private ComputeBuffer fixedChildCount;
-        private ComputeBuffer kernelH;
         private ComputeBuffer L;
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
@@ -116,7 +115,6 @@ namespace GPU.Solver {
             currentTotalMassBits = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
             fixedChildPosBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
             fixedChildCount = new ComputeBuffer(capacity, sizeof(uint), ComputeBufferType.Structured);
-            kernelH = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             L = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
@@ -192,6 +190,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_Base", 0);
             asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
             asyncCb.SetComputeFloatParam(shader, "_PostProlongSmoothing", Const.PostProlongSmoothing);
+            asyncCb.SetComputeFloatParam(shader, "_WendlandSupport", Const.WendlandSupport);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
@@ -259,7 +258,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
         }
 
-        void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex) {
+        void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex, float layerKernelH) {
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
@@ -268,6 +267,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
             asyncCb.SetComputeIntParam(shader, "_PhysicalParamCount", physicalParamCount);
+            asyncCb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
@@ -287,10 +287,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kFinalizeHierarchicalStats, "_CoarseFixed", coarseFixed);
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_Pos", pos);
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_Pos", pos);
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_L", L);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F", F);
@@ -306,7 +303,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_RestVolume", restVolume);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_L", L);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
@@ -331,13 +327,9 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_L", L);
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_KernelH", kernelH);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
-
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kCacheKernelH, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
 
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
@@ -378,6 +370,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_Vel", vel);
 
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
@@ -403,7 +396,6 @@ namespace GPU.Solver {
             currentTotalMassBits?.Dispose(); currentTotalMassBits = null;
             fixedChildPosBits?.Dispose(); fixedChildPosBits = null;
             fixedChildCount?.Dispose(); fixedChildCount = null;
-            kernelH?.Dispose(); kernelH = null;
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
