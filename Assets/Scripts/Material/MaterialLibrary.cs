@@ -20,6 +20,35 @@ public sealed class MaterialLibrary : MonoBehaviour {
     public ComputeBuffer PhysicalParamsBuffer => physicalParams;
     public int MaterialCount => materials != null ? materials.Length : 0;
 
+    public float GetDensityByIndex(int materialIndex) {
+        if (materials == null || materials.Length == 0)
+            return 1f;
+
+        if (materialIndex < 0 || materialIndex >= materials.Length)
+            return 1f;
+
+        var def = materials[materialIndex];
+        if (def == null)
+            return 1f;
+
+        return Mathf.Max(0.0001f, def.physical.density);
+    }
+
+    public int AddRuntimeMaterial(MaterialDef def) {
+        if (def == null)
+            throw new System.ArgumentNullException(nameof(def));
+
+        int oldCount = materials != null ? materials.Length : 0;
+        var next = new MaterialDef[oldCount + 1];
+        for (int i = 0; i < oldCount; i++)
+            next[i] = materials[i];
+
+        next[oldCount] = def;
+        materials = next;
+        Rebuild();
+        return oldCount;
+    }
+
     struct MaterialGpu {
         public Vector4 p0; // young, poisson, yieldHencky, volumetricHenckyLimit
     }

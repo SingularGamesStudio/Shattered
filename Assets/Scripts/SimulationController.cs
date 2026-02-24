@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GPU.Solver;
 using Unity.Mathematics;
@@ -36,9 +37,22 @@ public sealed class SimulationController : MonoBehaviour {
     public ComputeQueueType asyncQueue = ComputeQueueType.Background;
     [Min(1)] public int maxTicksPerBatch = 32;
 
+    [Header("CPU Readback")]
+    public bool enableContinuousCpuReadback = true;
+    [Min(0.001f)] public float cpuReadbackInterval = 0.02f;
+
     readonly List<Meshless> meshless = new List<Meshless>(64);
     readonly Dictionary<Meshless, XPBISolver> gpuSolverCache = new Dictionary<Meshless, XPBISolver>();
     readonly Dictionary<Meshless, int> tickCounters = new Dictionary<Meshless, int>();
+    readonly List<XPBISolver.ForceEvent> gatheredForceEvents = new List<XPBISolver.ForceEvent>(256);
+    XPBISolver.ForceEvent[] forceEventUpload = Array.Empty<XPBISolver.ForceEvent>();
+
+    struct CpuReadbackState {
+        public bool pending;
+        public float lastRequestTime;
+    }
+
+    readonly Dictionary<Meshless, CpuReadbackState> cpuReadbackStates = new Dictionary<Meshless, CpuReadbackState>();
 
     // Triple‑buffer state per Meshless
     struct AsyncTripleState {
@@ -116,6 +130,11 @@ public sealed class SimulationController : MonoBehaviour {
                 computeCompleted = false,
                 completedWriteSlot = -1
             };
+
+            cpuReadbackStates[m] = new CpuReadbackState {
+                pending = false,
+                lastRequestTime = -999f,
+            };
         }
     }
 
@@ -124,12 +143,29 @@ public sealed class SimulationController : MonoBehaviour {
             meshless.Remove(m);
             tickCounters.Remove(m);
             asyncStates.Remove(m);
+            cpuReadbackStates.Remove(m);
 
             if (gpuSolverCache.TryGetValue(m, out XPBISolver solver)) {
                 solver.Dispose();
                 gpuSolverCache.Remove(m);
             }
         }
+    }
+
+    public bool TryGetStableReadSlot(Meshless m, out int slot) {
+        slot = 0;
+        if (m == null)
+            return false;
+
+        if (!asyncStates.TryGetValue(m, out var state))
+            return false;
+
+        int renderSlot = state.renderSlot;
+        if (renderSlot < 0 || renderSlot > 2)
+            return false;
+
+        slot = renderSlot;
+        return true;
     }
 
     void Update() {
@@ -145,6 +181,8 @@ public sealed class SimulationController : MonoBehaviour {
 
         if (manual) ManualUpdateAsync(Time.deltaTime, tickDt);
         else AutoUpdateAsync(Time.deltaTime, tickDt);
+
+        UpdateContinuousCpuReadback();
 
         renderAlpha = tickDt > 0f ? Mathf.Clamp01(accumulator / tickDt) : 0f;
 
@@ -271,6 +309,15 @@ public sealed class SimulationController : MonoBehaviour {
             gpuSolverCache[m] = solver;
         }
 
+        GatherForceEventsForMeshless(m, dtPerTick, ticksToRun);
+        if (gatheredForceEvents.Count > 0) {
+            EnsureForceUploadCapacity(gatheredForceEvents.Count);
+            gatheredForceEvents.CopyTo(forceEventUpload, 0);
+            solver.SetGameplayForces(forceEventUpload, gatheredForceEvents.Count);
+        } else {
+            solver.ClearGameplayForces();
+        }
+
         if (!tickCounters.ContainsKey(m)) tickCounters[m] = 0;
         int lastTickId = tickCounters[m];
         int tickIdAfterBatch = lastTickId + ticksToRun;
@@ -318,6 +365,30 @@ public sealed class SimulationController : MonoBehaviour {
         tickCounters[m] = tickIdAfterBatch;
     }
 
+    void GatherForceEventsForMeshless(Meshless target, float dtPerTick, int ticksToRun) {
+        gatheredForceEvents.Clear();
+
+        var controllers = MeshlessForceControllerRegistry.Controllers;
+        for (int i = 0; i < controllers.Count; i++) {
+            var controller = controllers[i];
+            if (controller == null || !controller.IsActive)
+                continue;
+
+            controller.GatherForceEvents(target, dtPerTick, ticksToRun, gatheredForceEvents);
+        }
+    }
+
+    void EnsureForceUploadCapacity(int count) {
+        if (forceEventUpload.Length >= count)
+            return;
+
+        int newCap = forceEventUpload.Length > 0 ? forceEventUpload.Length : 64;
+        while (newCap < count)
+            newCap *= 2;
+
+        forceEventUpload = new XPBISolver.ForceEvent[newCap];
+    }
+
     void ProcessAsyncBatchCompletions() {
         if (asyncStates.Count == 0) return;
 
@@ -363,6 +434,70 @@ public sealed class SimulationController : MonoBehaviour {
         }
 
         ListPool<Meshless>.Release(keys);
+    }
+
+    void UpdateContinuousCpuReadback() {
+        if (!enableContinuousCpuReadback)
+            return;
+
+        for (int i = 0; i < meshless.Count; i++) {
+            var m = meshless[i];
+            if (m == null || !m.isActiveAndEnabled)
+                continue;
+
+            RequestCpuReadbackIfNeeded(m);
+        }
+    }
+
+    void RequestCpuReadbackIfNeeded(Meshless m) {
+        if (m == null)
+            return;
+
+        if (!cpuReadbackStates.TryGetValue(m, out var state)) {
+            state = new CpuReadbackState {
+                pending = false,
+                lastRequestTime = -999f,
+            };
+        }
+
+        if (state.pending)
+            return;
+
+        if (Time.time < state.lastRequestTime + cpuReadbackInterval)
+            return;
+
+        if (!m.TryGetLayerDt(0, out var dt) || dt == null)
+            return;
+
+        if (!TryGetStableReadSlot(m, out int slot))
+            return;
+
+        var positions = dt.GetPositionsBuffer(slot);
+        if (positions == null)
+            return;
+
+        state.pending = true;
+        state.lastRequestTime = Time.time;
+        cpuReadbackStates[m] = state;
+
+        AsyncGPUReadback.Request(positions, request => OnCpuReadbackComplete(m, request));
+    }
+
+    void OnCpuReadbackComplete(Meshless m, AsyncGPUReadbackRequest request) {
+        if (m != null && cpuReadbackStates.TryGetValue(m, out var state)) {
+            state.pending = false;
+            cpuReadbackStates[m] = state;
+        }
+
+        if (m == null || request.hasError)
+            return;
+
+        int expectedCount = m.nodes != null ? m.nodes.Count : 0;
+        if (expectedCount <= 0)
+            return;
+
+        var data = request.GetData<float2>();
+        m.ApplyCpuReadbackNormalizedPositions(data, expectedCount);
     }
 
     void UpdateTpsDisplay(float frameDt) {

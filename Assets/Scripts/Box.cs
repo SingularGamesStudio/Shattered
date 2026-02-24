@@ -4,11 +4,17 @@ using Unity.Mathematics;
 using UnityEngine;
 
 public class Box : Meshless {
+    public enum AnchorMode {
+        None,
+        TopRightCorner,
+    }
+
     public float2 size;
 
     [Header("Generator")]
     public int pointCount;
     public bool generateOnStart = false;
+    public AnchorMode defaultAnchorMode = AnchorMode.TopRightCorner;
 
     [Header("Seed")]
     public uint seed = 1;
@@ -26,22 +32,62 @@ public class Box : Meshless {
 
     public void Generate(int count, short material) {
         GenerateHierarchy(count);
-        if (nodes.Count > 0) {
-            int cornerIdx = 0;
-            float maxX = nodes[0].pos.x;
-            float maxY = nodes[0].pos.y;
-            for (int i = 1; i < nodes.Count; i++) {
-                var pos = nodes[i].pos;
-                if (pos.x > maxX || (pos.x == maxX && pos.y > maxY)) {
-                    maxX = pos.x;
-                    maxY = pos.y;
-                    cornerIdx = i;
-                }
-            }
-            FixNode(cornerIdx);
-        }
+
+        if (defaultAnchorMode == AnchorMode.TopRightCorner)
+            FixTopRightCorner();
 
         Build();
+    }
+
+    public void ClearFixedNodes() {
+        for (int i = 0; i < nodes.Count; i++) {
+            var node = nodes[i];
+            node.isFixed = false;
+            node.invMass = 1f;
+            nodes[i] = node;
+        }
+    }
+
+    public int FindClosestNode(float2 position) {
+        if (nodes.Count == 0)
+            return -1;
+
+        int best = 0;
+        float bestD2 = math.lengthsq(nodes[0].pos - position);
+        for (int i = 1; i < nodes.Count; i++) {
+            float d2 = math.lengthsq(nodes[i].pos - position);
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                best = i;
+            }
+        }
+
+        return best;
+    }
+
+    public void FixClosestNode(float2 position) {
+        int idx = FindClosestNode(position);
+        if (idx >= 0)
+            FixNode(idx);
+    }
+
+    public void FixTopRightCorner() {
+        if (nodes.Count == 0)
+            return;
+
+        int cornerIdx = 0;
+        float maxX = nodes[0].pos.x;
+        float maxY = nodes[0].pos.y;
+        for (int i = 1; i < nodes.Count; i++) {
+            var pos = nodes[i].pos;
+            if (pos.x > maxX || (pos.x == maxX && pos.y > maxY)) {
+                maxX = pos.x;
+                maxY = pos.y;
+                cornerIdx = i;
+            }
+        }
+
+        FixNode(cornerIdx);
     }
 
     void GenerateHierarchy(int randomPointCount) {

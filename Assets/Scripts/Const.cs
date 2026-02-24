@@ -9,9 +9,12 @@ public static class Const {
     public const float RestrictedDeltaVScale = 0.75f;
     public const int DTFixIterations = 2;
     public const int DTLegalizeIterations = 2;
+    public const bool EnablePerTickDTMaintain = true;
 
     public const float Gravity = -0.01f;
     public const float Compliance = 1.0f;
+    public const float MaxVelocity = 0.0f;
+    public const float MaxDisplacementPerTick = 0.0f;
 
     public const float ProlongationScale = 0.5f;
     public const bool UseAffineProlongation = true;

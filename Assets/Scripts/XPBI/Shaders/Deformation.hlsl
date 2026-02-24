@@ -101,9 +101,17 @@
     float offDiagEps,
     float invDetEps)
     {
+        if (DetMat2(F_elastic) <= 0.0)
+        return Mat2Identity();
+
         Mat2 R, S;
         float s1, s2;
         PolarDecompose2D(F_elastic, R, S, s1, s2, stretchEps, offDiagEps, invDetEps);
+
+        if (!all(isfinite(R.c0)) || !all(isfinite(R.c1)) ||
+        !all(isfinite(S.c0)) || !all(isfinite(S.c1)) ||
+        !isfinite(s1) || !isfinite(s2))
+        return Mat2Identity();
 
         float h1 = log(max(s1, stretchEps));
         float h2 = log(max(s2, stretchEps));
@@ -127,8 +135,10 @@
         if (volYield)
         kProj = clamp(k, -volHenckyLimit, volHenckyLimit);
 
-        float s1Proj = exp((h1Dev * devScale) + 0.5 * kProj);
-        float s2Proj = exp((h2Dev * devScale) + 0.5 * kProj);
+        float e1 = clamp((h1Dev * devScale) + 0.5 * kProj, -3.0, 3.0);
+        float e2 = clamp((h2Dev * devScale) + 0.5 * kProj, -3.0, 3.0);
+        float s1Proj = exp(e1);
+        float s2Proj = exp(e2);
 
         Mat2 V = EigenBasisSymmetric2x2(S, s1, s2, offDiagEps);
 
@@ -137,7 +147,10 @@
         SprojDiag.c1 = float2(0, s2Proj);
 
         Mat2 Sproj = MulMat2(MulMat2(V, SprojDiag), TransposeMat2(V));
-        return MulMat2(R, Sproj);
+        Mat2 Fel = MulMat2(R, Sproj);
+        if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1)))
+        return Mat2Identity();
+        return Fel;
     }
 
     static Mat2 XPBI_ComputeGradient(
@@ -197,16 +210,24 @@
     [forceinline]
     static float2 GradWendlandC2(float2 xij, float h, float eps)
     {
+        float hSafe = max(h, 1e-4);
+
         float r2 = dot(xij, xij);
-        if (h <= eps || r2 <= eps * eps)
+        if (hSafe <= eps || r2 <= eps * eps)
         return float2(0, 0);
 
         float r = sqrt(r2);
-        float q = r / h;
+
+        // Avoid the 1/r singularity injecting huge finite values when two vertices get extremely close.
+        // Close pairs are effectively treated as coincident for gradient purposes.
+        if (r < 0.05 * hSafe)
+        return float2(0, 0);
+
+        float q = r / hSafe;
         if (q >= 2.0)
         return float2(0, 0);
 
-        float alpha = Alpha2D(h);
+        float alpha = Alpha2D(hSafe);
 
         float s = 1.0 - 0.5 * q;
         float s2 = s * s;
@@ -214,9 +235,10 @@
         float s4 = s2 * s2;
 
         float dFdq = 4.0 * s3 * (-0.5) * (2.0 * q + 1.0) + s4 * 2.0;
-        float dWdr = alpha * dFdq / h;
+        float dWdr = alpha * dFdq / hSafe;
 
         return -(dWdr / r) * xij;
     }
+
 
 #endif // XPBI_DEFORMATION_INCLUDED

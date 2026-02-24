@@ -1,6 +1,7 @@
 namespace GPU.Solver {
     public sealed partial class XPBISolver {
         private int kApplyGameplayForces;
+        private int kClampVelocities;
         private int kExternalForces;
         private int kClearHierarchicalStats;
         private int kCacheHierarchicalStats;
@@ -30,6 +31,7 @@ namespace GPU.Solver {
             if (kernelsCached) return;
 
             kApplyGameplayForces = shader.FindKernel("ApplyGameplayForces");
+            kClampVelocities = shader.FindKernel("ClampVelocities");
             kExternalForces = shader.FindKernel("ExternalForces");
 
             kClearHierarchicalStats = shader.FindKernel("ClearHierarchicalStats");

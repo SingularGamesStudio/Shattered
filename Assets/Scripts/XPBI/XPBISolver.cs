@@ -159,6 +159,7 @@ namespace GPU.Solver {
 
                 // 4) Integrate positions on the full set of nodes.
                 PrepareIntegratePosParams();
+                Dispatch(shader, kClampVelocities, Groups256(total), 1, 1);
                 Dispatch(shader, kIntegratePositions, Groups256(total), 1, 1);
 
                 // 5) Push integrated positions back into DT, then run DT maintenance (fix/legalize).
@@ -218,7 +219,7 @@ namespace GPU.Solver {
         private void ApplyForces(int total, int gameplayCountThisTick) {
             PrepareApplyForcesParams();
 
-            if (gameplayCountThisTick > 0) {
+            if (gameplayCountThisTick > 0 && forceEvents != null) {
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", gameplayCountThisTick);
                 asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_ForceEvents", forceEvents);
                 Dispatch(shader, kApplyGameplayForces, Groups256(gameplayCountThisTick), 1, 1);
@@ -260,6 +261,7 @@ namespace GPU.Solver {
             bool injectRestrictedGameplay =
                 useHierarchyTransfer &&
                 gameplayCountThisTick > 0 &&
+                forceEvents != null &&
                 Const.RestrictedDeltaVScale > 0f;
             bool injectRestrictedResidual =
                 useHierarchyTransfer &&

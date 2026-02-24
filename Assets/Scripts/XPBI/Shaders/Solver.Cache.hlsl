@@ -2,7 +2,7 @@
     #define XPBI_SOLVER_CACHE_KERNELS_INCLUDED
 
     // ----------------------------------------------------------------------------
-    // ApplyGameplayForces: external one‑shot forces (non‑atomic, assumed unique)
+    // ApplyGameplayForces: external per-node acceleration/impulse-like input
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void ApplyGameplayForces(uint3 id : SV_DispatchThreadID)
     {
@@ -18,11 +18,11 @@
         if (IsFixedVertex(gi))
         return;
 
-        _Vel[gi] += e.force * (_InvMass[gi] * _Dt);
+        _Vel[gi] += e.force * _Dt;
     }
 
     // ----------------------------------------------------------------------------
-    // ExternalForces: gravity (applied to all particles)
+    // ExternalForces: gravity acceleration
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void ExternalForces(uint3 id : SV_DispatchThreadID)
     {
@@ -38,6 +38,35 @@
     }
 
     // ----------------------------------------------------------------------------
+    // ClampVelocities: hard safety bound against runaway impulses
+    // ----------------------------------------------------------------------------
+    [numthreads(256, 1, 1)] void ClampVelocities(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _TotalCount)
+        return;
+
+        uint gi = _Base + li;
+        if (IsFixedVertex(gi))
+        return;
+
+        float2 v = _Vel[gi];
+        if (!all(isfinite(v)))
+        {
+            _Vel[gi] = 0.0;
+            return;
+        }
+
+        float maxSpeed = max(_MaxSpeed, 0.0);
+        if (maxSpeed <= 0.0)
+        return;
+
+        float speed = length(v);
+        if (speed > maxSpeed)
+        _Vel[gi] = v * (maxSpeed / max(speed, EPS));
+    }
+
+    // ----------------------------------------------------------------------------
     // IntegratePositions: forward Euler
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void IntegratePositions(uint3 id : SV_DispatchThreadID)
@@ -50,7 +79,28 @@
         if (IsFixedVertex(gi))
         return;
 
-        _Pos[gi] += _Vel[gi] * _Dt;
+        float2 p = _Pos[gi];
+        float2 v = _Vel[gi];
+
+        if (!all(isfinite(p)))
+        p = 0.0;
+        if (!all(isfinite(v)))
+        {
+            _Vel[gi] = 0.0;
+            _Pos[gi] = p;
+            return;
+        }
+
+        float2 dx = v * _Dt;
+        float maxStep = max(_MaxStep, 0.0);
+        if (maxStep > 0.0)
+        {
+            float stepLen = length(dx);
+            if (stepLen > maxStep)
+            dx *= maxStep / max(stepLen, EPS);
+        }
+
+        _Pos[gi] = p + dx;
     }
 
     // ----------------------------------------------------------------------------
@@ -159,7 +209,12 @@
 
         Mat2 F = Mat2FromFloat4(_F[gi]);
         float detF = DetMat2(F);
-        float leafVol = restV * abs(detF);
+        if (!isfinite(detF))
+        return;
+        float detFAbs = min(abs(detF), 4.0);
+        float leafVol = restV * detFAbs;
+        if (!isfinite(leafVol))
+        return;
 
         int owner = int(li);
         [loop] for (uint it = 0; it < 64; it++)
@@ -273,7 +328,7 @@
         else
         median = 0.5f * (d[(n >> 1) - 1] + d[n >> 1]);
 
-        _KernelH[gi] = median * KERNEL_H_SCALE;
+        _KernelH[gi] = max(median * KERNEL_H_SCALE, 1e-4);
     }
 
     // ----------------------------------------------------------------------------
@@ -306,6 +361,7 @@
         float2 xi = _Pos[gi];
 
         Mat2 sum = Mat2Zero();
+        uint validLNeighbors = 0u;
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
@@ -320,16 +376,49 @@
             continue;
 
             float Vb = ReadCurrentVolume(gj);
-            if (Vb <= EPS)
+            if (!(Vb > EPS))
             continue;
 
             sum.c0 += (Vb * xij.x) * gradW;
             sum.c1 += (Vb * xij.y) * gradW;
+            validLNeighbors++;
+        }
+
+        if (validLNeighbors < 3u)
+        {
+            _L[gi] = float4(0, 0, 0, 0);
+            return;
+        }
+
+        float sumFro2 = dot(sum.c0, sum.c0) + dot(sum.c1, sum.c1);
+        if (!(sumFro2 > 1e-12))
+        {
+            _L[gi] = float4(0, 0, 0, 0);
+            return;
+        }
+
+        float sumDetAbs = abs(DetMat2(sum));
+        if (!(sumDetAbs > 1e-10 * sumFro2))
+        {
+            _L[gi] = float4(0, 0, 0, 0);
+            return;
         }
 
         Mat2 Lm = PseudoInverseMat2(sum, STRETCH_EPS, EIGEN_OFFDIAG_EPS);
-        _L[gi] = Float4FromMat2(Lm);
+
+        float4 L4 = Float4FromMat2(Lm);
+
+        // Hard safety: if L is non-finite or absurd, fall back to no correction.
+        // This prevents a single ill-conditioned neighborhood (often after DT flips) from blowing up F and velocities.
+        if (any(isnan(L4)) || any(abs(L4) > 1e3))
+        {
+            _L[gi] = float4(0, 0, 0, 0);
+            return;
+        }
+
+        _L[gi] = L4;
     }
+
 
     // ----------------------------------------------------------------------------
     // CacheF0AndResetLambda: store F as initial for next step, reset λ
@@ -405,7 +494,7 @@
         if (IsFixedVertex(gi))
         return;
 
-        float2 leafDeltaV = e.force * (_InvMass[gi] * _Dt);
+        float2 leafDeltaV = e.force * _Dt;
 
         int owner = int(gi - _Base);
         [loop] for (uint it = 0; it < 64; it++)

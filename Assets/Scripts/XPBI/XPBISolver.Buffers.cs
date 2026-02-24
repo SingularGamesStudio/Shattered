@@ -170,7 +170,7 @@ namespace GPU.Solver {
         }
 
         void EnsureForceEventCapacity(int n) {
-            if (n <= forceEventsCapacity) return;
+            if (n <= forceEventsCapacity && forceEvents != null && forceEventsCpu != null) return;
 
             int newCap = math.max(64, forceEventsCapacity);
             while (newCap < n) newCap *= 2;
@@ -186,6 +186,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_Dt", dt);
             asyncCb.SetComputeFloatParam(shader, "_Gravity", gravity);
             asyncCb.SetComputeFloatParam(shader, "_Compliance", compliance);
+            asyncCb.SetComputeFloatParam(shader, "_MaxSpeed", Const.MaxVelocity);
+            asyncCb.SetComputeFloatParam(shader, "_MaxStep", Const.MaxDisplacementPerTick);
             asyncCb.SetComputeIntParam(shader, "_TotalCount", total);
             asyncCb.SetComputeIntParam(shader, "_Base", 0);
             asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
@@ -230,6 +232,8 @@ namespace GPU.Solver {
         }
 
         void PrepareIntegratePosParams() {
+            asyncCb.SetComputeBufferParam(shader, kClampVelocities, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kClampVelocities, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_InvMass", invMass);
@@ -314,6 +318,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_MaterialIds", materialIds);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndex", parentIndex);

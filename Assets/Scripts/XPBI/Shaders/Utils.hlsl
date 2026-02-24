@@ -88,8 +88,24 @@
         if (abs(b) <= offDiagEps)
         return Mat2Identity();
 
-        float2 v1 = normalize(float2(b, e1 - M.c0.x));
-        float2 v2 = normalize(float2(b, e2 - M.c0.x));
+        float2 r1 = float2(b, e1 - M.c0.x);
+        float2 r2 = float2(b, e2 - M.c0.x);
+
+        float n1 = dot(r1, r1);
+        float n2 = dot(r2, r2);
+
+        if (!isfinite(n1) || !isfinite(n2) || n1 <= offDiagEps * offDiagEps || n2 <= offDiagEps * offDiagEps)
+        return Mat2Identity();
+
+        float2 v1 = normalize(r1);
+        float2 v2 = normalize(r2);
+
+        if (!all(isfinite(v1)) || !all(isfinite(v2)))
+        return Mat2Identity();
+
+        if (abs(dot(v1, v2)) > 0.999f)
+        v2 = float2(-v1.y, v1.x);
+
         return Mat2FromCols(v1, v2);
     }
 

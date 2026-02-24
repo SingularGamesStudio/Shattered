@@ -68,6 +68,8 @@
     float _Dt;
     float _Gravity;
     float _Compliance;
+    float _MaxSpeed;
+    float _MaxStep;
 
     // Constants
     static const float EPS = 1e-6;
@@ -81,6 +83,8 @@
     static const float DEFAULT_POISSON = 0.3;
     static const float DEFAULT_YIELD_HENCKY = 0.05;
     static const float DEFAULT_VOL_HENCKY_LIMIT = 0.3;
+    static const float MIN_EFFECTIVE_MASS = 1e-4;
+    static const float MAX_EFFECTIVE_INV_MASS = 1e4;
 
     // ----------------------------------------------------------------------------
     // Utility functions
@@ -125,7 +129,7 @@
     {
         float totalMass = ReadCurrentTotalMass(gi);
         if (totalMass > EPS)
-        return 1.0 / totalMass;
+        return min(1.0 / max(totalMass, MIN_EFFECTIVE_MASS), MAX_EFFECTIVE_INV_MASS);
         return 0.0;
     }
 

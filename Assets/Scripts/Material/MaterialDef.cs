@@ -15,4 +15,5 @@ public struct MaterialParams {
     public float poissonRatio;
     public float yieldHencky;
     public float volumetricHenckyLimit;
+    public float density;
 }

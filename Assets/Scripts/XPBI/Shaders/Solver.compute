@@ -12,6 +12,7 @@
 #pragma kernel RelaxColored
 
 #pragma kernel ApplyGameplayForces
+#pragma kernel ClampVelocities
 #pragma kernel IntegratePositions
 #pragma kernel UpdateDtPositions
 #pragma kernel RebuildParentsAtLayer

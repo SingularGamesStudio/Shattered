@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Mathematics;
+using Unity.Collections;
 using UnityEngine;
 using GPU.Delaunay;
 
@@ -27,6 +28,25 @@ public class Meshless : MonoBehaviour {
 
     public float2 DtNormCenter => dtNormCenter;
     public float DtNormInvHalfExtent => dtNormInvHalfExtent;
+
+    public void ApplyCpuReadbackNormalizedPositions(NativeArray<float2> normalizedPositions, int expectedCount) {
+        if (nodes == null || expectedCount <= 0 || normalizedPositions.Length <= 0)
+            return;
+
+        float inv = DtNormInvHalfExtent;
+        if (inv <= 0f)
+            return;
+
+        float invInv = 1f / inv;
+        float2 center = DtNormCenter;
+
+        int copyCount = math.min(math.min(expectedCount, normalizedPositions.Length), nodes.Count);
+        for (int i = 0; i < copyCount; i++) {
+            var node = nodes[i];
+            node.pos = normalizedPositions[i] * invInv + center;
+            nodes[i] = node;
+        }
+    }
 
     public int GetBaseMaterialId() {
         var lib = MaterialLibrary.Instance;
@@ -57,6 +77,31 @@ public class Meshless : MonoBehaviour {
 
         BuildDelaunayHierarchy();
 
+        RecomputeMassFromDensity();
+
+    }
+
+    public void RecomputeMassFromDensity() {
+        var materialLib = MaterialLibrary.Instance;
+
+        for (int i = 0; i < nodes.Count; i++) {
+            var node = nodes[i];
+
+            if (node.isFixed || node.invMass <= 0f) {
+                node.isFixed = true;
+                node.invMass = -1f;
+                nodes[i] = node;
+                continue;
+            }
+
+            float density = materialLib != null ? materialLib.GetDensityByIndex(node.materialId) : 1f;
+            float restVolume = math.max(node.restVolume, 1e-6f);
+            float mass = math.max(1e-6f, density * restVolume);
+
+            node.invMass = 1f / mass;
+            node.isFixed = false;
+            nodes[i] = node;
+        }
     }
 
     void BuildLayerEndIndex() {

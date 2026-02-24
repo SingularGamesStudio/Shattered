@@ -196,10 +196,14 @@
         Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
+        float4 Fel4 = Float4FromMat2(Fel);
+        if (any(isnan(Fel4)) || any(abs(Fel4) > 1e6))
+        return;
+
         Mat2 FpOld = Mat2FromFloat4(_Fp[gi]);
 
         float detFel = DetMat2(Fel);
-        if (abs(detFel) > EPS)
+        if (abs(detFel) > EPS && !isnan(detFel) && abs(detFel) < 1e6)
         {
             float invDet = 1.0 / detFel;
 
@@ -208,11 +212,14 @@
             FelInv.c1 = float2(-Fel.c1.x * invDet, Fel.c0.x * invDet);
 
             Mat2 FpNew = MulMat2(MulMat2(FelInv, Ftrial), FpOld);
-            _Fp[gi] = Float4FromMat2(FpNew);
+            float4 Fp4 = Float4FromMat2(FpNew);
+            if (!any(isnan(Fp4)) && !any(abs(Fp4) > 1e6))
+            _Fp[gi] = Fp4;
         }
 
-        _F[gi] = Float4FromMat2(Fel);
+        _F[gi] = Fel4;
     }
+
 
     StructuredBuffer<uint> _ConvergenceDebugSrc;
     RWStructuredBuffer<uint> _ConvergenceDebugDst;
@@ -309,16 +316,23 @@
         Mat2 I = Mat2Identity();
 
         Mat2 dF = Mat2FromCols(I.c0 + gradV.c0 * _Dt, I.c1 + gradV.c1 * _Dt);
+        if (DetMat2(dF) <= 0.0)
+        return;
+
         Mat2 Ftrial = MulMat2(dF, F0);
         float yieldHencky = ReadMaterialYieldHencky(gi);
         float volHenckyLimit = ReadMaterialVolHenckyLimit(gi);
         Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+        if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1)))
+        return;
 
         float mu, lambda;
         ComputeMaterialLame(gi, mu, lambda);
 
         float C = XPBI_ConstraintC(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+        if (!isfinite(C))
+        return;
 
         if (_ConvergenceDebugEnable != 0)
         {
@@ -334,6 +348,8 @@
 
         if (abs(C) < EPS)
         return;
+        if (abs(C) > 5.0)
+        return;
 
         Mat2 dCdF = XPBI_ComputeGradient(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
         Mat2 FT = TransposeMat2(Fel);
@@ -345,6 +361,7 @@
         float2 gradC_vj[targetNeighborCount];
         [unroll] for (uint kInit = 0; kInit < targetNeighborCount; kInit++)
         gradC_vj[kInit] = 0.0f;
+        uint validConstraintNeighbors = 0u;
 
         [unroll] for (uint k = 0; k < nCount; k++)
         {
@@ -364,10 +381,20 @@
 
             gradC_vi -= q;
             gradC_vj[k] = q;
+            validConstraintNeighbors++;
         }
 
+        if (validConstraintNeighbors < 3u)
+        return;
+
         float invMassI = ReadEffectiveInvMass(gi);
-        float denom = invMassI * dot(gradC_vi, gradC_vi);
+        float gradNormI2 = dot(gradC_vi, gradC_vi);
+        if (!(gradNormI2 > 1e-8))
+        return;
+
+        float denom = invMassI * gradNormI2;
+        float maxInvMassLocal = invMassI;
+        float maxGradNorm2Local = gradNormI2;
         [unroll] for (uint k1 = 0; k1 < nCount; k1++)
         {
             uint gj = ns[k1];
@@ -376,14 +403,19 @@
             if (IsLayerFixed(gj))
             continue;
             float invMassJ = ReadEffectiveInvMass(gj);
-            denom += invMassJ * dot(gradC_vj[k1], gradC_vj[k1]);
+            float gradNormJ2 = dot(gradC_vj[k1], gradC_vj[k1]);
+            denom += invMassJ * gradNormJ2;
+            maxInvMassLocal = max(maxInvMassLocal, invMassJ);
+            maxGradNorm2Local = max(maxGradNorm2Local, gradNormJ2);
         }
-        if (denom < EPS)
+        if (denom < 1e-4)
         return;
 
         float lambdaBefore = _Lambda[gi];
         float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
         if (isnan(dLambda) || isinf(dLambda))
+        return;
+        if (abs(dLambda) > 100.0)
         return;
 
         if (_ConvergenceDebugEnable != 0)
@@ -398,8 +430,23 @@
         }
 
         float velScale = dLambda * invDt;
+        float maxDeltaVPerIter = 2.0 * h * invDt;
+        float maxSpeedLocal = 8.0 * h * invDt;
 
-        _Vel[gi] += invMassI * velScale * gradC_vi;
+        float predictedMaxDv = abs(velScale) * maxInvMassLocal * sqrt(max(maxGradNorm2Local, 1e-12));
+        if (predictedMaxDv > maxDeltaVPerIter)
+        return;
+        if (predictedMaxDv > 0.5 * maxSpeedLocal)
+        return;
+
+        float2 dVi = invMassI * velScale * gradC_vi;
+        float dViLen = length(dVi);
+        if (dViLen > maxDeltaVPerIter)
+        dVi *= maxDeltaVPerIter / max(dViLen, EPS);
+        _Vel[gi] += dVi;
+        float vILen = length(_Vel[gi]);
+        if (vILen > maxSpeedLocal)
+        _Vel[gi] *= maxSpeedLocal / max(vILen, EPS);
 
         [unroll] for (uint k2 = 0; k2 < nCount; k2++)
         {
@@ -409,7 +456,14 @@
             if (IsLayerFixed(gj))
             continue;
             float invMassJ = ReadEffectiveInvMass(gj);
-            _Vel[gj] += invMassJ * velScale * gradC_vj[k2];
+            float2 dVj = invMassJ * velScale * gradC_vj[k2];
+            float dVjLen = length(dVj);
+            if (dVjLen > maxDeltaVPerIter)
+            dVj *= maxDeltaVPerIter / max(dVjLen, EPS);
+            _Vel[gj] += dVj;
+            float vJLen = length(_Vel[gj]);
+            if (vJLen > maxSpeedLocal)
+            _Vel[gj] *= maxSpeedLocal / max(vJLen, EPS);
         }
 
         _Lambda[gi] = lambdaBefore + dLambda;

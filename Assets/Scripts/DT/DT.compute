@@ -242,7 +242,7 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID)
     int he = start;
     int count = 0;
 
-    // Walk around the vertex (max 128 steps to avoid infinite loops)
+    // Walk around the vertex in one direction (max 128 steps to avoid infinite loops)
     [loop] for (int iter = 0; iter < 128 && count < _NeighborCount; iter++)
     {
         int dst = Dest(he);
@@ -494,6 +494,12 @@ void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID)
 
     // Compute incircle test with correct sign (adjusted by orientation of triangle abc)
     float o = Orient2D(pa, pb, pc);
+    float sD = Orient2D(pa, pb, pd);
+
+    // Reject non-convex or near-degenerate local quads before legalize.
+    if (abs(o) <= 1e-10 || abs(sD) <= 1e-10) return;
+    if (o * sD >= 0.0) return;
+
     float det = InCircleDet(pa, pb, pc, pd);
     if (o < 0.0) det = -det;          // ensure consistent orientation
 
@@ -541,6 +547,21 @@ void LegalizeHalfEdges(uint3 id : SV_DispatchThreadID)
     pd = _Positions[d];
 
     o = Orient2D(pa, pb, pc);
+    sD = Orient2D(pa, pb, pd);
+
+    if (abs(o) <= 1e-10 || abs(sD) <= 1e-10)
+    {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+    if (o * sD >= 0.0)
+    {
+        UnlockTri(t0);
+        UnlockTri(t1);
+        return;
+    }
+
     det = InCircleDet(pa, pb, pc, pd);
     if (o < 0.0) det = -det;
 
