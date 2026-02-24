@@ -1,16 +1,43 @@
+using System;
 using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Rendering;
 using GPU.Delaunay;
 
 [DefaultExecutionOrder(1000)]
 public sealed class Renderer : MonoBehaviour {
+    public enum SdfSmoothMode {
+        None = 0,
+        Blur = 1,
+        CurvatureFlow = 2
+    }
+
     [Header("Shaders")]
-    public Shader fillShader;
     public Shader wireShader;
+
+    [Header("Postprocess")]
+    public Shader accumShader;
+    public Shader compositeShader;
+    public ComputeShader sdfCompute;
 
     [Header("UV")]
     public float uvScale = 0.25f;
+
+    [Header("SDF")]
+    [Min(1)] public int sdfDownsample = 1;
+    [Range(-20f, 20f)] public float roundPixels = 1.5f;
+
+    [Header("SDF smoothing")]
+    public SdfSmoothMode smoothMode = SdfSmoothMode.CurvatureFlow;
+    [Range(0, 32)] public int blurRadiusPixels = 6;
+    [Range(0, 16)] public int blurIterations = 2;
+    [Range(0, 200)] public int curvatureIterations = 40;
+    [Range(0.0f, 1.0f)] public float curvatureDt = 0.2f;
+
+    [Header("Debug")]
+    public bool debugShowAccum = false;
+    public bool debugShowSdf = false;
 
     [Header("Wireframe")]
     public bool showWireframe = true;
@@ -22,9 +49,12 @@ public sealed class Renderer : MonoBehaviour {
     [Header("Layers")]
     public bool drawLayer0Fill = true;
 
-    Material fillMaterial;
+    Material accumMaterial;
+    Material compositeMaterial;
     Material wireMaterial;
     MaterialPropertyBlock mpb;
+
+    Camera cam;
 
     sealed class MeshlessState {
         public ComputeBuffer materialIds;
@@ -41,10 +71,104 @@ public sealed class Renderer : MonoBehaviour {
         public float lastInvHalfExtent;
     }
 
+    sealed class CameraResources {
+        public int w, h;
+
+        public RenderTexture accum;   // ARGBHalf: rgb=sum(color), a=sum(weight)
+        public RenderTexture seedA;   // ARGBHalf UAV
+        public RenderTexture seedB;   // ARGBHalf UAV
+        public RenderTexture sdf;     // ARGBHalf UAV (base sdf in .r)
+        public RenderTexture tmp;     // ARGBHalf UAV (smoothing ping-pong)
+
+        public CommandBuffer fillCmd; // BeforeImageEffects
+        public CommandBuffer wireCmd; // AfterImageEffects (overlay)
+
+        public void Release(Camera owner) {
+            if (owner != null) {
+                if (fillCmd != null) owner.RemoveCommandBuffer(CameraEvent.BeforeImageEffects, fillCmd);
+                if (wireCmd != null) owner.RemoveCommandBuffer(CameraEvent.AfterImageEffects, wireCmd);
+            }
+
+            fillCmd?.Release();
+            wireCmd?.Release();
+            fillCmd = null;
+            wireCmd = null;
+
+            accum?.Release();
+            seedA?.Release();
+            seedB?.Release();
+            sdf?.Release();
+            tmp?.Release();
+
+            accum = null;
+            seedA = null;
+            seedB = null;
+            sdf = null;
+            tmp = null;
+            w = h = 0;
+        }
+    }
+
     readonly Dictionary<Meshless, MeshlessState> states = new Dictionary<Meshless, MeshlessState>(64);
+    CameraResources cr;
+
+    int kInitKernel = -1;
+    int kJfaKernel = -1;
+    int kFinalizeKernel = -1;
+    int kBlurHKernel = -1;
+    int kBlurVKernel = -1;
+    int kCurvatureKernel = -1;
+
+    static readonly int ID_AlbedoArray = Shader.PropertyToID("_AlbedoArray");
+    static readonly int ID_UvScale = Shader.PropertyToID("_UvScale");
+
+    static readonly int ID_PositionsPrev = Shader.PropertyToID("_PositionsPrev");
+    static readonly int ID_PositionsCurr = Shader.PropertyToID("_PositionsCurr");
+    static readonly int ID_RenderAlpha = Shader.PropertyToID("_RenderAlpha");
+    static readonly int ID_Positions = Shader.PropertyToID("_Positions");
+
+    static readonly int ID_HalfEdges = Shader.PropertyToID("_HalfEdges");
+    static readonly int ID_TriToHE = Shader.PropertyToID("_TriToHE");
+
+    static readonly int ID_MaterialIds = Shader.PropertyToID("_MaterialIds");
+    static readonly int ID_MaterialCount = Shader.PropertyToID("_MaterialCount");
+    static readonly int ID_RestVolumes = Shader.PropertyToID("_RestVolumes");
+
+    static readonly int ID_RestNormPositions = Shader.PropertyToID("_RestNormPositions");
+    static readonly int ID_RealPointCount = Shader.PropertyToID("_RealPointCount");
+    static readonly int ID_LayerKernelH = Shader.PropertyToID("_LayerKernelH");
+    static readonly int ID_WendlandSupportScale = Shader.PropertyToID("_WendlandSupportScale");
+
+    static readonly int ID_NormCenter = Shader.PropertyToID("_NormCenter");
+    static readonly int ID_NormInvHalfExtent = Shader.PropertyToID("_NormInvHalfExtent");
+
+    static readonly int ID_AccumTex = Shader.PropertyToID("_AccumTex");
+    static readonly int ID_SdfTex = Shader.PropertyToID("_SdfTex");
+    static readonly int ID_RoundPixels = Shader.PropertyToID("_RoundPixels");
+
+    // Compute
+    static readonly int ID_CSTexAccum = Shader.PropertyToID("_Accum");
+    static readonly int ID_CSTexSeedIn = Shader.PropertyToID("_SeedIn");
+    static readonly int ID_CSTexSeedOut = Shader.PropertyToID("_SeedOut");
+    static readonly int ID_CSTexSdfIn = Shader.PropertyToID("_SdfIn");
+    static readonly int ID_CSTexSdfOut = Shader.PropertyToID("_SdfOut");
+    static readonly int ID_CSJump = Shader.PropertyToID("_Jump");
+    static readonly int ID_CSDim = Shader.PropertyToID("_Dim");
+    static readonly int ID_CSRadius = Shader.PropertyToID("_Radius");
+    static readonly int ID_CSDt = Shader.PropertyToID("_Dt");
 
     void Awake() {
+        cam = GetComponent<Camera>();
         mpb ??= new MaterialPropertyBlock();
+
+        if (sdfCompute != null) {
+            kInitKernel = sdfCompute.FindKernel("KInitBoundarySeeds");
+            kJfaKernel = sdfCompute.FindKernel("KJumpFlood");
+            kFinalizeKernel = sdfCompute.FindKernel("KFinalizeSdf");
+            kBlurHKernel = sdfCompute.FindKernel("KBlurH");
+            kBlurVKernel = sdfCompute.FindKernel("KBlurV");
+            kCurvatureKernel = sdfCompute.FindKernel("KCurvatureFlow");
+        }
     }
 
     void OnDisable() {
@@ -55,68 +179,253 @@ public sealed class Renderer : MonoBehaviour {
         }
         states.Clear();
 
-        if (fillMaterial != null) Destroy(fillMaterial);
+        cr?.Release(cam);
+        cr = null;
+
+        if (accumMaterial != null) Destroy(accumMaterial);
+        if (compositeMaterial != null) Destroy(compositeMaterial);
         if (wireMaterial != null) Destroy(wireMaterial);
-        fillMaterial = null;
+
+        accumMaterial = null;
+        compositeMaterial = null;
         wireMaterial = null;
 
         mpb = null;
+        cam = null;
     }
 
-    void LateUpdate() {
-        if (!fillShader || !wireShader) return;
-
-        mpb ??= new MaterialPropertyBlock();
+    void OnPreCull() {
+        if (cam == null) return;
 
         var lib = MaterialLibrary.Instance;
-        if (lib == null || lib.AlbedoArray == null) return;
+        bool canFill = drawLayer0Fill && accumShader != null && compositeShader != null && sdfCompute != null && lib != null && lib.AlbedoArray != null;
+        bool canWire = showWireframe && wireShader != null;
 
-        fillMaterial ??= new Material(fillShader);
-        wireMaterial ??= new Material(wireShader);
+        // Early out if neither draw path is active
+        if (!canFill && !canWire) return;
 
-        var list = Meshless.Active;
-        for (int mi = 0; mi < list.Count; mi++) {
-            var m = list[mi];
-            if (m == null || !m.isActiveAndEnabled) continue;
-            if (m.nodes == null || m.nodes.Count < 3) continue;
+        int w = Mathf.Max(1, cam.pixelWidth / Mathf.Max(1, sdfDownsample));
+        int h = Mathf.Max(1, cam.pixelHeight / Mathf.Max(1, sdfDownsample));
+        EnsureCameraResources(w, h);
 
-            EnsurePerNodeBuffers(m);
+        if (canFill) {
+            accumMaterial ??= new Material(accumShader);
 
-            int maxLayer = m.maxLayer;
-            Bounds bounds = ComputeBoundsFromNorm(m);
+            cr.fillCmd.Clear();
+            cr.fillCmd.SetRenderTarget(cr.accum);
+            cr.fillCmd.ClearRenderTarget(true, true, Color.clear);
 
-            // Fill: layer 0 only.
-            if (drawLayer0Fill && m.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0) {
-                SetupCommon(m, dt0, lib, m.NodeCount(0), 0);
+            var list = Meshless.Active;
+            for (int mi = 0; mi < list.Count; mi++) {
+                var m = list[mi];
+                if (m == null || !m.isActiveAndEnabled) continue;
+                if (m.nodes == null || m.nodes.Count < 3) continue;
 
-                mpb.SetFloat("_UvScale", uvScale);
-                Graphics.DrawProcedural(fillMaterial, bounds, MeshTopology.Triangles, dt0.TriCount * 15, 1, null, mpb);
-            }
+                if (!m.TryGetLayerDt(0, out var dt0) || dt0 == null || dt0.TriCount <= 0) continue;
 
-            if (!showWireframe || m.NodeCount(0) > 1000) continue;
+                EnsurePerNodeBuffers(m);
 
-            // Wireframe: edges only, still per-layer to keep coloring and layer control.
-            for (int layer = 0; layer <= maxLayer; layer++) {
-                if (layer != 0 && !drawCoarseLayers) continue;
-
-                if (!m.TryGetLayerDt(layer, out var dt) || dt == null) continue;
-                if (dt.TriCount <= 0) continue;
-
-                int realCount = m.NodeCount(layer);
+                int realCount = m.NodeCount(0);
                 if (realCount <= 0) continue;
 
-                float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
-                Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
+                SetupCommon(m, dt0, lib, realCount, 0);
+                mpb.SetFloat(ID_UvScale, uvScale);
 
-                SetupCommon(m, dt, lib, realCount, layer);
-
-                mpb.SetColor("_WireColor", wireColor);
-                mpb.SetFloat("_WireWidthPx", wireWidthPixels);
-
-                // 3 edges per triangle, each edge is a quad (2 triangles = 6 vertices).
-                int vertexCount = dt.TriCount * 3 * 6;
-                Graphics.DrawProcedural(wireMaterial, bounds, MeshTopology.Triangles, vertexCount, 1, null, mpb);
+                cr.fillCmd.DrawProcedural(Matrix4x4.identity, accumMaterial, 0, MeshTopology.Triangles, dt0.TriCount * 15, 1, mpb);
             }
+        } else {
+            cr.fillCmd.Clear();
+        }
+
+        if (canWire) {
+            wireMaterial ??= new Material(wireShader);
+
+            cr.wireCmd.Clear();
+            cr.wireCmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+
+            var list = Meshless.Active;
+            for (int mi = 0; mi < list.Count; mi++) {
+                var m = list[mi];
+                if (m == null || !m.isActiveAndEnabled) continue;
+                if (m.nodes == null || m.nodes.Count < 3) continue;
+
+                EnsurePerNodeBuffers(m);
+
+                if (m.NodeCount(0) > 1000) continue;
+
+                int maxLayer = m.maxLayer;
+                for (int layer = 0; layer <= maxLayer; layer++) {
+                    if (layer != 0 && !drawCoarseLayers) continue;
+
+                    if (!m.TryGetLayerDt(layer, out var dt) || dt == null) continue;
+                    if (dt.TriCount <= 0) continue;
+
+                    int realCount = m.NodeCount(layer);
+                    if (realCount <= 0) continue;
+
+                    float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
+                    Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
+
+                    SetupCommon(m, dt, lib, realCount, layer);
+                    mpb.SetColor("_WireColor", wireColor);
+                    mpb.SetFloat("_WireWidthPx", wireWidthPixels);
+
+                    int vertexCount = dt.TriCount * 3 * 6;
+                    cr.wireCmd.DrawProcedural(Matrix4x4.identity, wireMaterial, 0, MeshTopology.Triangles, vertexCount, 1, mpb);
+                }
+            }
+        } else {
+            cr.wireCmd.Clear();
+        }
+    }
+
+    void OnRenderImage(RenderTexture src, RenderTexture dest) {
+        if (!drawLayer0Fill || compositeShader == null || sdfCompute == null || cr == null || cr.accum == null) {
+            Graphics.Blit(src, dest);
+            return;
+        }
+
+        compositeMaterial ??= new Material(compositeShader);
+
+        RenderTexture sdfFinal = RunSdfAndSmooth();
+
+        compositeMaterial.SetTexture(ID_AccumTex, cr.accum);
+        compositeMaterial.SetTexture(ID_SdfTex, sdfFinal);
+        compositeMaterial.SetFloat(ID_RoundPixels, roundPixels);
+
+        if (debugShowAccum) {
+            Graphics.Blit(src, dest, compositeMaterial, 1);
+            return;
+        }
+
+        if (debugShowSdf) {
+            Graphics.Blit(src, dest, compositeMaterial, 2);
+            return;
+        }
+
+        Graphics.Blit(src, dest, compositeMaterial, 0);
+        // Wireframe is drawn AFTER this via cr.wireCmd at CameraEvent.AfterImageEffects.
+    }
+
+    void EnsureCameraResources(int w, int h) {
+        if (cr != null && cr.w == w && cr.h == h && cr.accum != null && cr.fillCmd != null && cr.wireCmd != null)
+            return;
+
+        cr?.Release(cam);
+        cr = new CameraResources { w = w, h = h };
+
+        cr.accum = NewRT(w, h, false, FilterMode.Bilinear);
+        cr.seedA = NewRT(w, h, true, FilterMode.Point);
+        cr.seedB = NewRT(w, h, true, FilterMode.Point);
+        cr.sdf = NewRT(w, h, true, FilterMode.Point);
+        cr.tmp = NewRT(w, h, true, FilterMode.Point);
+
+        cr.fillCmd = new CommandBuffer { name = "Triangulation Accum (Mask+Color)" };
+        cr.wireCmd = new CommandBuffer { name = "Triangulation Wire Overlay" };
+
+        // Built-in pipeline: schedule at specific points in the camera render loop. [web:134][web:136]
+        cam.AddCommandBuffer(CameraEvent.BeforeImageEffects, cr.fillCmd);
+        cam.AddCommandBuffer(CameraEvent.AfterImageEffects, cr.wireCmd); // overlay after postprocess/composite [web:135][web:136]
+    }
+
+    static RenderTexture NewRT(int w, int h, bool randomWrite, FilterMode filter) {
+        var rt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear) {
+            filterMode = filter,
+            wrapMode = TextureWrapMode.Clamp,
+            useMipMap = false,
+            autoGenerateMips = false,
+            enableRandomWrite = randomWrite
+        };
+        rt.Create();
+        return rt;
+    }
+
+    RenderTexture RunSdfAndSmooth() {
+        int tgx = (cr.w + 7) >> 3;
+        int tgy = (cr.h + 7) >> 3;
+
+        sdfCompute.SetInts(ID_CSDim, cr.w, cr.h);
+
+        sdfCompute.SetTexture(kInitKernel, ID_CSTexAccum, cr.accum);
+        sdfCompute.SetTexture(kInitKernel, ID_CSTexSeedOut, cr.seedA);
+        sdfCompute.Dispatch(kInitKernel, tgx, tgy, 1);
+
+        int maxDim = Mathf.Max(cr.w, cr.h);
+        int jump = 1;
+        while (jump < maxDim) jump <<= 1;
+        jump >>= 1;
+
+        RenderTexture seedIn = cr.seedA;
+        RenderTexture seedOut = cr.seedB;
+
+        while (jump >= 1) {
+            sdfCompute.SetInt(ID_CSJump, jump);
+            sdfCompute.SetTexture(kJfaKernel, ID_CSTexSeedIn, seedIn);
+            sdfCompute.SetTexture(kJfaKernel, ID_CSTexSeedOut, seedOut);
+            sdfCompute.Dispatch(kJfaKernel, tgx, tgy, 1);
+
+            var tmp = seedIn;
+            seedIn = seedOut;
+            seedOut = tmp;
+
+            jump >>= 1;
+        }
+
+        sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexAccum, cr.accum);
+        sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexSeedIn, seedIn);
+        sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexSdfOut, cr.sdf);
+        sdfCompute.Dispatch(kFinalizeKernel, tgx, tgy, 1);
+
+        if (smoothMode == SdfSmoothMode.None)
+            return cr.sdf;
+
+        if (smoothMode == SdfSmoothMode.Blur) {
+            int r = Mathf.Clamp(blurRadiusPixels, 0, 32);
+            int it = Mathf.Clamp(blurIterations, 0, 16);
+            if (r <= 0 || it <= 0) return cr.sdf;
+
+            RenderTexture a = cr.sdf;
+            RenderTexture b = cr.tmp;
+
+            sdfCompute.SetInt(ID_CSRadius, r);
+
+            for (int i = 0; i < it; i++) {
+                sdfCompute.SetTexture(kBlurHKernel, ID_CSTexSdfIn, a);
+                sdfCompute.SetTexture(kBlurHKernel, ID_CSTexSdfOut, b);
+                sdfCompute.Dispatch(kBlurHKernel, tgx, tgy, 1);
+
+                sdfCompute.SetTexture(kBlurVKernel, ID_CSTexSdfIn, b);
+                sdfCompute.SetTexture(kBlurVKernel, ID_CSTexSdfOut, a);
+                sdfCompute.Dispatch(kBlurVKernel, tgx, tgy, 1);
+            }
+
+            return a;
+        }
+
+        {
+            int it = Mathf.Clamp(curvatureIterations, 0, 200);
+            float dt = Mathf.Clamp01(curvatureDt);
+            if (it <= 0 || dt <= 0f) return cr.sdf;
+
+            RenderTexture a = cr.sdf;
+            RenderTexture b = cr.tmp;
+
+            sdfCompute.SetFloat(ID_CSDt, dt);
+
+            for (int i = 0; i < it; i++) {
+                sdfCompute.SetTexture(kCurvatureKernel, ID_CSTexSdfIn, a);
+                sdfCompute.SetTexture(kCurvatureKernel, ID_CSTexSdfOut, b);
+                sdfCompute.Dispatch(kCurvatureKernel, tgx, tgy, 1);
+
+                var tmp = a;
+                a = b;
+                b = tmp;
+            }
+
+            if (a != cr.sdf)
+                Graphics.Blit(a, cr.sdf);
+
+            return cr.sdf;
         }
     }
 
@@ -192,31 +501,34 @@ public sealed class Renderer : MonoBehaviour {
         if (sc != null) alpha = sc.RenderAlpha;
 
         mpb.Clear();
-        mpb.SetTexture("_AlbedoArray", lib.AlbedoArray);
 
-        mpb.SetBuffer("_PositionsPrev", dt.PositionsBuffer);
-        mpb.SetBuffer("_PositionsCurr", dt.PositionsBuffer);
-        mpb.SetFloat("_RenderAlpha", alpha);
+        if (lib != null && lib.AlbedoArray != null) {
+            mpb.SetTexture(ID_AlbedoArray, lib.AlbedoArray);
+            mpb.SetInt(ID_MaterialCount, lib.MaterialCount);
+        }
 
-        mpb.SetBuffer("_Positions", dt.PositionsBuffer);
+        mpb.SetBuffer(ID_PositionsPrev, dt.PositionsBuffer);
+        mpb.SetBuffer(ID_PositionsCurr, dt.PositionsBuffer);
+        mpb.SetFloat(ID_RenderAlpha, alpha);
 
-        mpb.SetBuffer("_HalfEdges", dt.HalfEdgesBuffer);
-        mpb.SetBuffer("_TriToHE", dt.TriToHEBuffer);
+        mpb.SetBuffer(ID_Positions, dt.PositionsBuffer);
 
-        mpb.SetBuffer("_MaterialIds", st.materialIds);
-        mpb.SetBuffer("_RestVolumes", st.restVolumes);
-        mpb.SetBuffer("_RestNormPositions", st.restNorm);
+        mpb.SetBuffer(ID_HalfEdges, dt.HalfEdgesBuffer);
+        mpb.SetBuffer(ID_TriToHE, dt.TriToHEBuffer);
+
+        mpb.SetBuffer(ID_MaterialIds, st.materialIds);
+        mpb.SetBuffer(ID_RestVolumes, st.restVolumes);
+        mpb.SetBuffer(ID_RestNormPositions, st.restNorm);
 
         float layerKernelH = m.GetLayerKernelH(layer);
         float layerKernelHNorm = layerKernelH * m.DtNormInvHalfExtent;
-        mpb.SetFloat("_LayerKernelH", layerKernelHNorm);
-        mpb.SetFloat("_WendlandSupportScale", Const.WendlandSupport);
+        mpb.SetFloat(ID_LayerKernelH, layerKernelHNorm);
+        mpb.SetFloat(ID_WendlandSupportScale, Const.WendlandSupport);
 
-        mpb.SetInt("_MaterialCount", lib.MaterialCount);
-        mpb.SetInt("_RealPointCount", realPointCount);
+        mpb.SetInt(ID_RealPointCount, realPointCount);
 
-        mpb.SetVector("_NormCenter", new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
-        mpb.SetFloat("_NormInvHalfExtent", m.DtNormInvHalfExtent);
+        mpb.SetVector(ID_NormCenter, new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
+        mpb.SetFloat(ID_NormInvHalfExtent, m.DtNormInvHalfExtent);
     }
 
     static Bounds ComputeBoundsFromNorm(Meshless m) {

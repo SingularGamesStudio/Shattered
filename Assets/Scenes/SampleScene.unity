@@ -133,7 +133,6 @@ GameObject:
   - component: {fileID: 86236646}
   - component: {fileID: 86236645}
   - component: {fileID: 86236647}
-  - component: {fileID: 86236648}
   m_Layer: 0
   m_Name: Simulation
   m_TagString: Untagged
@@ -165,7 +164,7 @@ MonoBehaviour:
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   asyncQueue: 1
   maxTicksPerBatch: 2
-  enableContinuousCpuReadback: 1
+  enableContinuousCpuReadback: 0
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
 Transform:
@@ -197,32 +196,6 @@ MonoBehaviour:
   materials:
   - {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   fallbackTexture: {fileID: 0}
---- !u!114 &86236648
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 86236644}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c77595f26629367488aef2c1da549694, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  fillShader: {fileID: 4800000, guid: f9ac4f45441b7bc46b48942bf5eaa681, type: 3}
-  wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
-  metaballDensityShader: {fileID: 4800000, guid: 025c54116d76c19449e85e1394b73a69, type: 3}
-  metaballCompositeShader: {fileID: 4800000, guid: e91d80488279a6146a1596efc36d1ae6, type: 3}
-  uvScale: 5
-  showWireframe: 1
-  drawCoarseLayers: 1
-  wireWidthPixels: 0.74
-  drawLayer0Fill: 1
-  drawMetaballUnderlay: 1
-  metaballDensityScale: 1
-  metaballIsoLevel: 0.6
-  metaballIsoFeather: 0.08
-  metaballFillColor: {r: 0.95, g: 0.95, b: 0.98, a: 0.85}
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -234,6 +207,7 @@ GameObject:
   - component: {fileID: 519420032}
   - component: {fileID: 519420031}
   - component: {fileID: 519420029}
+  - component: {fileID: 519420033}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -315,6 +289,36 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &519420033
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 519420028}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c77595f26629367488aef2c1da549694, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  wireShader: {fileID: 4800000, guid: 62887d2920caa894a832e8e86f141bbc, type: 3}
+  accumShader: {fileID: 4800000, guid: 88011809965eb2f47893d0257636ab5e, type: 3}
+  compositeShader: {fileID: 4800000, guid: d9abe51de7a8cff49b861c9c34edd03f, type: 3}
+  sdfCompute: {fileID: 7200000, guid: d13dd7c9c5da850439d41ef537bba44d, type: 3}
+  uvScale: 5
+  sdfDownsample: 1
+  roundPixels: 0.8
+  smoothMode: 1
+  blurRadiusPixels: 6
+  blurIterations: 2
+  curvatureIterations: 40
+  curvatureDt: 0.2
+  debugShowAccum: 0
+  debugShowSdf: 0
+  showWireframe: 1
+  drawCoarseLayers: 1
+  wireWidthPixels: 0.74
+  drawLayer0Fill: 1
 --- !u!1 &961765555
 GameObject:
   m_ObjectHideFlags: 0
@@ -404,7 +408,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 1
+  scenario: 2
   generateOnStart: 1
   pointCount: 450
   maxLayer: 2

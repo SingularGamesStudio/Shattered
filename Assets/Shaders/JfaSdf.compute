@@ -1,0 +1,192 @@
+#pragma kernel KInitBoundarySeeds
+#pragma kernel KJumpFlood
+#pragma kernel KFinalizeSdf
+#pragma kernel KBlurH
+#pragma kernel KBlurV
+#pragma kernel KCurvatureFlow
+
+Texture2D<float4> _Accum;
+
+RWTexture2D<float4> _SeedOut;
+Texture2D<float4> _SeedIn;
+
+Texture2D<float4> _SdfIn;
+RWTexture2D<float4> _SdfOut;
+
+int2 _Dim;
+int _Jump;
+
+int _Radius;
+float _Dt;
+
+[numthreads(8,8,1)]
+void KInitBoundarySeeds(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    float m = _Accum.Load(int3(p, 0)).a;
+    bool inside = m > 0.0;
+
+    int2 px = int2(max(p.x - 1, 0), p.y);
+    int2 nx = int2(min(p.x + 1, _Dim.x - 1), p.y);
+    int2 py = int2(p.x, max(p.y - 1, 0));
+    int2 ny = int2(p.x, min(p.y + 1, _Dim.y - 1));
+
+    bool boundary = false;
+    boundary = boundary || ((_Accum.Load(int3(px, 0)).a > 0.0) != inside);
+    boundary = boundary || ((_Accum.Load(int3(nx, 0)).a > 0.0) != inside);
+    boundary = boundary || ((_Accum.Load(int3(py, 0)).a > 0.0) != inside);
+    boundary = boundary || ((_Accum.Load(int3(ny, 0)).a > 0.0) != inside);
+
+    _SeedOut[p] = boundary ? float4(p.x, p.y, 0.0, 0.0) : float4(-1.0, -1.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void KJumpFlood(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    float2 bestSeed = _SeedIn.Load(int3(p, 0)).xy;
+    float bestD2 = 1e30;
+    if (bestSeed.x >= 0.0)
+    {
+        float2 d0 = float2(p) - bestSeed;
+        bestD2 = dot(d0, d0);
+    }
+
+    int j = _Jump;
+
+    [unroll]
+    for (int oy = -1; oy <= 1; oy++)
+    {
+        [unroll]
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            if (ox == 0 && oy == 0) continue;
+
+            int2 q = clamp(p + int2(ox * j, oy * j), int2(0, 0), _Dim - 1);
+            float2 s = _SeedIn.Load(int3(q, 0)).xy;
+            if (s.x < 0.0) continue;
+
+            float2 d = float2(p) - s;
+            float d2 = dot(d, d);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                bestSeed = s;
+            }
+        }
+    }
+
+    _SeedOut[p] = float4(bestSeed.x, bestSeed.y, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void KFinalizeSdf(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    float m = _Accum.Load(int3(p, 0)).a;
+    bool inside = m > 0.0;
+
+    float2 seed = _SeedIn.Load(int3(p, 0)).xy;
+
+    float d = 1e6;
+    if (seed.x >= 0.0)
+    d = length(float2(p) - seed);
+
+    float sd = inside ? -d : d;
+    _SdfOut[p] = float4(sd, 0.0, 0.0, 0.0);
+}
+
+float SampleSdfR(int2 p)
+{
+    p = clamp(p, int2(0, 0), _Dim - 1);
+    return _SdfIn.Load(int3(p, 0)).r;
+}
+
+[numthreads(8,8,1)]
+void KBlurH(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    int r = clamp(_Radius, 0, 32);
+    float sum = 0.0;
+    float wsum = 0.0;
+
+    // Box blur (separable). Strong smoothing = increase radius and/or iterations.
+    for (int dx = -r; dx <= r; dx++)
+    {
+        float v = SampleSdfR(p + int2(dx, 0));
+        sum += v;
+        wsum += 1.0;
+    }
+
+    float outv = sum / max(wsum, 1e-6);
+    _SdfOut[p] = float4(outv, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void KBlurV(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    int r = clamp(_Radius, 0, 32);
+    float sum = 0.0;
+    float wsum = 0.0;
+
+    for (int dy = -r; dy <= r; dy++)
+    {
+        float v = SampleSdfR(p + int2(0, dy));
+        sum += v;
+        wsum += 1.0;
+    }
+
+    float outv = sum / max(wsum, 1e-6);
+    _SdfOut[p] = float4(outv, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void KCurvatureFlow(uint3 tid : SV_DispatchThreadID)
+{
+    int2 p = int2(tid.xy);
+    if (p.x >= _Dim.x || p.y >= _Dim.y) return;
+
+    // Mean-curvature motion on the level set: phi_t = |grad(phi)| * kappa (2D iso-contours).
+    // Discrete kappa using 2nd derivatives from a 3x3 neighborhood; this is the core idea behind
+    // screen-space curvature-flow smoothing used in fluid rendering. [web:79]
+    float c  = SampleSdfR(p);
+    float l  = SampleSdfR(p + int2(-1, 0));
+    float r  = SampleSdfR(p + int2( 1, 0));
+    float d  = SampleSdfR(p + int2( 0,-1));
+    float u  = SampleSdfR(p + int2( 0, 1));
+    float dl = SampleSdfR(p + int2(-1,-1));
+    float dr = SampleSdfR(p + int2( 1,-1));
+    float ul = SampleSdfR(p + int2(-1, 1));
+    float ur = SampleSdfR(p + int2( 1, 1));
+
+    float phix  = 0.5 * (r - l);
+    float phiy  = 0.5 * (u - d);
+    float phixx = r - 2.0 * c + l;
+    float phiyy = u - 2.0 * c + d;
+    float phixy = 0.25 * (ur - ul - dr + dl);
+
+    float gx2 = phix * phix;
+    float gy2 = phiy * phiy;
+    float grad = sqrt(gx2 + gy2) + 1e-6;
+
+    float denom = (gx2 + gy2) * grad; // |grad|^3
+    float kappa = (phixx * gy2 - 2.0 * phix * phiy * phixy + phiyy * gx2) / max(denom, 1e-6);
+
+    float dt = clamp(_Dt, 0.0, 1.0);
+
+    // Update. Small dt, many iterations => strong smoothing.
+    float outv = c + dt * kappa * grad;
+
+    _SdfOut[p] = float4(outv, 0.0, 0.0, 0.0);
+}
