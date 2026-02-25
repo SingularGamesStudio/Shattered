@@ -195,6 +195,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   materials:
   - {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  - {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fallbackTexture: {fileID: 0}
 --- !u!1 &519420028
 GameObject:
@@ -317,6 +318,8 @@ MonoBehaviour:
   debugShowSdf: 0
   showWireframe: 1
   drawCoarseLayers: 1
+  cullOverstretchedWireEdges: 0
+  wireframeCycleKey: 119
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
 --- !u!1 &961765555
@@ -352,7 +355,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   size:
     x: 3
     y: 3
@@ -373,7 +376,7 @@ Transform:
   m_GameObject: {fileID: 961765555}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.05, y: 2.99, z: 0}
+  m_LocalPosition: {x: 6.13, y: -2.61, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

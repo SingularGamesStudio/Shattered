@@ -5,6 +5,7 @@
 #pragma kernel CacheF0AndResetLambda
 #pragma kernel SaveVelPrefix
 #pragma kernel ClearVelDelta
+#pragma kernel ResetCollisionLambda
 #pragma kernel Prolongate
 #pragma kernel CommitDeformation
 #pragma kernel ExternalForces

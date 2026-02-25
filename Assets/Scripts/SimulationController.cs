@@ -409,7 +409,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (!globalHierarchyDirty)
             return;
 
-        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, false);
+        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, true);
         globalHierarchyDirty = false;
     }
 

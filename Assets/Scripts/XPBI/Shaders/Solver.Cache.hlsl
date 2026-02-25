@@ -454,6 +454,22 @@
         _VelDeltaBits[gi * 2u + 1u] = 0u;
     }
 
+    [numthreads(256, 1, 1)] void ResetCollisionLambda(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+        uint baseIdx = dtLi * _DtNeighborCount;
+
+        [unroll] for (uint k = 0u; k < targetNeighborCount; k++)
+        {
+            if (k >= _DtNeighborCount) break;
+            _CollisionLambda[baseIdx + k] = 0.0;
+        }
+    }
+
     // ----------------------------------------------------------------------------
     // Clear restricted dV
     // ----------------------------------------------------------------------------

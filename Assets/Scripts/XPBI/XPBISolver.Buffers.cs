@@ -21,6 +21,7 @@ namespace GPU.Solver {
         private ComputeBuffer L;
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
+        private ComputeBuffer collisionLambda;
         private ComputeBuffer savedVelPrefix;
         private ComputeBuffer velDeltaBits;
         private ComputeBuffer coloringColor;
@@ -34,16 +35,21 @@ namespace GPU.Solver {
         private ComputeBuffer convergenceDebug;
         private readonly Dictionary<int, ComputeBuffer> globalLayerNodeMapBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, ComputeBuffer> globalLayerGlobalToLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
+        private readonly Dictionary<int, ComputeBuffer> globalLayerOwnerByLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, int[]> globalLayerGlobalToLocalCpu = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int[]> globalLayerNodeMapRefs = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int[]> globalLayerGlobalToLocalRefs = new Dictionary<int, int[]>(16);
+        private readonly Dictionary<int, int[]> globalLayerOwnerByLocalRefs = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int> globalLayerNodeMapRefCounts = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalRefCounts = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerOwnerByLocalRefCounts = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerNodeMapHashes = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalHashes = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerOwnerByLocalHashes = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalTotals = new Dictionary<int, int>(16);
         private ComputeBuffer defaultDtGlobalNodeMap;
         private ComputeBuffer defaultDtGlobalToLocalMap;
+        private ComputeBuffer defaultDtOwnerByLocal;
 
 
         // CPU mirror arrays.
@@ -126,6 +132,7 @@ namespace GPU.Solver {
             L = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
+            collisionLambda = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
 
             savedVelPrefix = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
@@ -154,6 +161,8 @@ namespace GPU.Solver {
             defaultDtGlobalNodeMap.SetData(new[] { 0 });
             defaultDtGlobalToLocalMap = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
             defaultDtGlobalToLocalMap.SetData(new[] { -1 });
+            defaultDtOwnerByLocal = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
+            defaultDtOwnerByLocal.SetData(new[] { -1 });
 
             initializedCount = -1;
         }
@@ -204,6 +213,12 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
             asyncCb.SetComputeFloatParam(shader, "_PostProlongSmoothing", Const.PostProlongSmoothing);
             asyncCb.SetComputeFloatParam(shader, "_WendlandSupport", Const.WendlandSupport);
+            asyncCb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);
+            asyncCb.SetComputeFloatParam(shader, "_CollisionCompliance", Const.CollisionCompliance);
+            asyncCb.SetComputeFloatParam(shader, "_CollisionFriction", Const.CollisionFriction);
+            asyncCb.SetComputeFloatParam(shader, "_CollisionRestitution", Const.CollisionRestitution);
+            asyncCb.SetComputeFloatParam(shader, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
+            asyncCb.SetComputeIntParam(shader, "_CollisionEnable", Const.EnableCollisionConstraints ? 1 : 0);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
@@ -355,6 +370,39 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kernel, "_DtGlobalToLayerLocalMap", dtGlobalToLayerLocalMap ?? defaultDtGlobalToLocalMap);
         }
 
+        private ComputeBuffer EnsureGlobalLayerOwnerByLocalBuffer(int layer, int[] ownerBodyByLocal, int activeCount) {
+            if (ownerBodyByLocal == null)
+                throw new ArgumentNullException(nameof(ownerBodyByLocal));
+
+            if (activeCount < 0 || activeCount > ownerBodyByLocal.Length)
+                throw new ArgumentOutOfRangeException(nameof(activeCount));
+
+            if (!globalLayerOwnerByLocalBuffers.TryGetValue(layer, out ComputeBuffer ownerBuffer) || ownerBuffer == null || !ownerBuffer.IsValid() || ownerBuffer.count != math.max(1, activeCount)) {
+                ownerBuffer?.Dispose();
+                ownerBuffer = new ComputeBuffer(math.max(1, activeCount), sizeof(int), ComputeBufferType.Structured);
+                globalLayerOwnerByLocalBuffers[layer] = ownerBuffer;
+                globalLayerOwnerByLocalHashes[layer] = int.MinValue;
+            }
+
+            if (globalLayerOwnerByLocalRefs.TryGetValue(layer, out int[] previousRef) &&
+                ReferenceEquals(previousRef, ownerBodyByLocal) &&
+                globalLayerOwnerByLocalRefCounts.TryGetValue(layer, out int previousCount) &&
+                previousCount == activeCount)
+                return ownerBuffer;
+
+            int ownerHash = ComputeMappingHash(ownerBodyByLocal, activeCount);
+            bool shouldUpload = !globalLayerOwnerByLocalHashes.TryGetValue(layer, out int previousHash) || previousHash != ownerHash;
+            if (shouldUpload && activeCount > 0)
+                ownerBuffer.SetData(ownerBodyByLocal, 0, 0, activeCount);
+
+            if (shouldUpload)
+                globalLayerOwnerByLocalHashes[layer] = ownerHash;
+
+            globalLayerOwnerByLocalRefs[layer] = ownerBodyByLocal;
+            globalLayerOwnerByLocalRefCounts[layer] = activeCount;
+            return ownerBuffer;
+        }
+
         private void PrepareUpdateDtPosParamsMapped(DT dtLayer, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap, int activeCount, float2 dtNormCenter, float dtNormInvHalfExtent, int pingWrite) {
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
@@ -385,7 +433,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
         }
 
-        void PrepareRelaxBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, int tickIndex, float layerKernelH, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
+        void PrepareRelaxBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, int tickIndex, float layerKernelH, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null, ComputeBuffer dtOwnerByLocal = null) {
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
@@ -396,6 +444,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
             asyncCb.SetComputeIntParam(shader, "_PhysicalParamCount", physicalParamCount);
             asyncCb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
+            asyncCb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
@@ -421,6 +470,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kResetCollisionLambda, "_CollisionLambda", collisionLambda);
             asyncCb.SetComputeBufferParam(shader, kSaveVelPrefix, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kSaveVelPrefix, "_SavedVelPrefix", savedVelPrefix);
             asyncCb.SetComputeBufferParam(shader, kClearVelDelta, "_VelDeltaBits", velDeltaBits);
@@ -436,6 +486,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
@@ -461,6 +512,7 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kComputeCorrectionL, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             BindDtGlobalMappingParams(kClearHierarchicalStats, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
@@ -469,6 +521,7 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(kCacheF0AndResetLambda, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kSaveVelPrefix, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kClearVelDelta, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kResetCollisionLambda, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kClearRestrictedDeltaV, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kRestrictGameplayDeltaVFromEvents, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kRestrictFineVelocityResidualToActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
@@ -478,10 +531,12 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kCommitDeformation, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
@@ -518,6 +573,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kSmoothProlongatedFineVel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             if (physicalParams != null) {
@@ -544,6 +600,7 @@ namespace GPU.Solver {
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
+            collisionLambda?.Dispose(); collisionLambda = null;
 
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;
@@ -576,10 +633,19 @@ namespace GPU.Solver {
             globalLayerGlobalToLocalHashes.Clear();
             globalLayerGlobalToLocalTotals.Clear();
 
+            foreach (var kv in globalLayerOwnerByLocalBuffers)
+                kv.Value?.Dispose();
+            globalLayerOwnerByLocalBuffers.Clear();
+            globalLayerOwnerByLocalRefs.Clear();
+            globalLayerOwnerByLocalRefCounts.Clear();
+            globalLayerOwnerByLocalHashes.Clear();
+
             defaultDtGlobalNodeMap?.Dispose();
             defaultDtGlobalNodeMap = null;
             defaultDtGlobalToLocalMap?.Dispose();
             defaultDtGlobalToLocalMap = null;
+            defaultDtOwnerByLocal?.Dispose();
+            defaultDtOwnerByLocal = null;
 
             initializedCount = -1;
         }

@@ -10,12 +10,12 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 4a520474962c45f4e8a9b71d76f95b0a, type: 3}
-  m_Name: base
+  m_Name: base 1
   m_EditorClassIdentifier: 
-  sprite: {fileID: -1554720222, guid: 6686c052d80d7af4ebe755fd0966db7a, type: 3}
+  sprite: {fileID: 1489099840, guid: 6686c052d80d7af4ebe755fd0966db7a, type: 3}
   physical:
-    youngModulus: 100
-    poissonRatio: 0.45
-    yieldHencky: 0.02
-    volumetricHenckyLimit: 0.15
-    density: 6
+    youngModulus: 50000
+    poissonRatio: 0.3
+    yieldHencky: 0.05
+    volumetricHenckyLimit: 0.3
+    density: 10

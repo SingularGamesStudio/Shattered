@@ -31,6 +31,7 @@
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
+    RWStructuredBuffer<float> _CollisionLambda;
 
     // Velocity delta accumulation
     RWStructuredBuffer<float2> _SavedVelPrefix;
@@ -39,8 +40,10 @@
     // Neighbour lists
     StructuredBuffer<uint> _DtNeighbors;
     StructuredBuffer<uint> _DtNeighborCounts;
+    StructuredBuffer<int> _DtOwnerByLocal;
     StructuredBuffer<int> _DtGlobalNodeMap;
     StructuredBuffer<int> _DtGlobalToLayerLocalMap;
+    uint _UseDtOwnerFilter;
     uint _UseDtGlobalNodeMap;
     uint _DtLocalBase;
 
@@ -60,6 +63,12 @@
     float _PostProlongSmoothing;
     float _LayerKernelH;
     float _WendlandSupport;
+    float _CollisionSupportScale;
+    float _CollisionCompliance;
+    float _CollisionFriction;
+    float _CollisionRestitution;
+    float _CollisionRestitutionThreshold;
+    uint _CollisionEnable;
     uint _UseAffineProlongation; 
 
     // Simulation ranges
@@ -261,6 +270,10 @@
         float supportSq = support * support;
         float2 xi = _Pos[gi];
 
+        uint li = LocalIndexFromGlobal(gi);
+        bool useOwnerFilter = (_UseDtOwnerFilter != 0u) && (li != ~0u) && (li < _ActiveCount);
+        int owner = useOwnerFilter ? _DtOwnerByLocal[li] : -1;
+
         uint outCount = 0u;
         [unroll] for (uint i = 0u; i < targetNeighborCount; i++)
         {
@@ -268,6 +281,13 @@
 
             uint gj = rawNs[i];
             if (gj == ~0u) continue;
+
+            if (useOwnerFilter)
+            {
+                uint gjLi = LocalIndexFromGlobal(gj);
+                if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
+                if (_DtOwnerByLocal[gjLi] != owner) continue;
+            }
 
             float2 d = _Pos[gj] - xi;
             if (dot(d, d) > supportSq) continue;

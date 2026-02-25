@@ -26,5 +26,12 @@ public static class Const {
     public const float RestrictResidualDeltaVScale = 0.35f;
     public const float PostProlongSmoothing = 0.2f;
 
+    public const bool EnableCollisionConstraints = true;
+    public const float CollisionSupportScale = 0.6f;
+    public const float CollisionCompliance = 0.005f;
+    public const float CollisionFriction = 0.35f;
+    public const float CollisionRestitution = 0.0f;
+    public const float CollisionRestitutionThreshold = 0.005f;
+
     public const bool DebugSupportRadius = false;
 }

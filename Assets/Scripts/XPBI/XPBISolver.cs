@@ -158,7 +158,7 @@ namespace GPU.Solver {
                         if (!globalDTHierarchy.TryGetLayerDt(layer, out DT globalLayerDt) || globalLayerDt == null)
                             continue;
 
-                        if (!globalDTHierarchy.TryGetLayerMappings(layer, out _, out _, out int[] globalFineNodeByLocal, out int globalActiveCount, out int globalFineCount))
+                        if (!globalDTHierarchy.TryGetLayerMappings(layer, out int[] ownerBodyByLocal, out _, out int[] globalFineNodeByLocal, out int globalActiveCount, out int globalFineCount))
                             continue;
                         if (globalActiveCount < 3)
                             continue;
@@ -174,6 +174,10 @@ namespace GPU.Solver {
                             globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, globalFineCount, totalCount);
                         }
 
+                        ComputeBuffer ownerByLocalBuffer = null;
+                        if (ownerBodyByLocal != null && ownerBodyByLocal.Length >= globalActiveCount)
+                            ownerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(layer, ownerBodyByLocal, globalActiveCount);
+
                         ProcessGlobalLayer(
                             layer,
                             globalLayerDt,
@@ -186,7 +190,8 @@ namespace GPU.Solver {
                             maxSolveLayer,
                             useMappedIndices,
                             globalNodeMap,
-                            globalToLocalMap
+                            globalToLocalMap,
+                            ownerByLocalBuffer
                         );
                     }
                 }
@@ -336,9 +341,10 @@ namespace GPU.Solver {
             int maxSolveLayer,
             bool useDtGlobalNodeMap,
             ComputeBuffer dtGlobalNodeMap,
-            ComputeBuffer dtGlobalToLayerLocalMap
+            ComputeBuffer dtGlobalToLayerLocalMap,
+            ComputeBuffer dtOwnerByLocal
         ) {
-            PrepareRelaxBuffers(dtLayer, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            PrepareRelaxBuffers(dtLayer, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
 
             Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheHierarchicalStats, Groups256(fineCount), 1, 1);
@@ -378,6 +384,7 @@ namespace GPU.Solver {
 
             Dispatch(shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
+            Dispatch(shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
 
             var coloring = RebuildGlobalColoringForLayer(layer, dtLayer, activeCount, dtLayer.NeighborCount, layerKernelH);
             if (coloring != null) {

@@ -486,6 +486,111 @@
             _Vel[gj] *= maxSpeedLocal / max(vJLen, EPS);
         }
 
+        if (_CollisionEnable != 0u)
+        {
+            int ownerI = (li < _ActiveCount) ? _DtOwnerByLocal[li] : -1;
+            if (ownerI >= 0)
+            {
+                float targetSeparation = max(EPS, _CollisionSupportScale * WendlandSupportRadius(h));
+                float targetSeparationSq = targetSeparation * targetSeparation;
+                float alphaCollision = _CollisionCompliance / max(_Dt * _Dt, EPS);
+                uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+                uint contactBase = dtLi * _DtNeighborCount;
+
+                uint colRawCount;
+                uint colRawNs[targetNeighborCount];
+                GetNeighborsRaw(gi, colRawCount, colRawNs);
+
+                [unroll] for (uint ck = 0u; ck < targetNeighborCount; ck++)
+                {
+                    if (ck >= colRawCount || ck >= _DtNeighborCount) break;
+
+                    uint gj = colRawNs[ck];
+                    if (gj == ~0u || gj <= gi)
+                    continue;
+
+                    uint gjLi = LocalIndexFromGlobal(gj);
+                    if (gjLi == ~0u || gjLi >= _ActiveCount)
+                    continue;
+
+                    int ownerJ = _DtOwnerByLocal[gjLi];
+                    if (ownerJ < 0 || ownerJ == ownerI)
+                    continue;
+
+                    bool fixedI = IsLayerFixed(gi);
+                    bool fixedJ = IsLayerFixed(gj);
+                    if (fixedI && fixedJ)
+                    continue;
+
+                    float2 dx = _Pos[gj] - _Pos[gi];
+                    float distSq = dot(dx, dx);
+                    if (distSq <= EPS * EPS || distSq > targetSeparationSq)
+                    continue;
+
+                    float dist = sqrt(distSq);
+                    float Cn = dist - targetSeparation;
+                    if (Cn >= 0.0)
+                    continue;
+
+                    float2 nrm = dx / max(dist, EPS);
+
+                    float invMassICol = fixedI ? 0.0 : ReadEffectiveInvMass(gi);
+                    float invMassJCol = fixedJ ? 0.0 : ReadEffectiveInvMass(gj);
+                    float denomCol = invMassICol + invMassJCol;
+                    if (denomCol <= EPS)
+                    continue;
+
+                    uint lambdaIdx = contactBase + ck;
+                    float lambdaPrev = _CollisionLambda[lambdaIdx];
+                    float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / (denomCol + alphaCollision);
+                    float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
+                    dLambdaCol = lambdaNew - lambdaPrev;
+                    if (dLambdaCol <= 0.0)
+                    continue;
+
+                    float2 relVelBefore = _Vel[gj] - _Vel[gi];
+                    float relNormalBefore = dot(relVelBefore, nrm);
+
+                    float impulseVel = dLambdaCol / max(_Dt, EPS);
+                    if (!fixedI)
+                    _Vel[gi] -= invMassICol * impulseVel * nrm;
+                    if (!fixedJ)
+                    _Vel[gj] += invMassJCol * impulseVel * nrm;
+
+                    if (_CollisionFriction > 0.0)
+                    {
+                        float2 relVel = _Vel[gj] - _Vel[gi];
+                        float relNormal = dot(relVel, nrm);
+                        float2 tangentVel = relVel - relNormal * nrm;
+                        float tangentLen = length(tangentVel);
+                        if (tangentLen > EPS)
+                        {
+                            float2 tangentDir = tangentVel / tangentLen;
+                            float frictionImpulseVel = -tangentLen / max(denomCol, EPS);
+                            float frictionLimit = _CollisionFriction * impulseVel;
+                            frictionImpulseVel = clamp(frictionImpulseVel, -frictionLimit, frictionLimit);
+
+                            if (!fixedI)
+                            _Vel[gi] -= invMassICol * frictionImpulseVel * tangentDir;
+                            if (!fixedJ)
+                            _Vel[gj] += invMassJCol * frictionImpulseVel * tangentDir;
+                        }
+                    }
+
+                    if (_CollisionRestitution > 0.0 && relNormalBefore < -_CollisionRestitutionThreshold)
+                    {
+                        float restitutionImpulseVel = (-(1.0 + _CollisionRestitution) * relNormalBefore) / max(denomCol, EPS);
+                        if (!fixedI)
+                        _Vel[gi] -= invMassICol * restitutionImpulseVel * nrm;
+                        if (!fixedJ)
+                        _Vel[gj] += invMassJCol * restitutionImpulseVel * nrm;
+                    }
+
+                    _CollisionLambda[lambdaIdx] = lambdaNew;
+                }
+            }
+        }
+
         _Lambda[gi] = lambdaBefore + dLambda;
 
         uint fixedChildCount = ReadFixedChildCount(gi);
