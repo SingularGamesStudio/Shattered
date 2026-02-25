@@ -56,7 +56,7 @@ public sealed class Renderer : MonoBehaviour {
 
     Camera cam;
 
-    sealed class MeshlessState {
+    sealed class GlobalLayerState {
         public ComputeBuffer materialIds;
         public int[] materialIdsCpu;
 
@@ -109,8 +109,10 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
-    readonly Dictionary<Meshless, MeshlessState> states = new Dictionary<Meshless, MeshlessState>(64);
+    readonly Dictionary<int, GlobalLayerState> layerStates = new Dictionary<int, GlobalLayerState>(8);
     CameraResources cr;
+
+    const int WireframeNodeCap = 1000;
 
     int kInitKernel = -1;
     int kJfaKernel = -1;
@@ -172,12 +174,12 @@ public sealed class Renderer : MonoBehaviour {
     }
 
     void OnDisable() {
-        foreach (var kv in states) {
+        foreach (var kv in layerStates) {
             kv.Value.materialIds?.Dispose();
             kv.Value.restVolumes?.Dispose();
             kv.Value.restNorm?.Dispose();
         }
-        states.Clear();
+        layerStates.Clear();
 
         cr?.Release(cam);
         cr = null;
@@ -212,23 +214,18 @@ public sealed class Renderer : MonoBehaviour {
             accumMaterial ??= new Material(accumShader);
 
             cr.fillCmd.Clear();
-            cr.fillCmd.SetRenderTarget(cr.accum);
-            cr.fillCmd.ClearRenderTarget(true, true, Color.clear);
+            var sc = SimulationController.Instance;
+            if (sc != null &&
+                sc.TryGetStableReadSlot(out int slot) &&
+                sc.TryGetGlobalRenderBatch(out var globalHierarchy, out var globalMeshes, out var globalBaseOffsets) &&
+                globalHierarchy.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0 &&
+                globalHierarchy.TryGetLayerMappings(0, out _, out int[] globalNodeByLocal, out _, out int activeCount, out _) &&
+                globalHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH)) {
+                cr.fillCmd.SetRenderTarget(cr.accum);
+                cr.fillCmd.ClearRenderTarget(true, true, Color.clear);
 
-            var list = Meshless.Active;
-            for (int mi = 0; mi < list.Count; mi++) {
-                var m = list[mi];
-                if (m == null || !m.isActiveAndEnabled) continue;
-                if (m.nodes == null || m.nodes.Count < 3) continue;
-
-                if (!m.TryGetLayerDt(0, out var dt0) || dt0 == null || dt0.TriCount <= 0) continue;
-
-                EnsurePerNodeBuffers(m);
-
-                int realCount = m.NodeCount(0);
-                if (realCount <= 0) continue;
-
-                SetupCommon(m, dt0, lib, realCount, 0);
+                var layerState = EnsureGlobalLayerBuffers(0, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
+                SetupCommonGlobal(layerState, dt0, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
                 mpb.SetFloat(ID_UvScale, uvScale);
 
                 cr.fillCmd.DrawProcedural(Matrix4x4.identity, accumMaterial, 0, MeshTopology.Triangles, dt0.TriCount * 15, 1, mpb);
@@ -243,35 +240,40 @@ public sealed class Renderer : MonoBehaviour {
             cr.wireCmd.Clear();
             cr.wireCmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
 
-            var list = Meshless.Active;
-            for (int mi = 0; mi < list.Count; mi++) {
-                var m = list[mi];
-                if (m == null || !m.isActiveAndEnabled) continue;
-                if (m.nodes == null || m.nodes.Count < 3) continue;
+            var sc = SimulationController.Instance;
+            if (sc != null &&
+                sc.TryGetStableReadSlot(out int slot) &&
+                sc.TryGetGlobalRenderBatch(out var globalHierarchy, out var globalMeshes, out var globalBaseOffsets)) {
+                bool skipWire = globalHierarchy.TryGetLayerMappings(0, out _, out _, out _, out int layer0ActiveCount, out _) &&
+                    layer0ActiveCount > WireframeNodeCap;
 
-                EnsurePerNodeBuffers(m);
+                if (!skipWire) {
+                    int maxLayer = globalHierarchy.MaxLayer;
+                    for (int layer = 0; layer <= maxLayer; layer++) {
+                        if (layer != 0 && !drawCoarseLayers) continue;
 
-                if (m.NodeCount(0) > 1000) continue;
+                        if (!globalHierarchy.TryGetLayerDt(layer, out var dt) || dt == null || dt.TriCount <= 0)
+                            continue;
 
-                int maxLayer = m.maxLayer;
-                for (int layer = 0; layer <= maxLayer; layer++) {
-                    if (layer != 0 && !drawCoarseLayers) continue;
+                        if (!globalHierarchy.TryGetLayerMappings(layer, out _, out int[] globalNodeByLocal, out _, out int activeCount, out _))
+                            continue;
+                        if (activeCount <= 0)
+                            continue;
 
-                    if (!m.TryGetLayerDt(layer, out var dt) || dt == null) continue;
-                    if (dt.TriCount <= 0) continue;
+                        if (!globalHierarchy.TryGetLayerExecutionContext(layer, out _, out _, out float layerKernelH))
+                            continue;
 
-                    int realCount = m.NodeCount(layer);
-                    if (realCount <= 0) continue;
+                        float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
+                        Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
 
-                    float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
-                    Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
+                        var layerState = EnsureGlobalLayerBuffers(layer, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
+                        SetupCommonGlobal(layerState, dt, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
+                        mpb.SetColor("_WireColor", wireColor);
+                        mpb.SetFloat("_WireWidthPx", wireWidthPixels);
 
-                    SetupCommon(m, dt, lib, realCount, layer);
-                    mpb.SetColor("_WireColor", wireColor);
-                    mpb.SetFloat("_WireWidthPx", wireWidthPixels);
-
-                    int vertexCount = dt.TriCount * 3 * 6;
-                    cr.wireCmd.DrawProcedural(Matrix4x4.identity, wireMaterial, 0, MeshTopology.Triangles, vertexCount, 1, mpb);
+                        int vertexCount = dt.TriCount * 3 * 6;
+                        cr.wireCmd.DrawProcedural(Matrix4x4.identity, wireMaterial, 0, MeshTopology.Triangles, vertexCount, 1, mpb);
+                    }
                 }
             }
         } else {
@@ -429,80 +431,168 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
-    void EnsurePerNodeBuffers(Meshless m) {
-        if (!states.TryGetValue(m, out var st)) {
-            st = new MeshlessState();
-            states[m] = st;
+    GlobalLayerState EnsureGlobalLayerBuffers(
+        int layer,
+        int[] globalNodeByLocal,
+        int activeCount,
+        IReadOnlyList<Meshless> meshes,
+        IReadOnlyList<int> baseOffsets,
+        float2 normCenter,
+        float normInvHalfExtent
+    ) {
+        if (!layerStates.TryGetValue(layer, out var st)) {
+            st = new GlobalLayerState();
+            layerStates[layer] = st;
         }
 
-        int n = m.nodes.Count;
-        bool reallocated = st.capacity != n || st.materialIds == null || st.restNorm == null;
+        bool reallocated = st.capacity != activeCount || st.materialIds == null || st.restNorm == null;
         if (reallocated) {
             st.materialIds?.Dispose();
             st.restVolumes?.Dispose();
             st.restNorm?.Dispose();
 
-            st.materialIds = new ComputeBuffer(n, sizeof(int), ComputeBufferType.Structured);
-            st.materialIdsCpu = new int[n];
+            st.materialIds = new ComputeBuffer(activeCount, sizeof(int), ComputeBufferType.Structured);
+            st.materialIdsCpu = new int[activeCount];
 
-            st.restVolumes = new ComputeBuffer(n, sizeof(float), ComputeBufferType.Structured);
-            st.restVolumesCpu = new float[n];
+            st.restVolumes = new ComputeBuffer(activeCount, sizeof(float), ComputeBufferType.Structured);
+            st.restVolumesCpu = new float[activeCount];
 
-            st.restNorm = new ComputeBuffer(n, sizeof(float) * 2, ComputeBufferType.Structured);
-            st.restNormCpu = new Vector2[n];
+            st.restNorm = new ComputeBuffer(activeCount, sizeof(float) * 2, ComputeBufferType.Structured);
+            st.restNormCpu = new Vector2[activeCount];
 
-            st.capacity = n;
+            st.capacity = activeCount;
             st.lastCenter = new float2(float.NaN, float.NaN);
             st.lastInvHalfExtent = float.NaN;
         }
 
         bool materialIdsChanged = reallocated;
-        for (int i = 0; i < n; i++) {
-            int id = m.nodes[i].materialId;
-            if (st.materialIdsCpu[i] != id) {
-                st.materialIdsCpu[i] = id;
+        bool restVolumesChanged = reallocated;
+        bool restNormChanged = reallocated || !math.all(st.lastCenter == normCenter) || st.lastInvHalfExtent != normInvHalfExtent;
+        int meshHint = 0;
+
+        for (int li = 0; li < activeCount; li++) {
+            int gi = (globalNodeByLocal != null && li < globalNodeByLocal.Length) ? globalNodeByLocal[li] : -1;
+            if (!TryResolveGlobalNode(gi, meshes, baseOffsets, ref meshHint, out Node node))
+                continue;
+
+            int materialId = node.materialId;
+            if (st.materialIdsCpu[li] != materialId) {
+                st.materialIdsCpu[li] = materialId;
                 materialIdsChanged = true;
             }
-        }
-        if (materialIdsChanged)
-            st.materialIds.SetData(st.materialIdsCpu);
 
-        bool restVolumesChanged = reallocated;
-        for (int i = 0; i < n; i++) {
-            float v = m.nodes[i].restVolume;
-            if (!Mathf.Approximately(st.restVolumesCpu[i], v)) {
-                st.restVolumesCpu[i] = v;
+            float restVolume = node.restVolume;
+            if (!Mathf.Approximately(st.restVolumesCpu[li], restVolume)) {
+                st.restVolumesCpu[li] = restVolume;
                 restVolumesChanged = true;
             }
-        }
-        if (restVolumesChanged)
-            st.restVolumes.SetData(st.restVolumesCpu);
 
-        float2 center = m.DtNormCenter;
-        float inv = m.DtNormInvHalfExtent;
-        if (!math.all(st.lastCenter == center) || st.lastInvHalfExtent != inv) {
-            for (int i = 0; i < n; i++) {
-                float2 p = m.nodes[i].originalPos;
-                float2 norm = (p - center) * inv;
-                st.restNormCpu[i] = new Vector2(norm.x, norm.y);
+            if (restNormChanged) {
+                float2 norm = (node.originalPos - normCenter) * normInvHalfExtent;
+                st.restNormCpu[li] = new Vector2(norm.x, norm.y);
             }
-            st.restNorm.SetData(st.restNormCpu);
-
-            st.lastCenter = center;
-            st.lastInvHalfExtent = inv;
         }
+
+        if (materialIdsChanged)
+            st.materialIds.SetData(st.materialIdsCpu, 0, 0, activeCount);
+        if (restVolumesChanged)
+            st.restVolumes.SetData(st.restVolumesCpu, 0, 0, activeCount);
+        if (restNormChanged) {
+            st.restNorm.SetData(st.restNormCpu, 0, 0, activeCount);
+            st.lastCenter = normCenter;
+            st.lastInvHalfExtent = normInvHalfExtent;
+        }
+
+        return st;
     }
 
-    void SetupCommon(Meshless m, DT dt, MaterialLibrary lib, int realPointCount, int layer) {
-        if (!states.TryGetValue(m, out var st) || st.materialIds == null || st.restNorm == null) return;
+    static bool TryResolveGlobalNode(
+        int globalNode,
+        IReadOnlyList<Meshless> meshes,
+        IReadOnlyList<int> baseOffsets,
+        ref int meshHint,
+        out Node node
+    ) {
+        node = default;
+
+        if (globalNode < 0 || meshes == null || baseOffsets == null || meshes.Count != baseOffsets.Count)
+            return false;
+
+        int meshCount = meshes.Count;
+        if (meshCount <= 0)
+            return false;
+
+        if (meshHint < 0 || meshHint >= meshCount)
+            meshHint = 0;
+
+        if (TryResolveGlobalNodeAt(globalNode, meshes, baseOffsets, meshHint, out node))
+            return true;
+
+        int lo = 0;
+        int hi = meshCount - 1;
+        while (lo <= hi) {
+            int mid = lo + ((hi - lo) >> 1);
+            int baseIndex = baseOffsets[mid];
+            int nextBase = (mid + 1 < meshCount) ? baseOffsets[mid + 1] : int.MaxValue;
+
+            if (globalNode < baseIndex) {
+                hi = mid - 1;
+                continue;
+            }
+
+            if (globalNode >= nextBase) {
+                lo = mid + 1;
+                continue;
+            }
+
+            meshHint = mid;
+            return TryResolveGlobalNodeAt(globalNode, meshes, baseOffsets, mid, out node);
+        }
+
+        return false;
+    }
+
+    static bool TryResolveGlobalNodeAt(
+        int globalNode,
+        IReadOnlyList<Meshless> meshes,
+        IReadOnlyList<int> baseOffsets,
+        int meshIndex,
+        out Node node
+    ) {
+        node = default;
+
+        if (meshIndex < 0 || meshIndex >= meshes.Count)
+            return false;
+
+        Meshless m = meshes[meshIndex];
+        if (m == null || m.nodes == null || m.nodes.Count <= 0)
+            return false;
+
+        int baseIndex = baseOffsets[meshIndex];
+        int local = globalNode - baseIndex;
+        if (local < 0 || local >= m.nodes.Count)
+            return false;
+
+        node = m.nodes[local];
+        return true;
+    }
+
+    void SetupCommonGlobal(
+        GlobalLayerState st,
+        DT dt,
+        MaterialLibrary lib,
+        int realPointCount,
+        float layerKernelH,
+        float2 normCenter,
+        float normInvHalfExtent,
+        int slot
+    ) {
+        if (st == null || st.materialIds == null || st.restNorm == null)
+            return;
 
         float alpha = 0f;
         var sc = SimulationController.Instance;
         if (sc != null) alpha = sc.RenderAlpha;
-
-        int slot = 0;
-        if (sc != null)
-            sc.TryGetStableReadSlot(m, out slot);
 
         var positions = dt.GetPositionsBuffer(slot);
         var halfEdges = dt.GetHalfEdgesBuffer(slot);
@@ -522,7 +612,6 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetFloat(ID_RenderAlpha, alpha);
 
         mpb.SetBuffer(ID_Positions, positions);
-
         mpb.SetBuffer(ID_HalfEdges, halfEdges);
         mpb.SetBuffer(ID_TriToHE, triToHe);
 
@@ -530,15 +619,14 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetBuffer(ID_RestVolumes, st.restVolumes);
         mpb.SetBuffer(ID_RestNormPositions, st.restNorm);
 
-        float layerKernelH = m.GetLayerKernelH(layer);
-        float layerKernelHNorm = layerKernelH * m.DtNormInvHalfExtent;
+        float layerKernelHNorm = layerKernelH * normInvHalfExtent;
         mpb.SetFloat(ID_LayerKernelH, layerKernelHNorm);
         mpb.SetFloat(ID_WendlandSupportScale, Const.WendlandSupport);
 
         mpb.SetInt(ID_RealPointCount, realPointCount);
 
-        mpb.SetVector(ID_NormCenter, new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
-        mpb.SetFloat(ID_NormInvHalfExtent, m.DtNormInvHalfExtent);
+        mpb.SetVector(ID_NormCenter, new Vector4(normCenter.x, normCenter.y, 0f, 0f));
+        mpb.SetFloat(ID_NormInvHalfExtent, normInvHalfExtent);
     }
 
     static Bounds ComputeBoundsFromNorm(Meshless m) {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using GPU.Delaunay;
 using GPU.Solver;
 using Unity.Mathematics;
 using UnityEngine;
@@ -42,19 +43,30 @@ public sealed class SimulationController : MonoBehaviour {
     [Min(0.001f)] public float cpuReadbackInterval = 0.02f;
 
     readonly List<Meshless> meshless = new List<Meshless>(64);
-    readonly Dictionary<Meshless, XPBISolver> gpuSolverCache = new Dictionary<Meshless, XPBISolver>();
-    readonly Dictionary<Meshless, int> tickCounters = new Dictionary<Meshless, int>();
+    readonly List<Meshless> activeMeshlessBatch = new List<Meshless>(64);
+    readonly List<int> activeMeshlessBaseOffsets = new List<int>(64);
+    XPBISolver globalSolver;
+    GlobalDTHierarchy globalDTHierarchy;
+    bool globalHierarchyDirty = true;
+
     readonly List<XPBISolver.ForceEvent> gatheredForceEvents = new List<XPBISolver.ForceEvent>(256);
     XPBISolver.ForceEvent[] forceEventUpload = Array.Empty<XPBISolver.ForceEvent>();
 
-    struct CpuReadbackState {
-        public bool pending;
-        public float lastRequestTime;
-    }
+    bool globalCpuReadbackPending;
+    float globalCpuReadbackLastRequestTime = -999f;
+    int cachedGlobalBatchFrame = -1;
+    bool cachedGlobalBatchValid;
+    float lastAsyncSubmitIssueLogTime = -999f;
 
-    readonly Dictionary<Meshless, CpuReadbackState> cpuReadbackStates = new Dictionary<Meshless, CpuReadbackState>();
+    readonly List<Meshless> readbackMeshesSnapshot = new List<Meshless>(64);
+    readonly List<int> readbackBaseOffsetsSnapshot = new List<int>(64);
+    int[] readbackMappingSnapshot = Array.Empty<int>();
+    int readbackMappingCount;
+    int[] readbackGlobalToLocal = Array.Empty<int>();
+    float2 readbackNormCenter;
+    float readbackNormInvHalfExtent;
 
-    // Triple‑buffer state per Meshless
+    // Triple-buffer state (global for all meshless systems)
     struct AsyncTripleState {
         public int renderSlot;          // slot currently used for rendering (0‑2)
         public int writeSlot;            // slot currently being written to (if any)
@@ -65,7 +77,7 @@ public sealed class SimulationController : MonoBehaviour {
         public int completedWriteSlot;   // slot whose compute finished but waiting to become render
         public bool computeCompleted;    // true if compute finished but promotion pending
     }
-    readonly Dictionary<Meshless, AsyncTripleState> asyncStates = new Dictionary<Meshless, AsyncTripleState>();
+    AsyncTripleState asyncState;
 
     // Persistent command buffer to record render fences
     CommandBuffer renderFenceCmd;
@@ -107,64 +119,85 @@ public sealed class SimulationController : MonoBehaviour {
     void OnDestroy() {
         if (Instance == this) Instance = null;
 
-        foreach (var kv in gpuSolverCache)
-            kv.Value?.Dispose();
-        gpuSolverCache.Clear();
+        globalSolver?.Dispose();
+        globalSolver = null;
 
-        tickCounters.Clear();
-        asyncStates.Clear();
+        globalDTHierarchy?.Dispose();
+        globalDTHierarchy = null;
+
+        meshless.Clear();
+        activeMeshlessBatch.Clear();
+        activeMeshlessBaseOffsets.Clear();
     }
 
     public void Register(Meshless m) {
         if (m != null && !meshless.Contains(m)) {
             meshless.Add(m);
-            tickCounters[m] = 0;
+            globalHierarchyDirty = true;
+            cachedGlobalBatchFrame = -1;
 
-            // Initialise triple‑buffer state
-            asyncStates[m] = new AsyncTripleState {
-                renderSlot = 0,
-                writeSlot = -1,
-                freeSlot = 1,
-                renderFences = new GraphicsFence[3],
-                writePending = false,
-                computeCompleted = false,
-                completedWriteSlot = -1
-            };
+            if (globalSolver == null)
+                globalSolver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
+            if (globalDTHierarchy == null)
+                globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
 
-            cpuReadbackStates[m] = new CpuReadbackState {
-                pending = false,
-                lastRequestTime = -999f,
-            };
+            if (asyncState.renderFences == null || asyncState.renderFences.Length != 3) {
+                asyncState = new AsyncTripleState {
+                    renderSlot = 0,
+                    writeSlot = -1,
+                    freeSlot = 1,
+                    renderFences = new GraphicsFence[3],
+                    writePending = false,
+                    computeCompleted = false,
+                    completedWriteSlot = -1
+                };
+            }
         }
     }
 
     public void Unregister(Meshless m) {
         if (m != null) {
             meshless.Remove(m);
-            tickCounters.Remove(m);
-            asyncStates.Remove(m);
-            cpuReadbackStates.Remove(m);
-
-            if (gpuSolverCache.TryGetValue(m, out XPBISolver solver)) {
-                solver.Dispose();
-                gpuSolverCache.Remove(m);
-            }
+            globalHierarchyDirty = true;
+            cachedGlobalBatchFrame = -1;
         }
     }
 
-    public bool TryGetStableReadSlot(Meshless m, out int slot) {
+    public bool TryGetStableReadSlot(out int slot) {
         slot = 0;
-        if (m == null)
-            return false;
-
-        if (!asyncStates.TryGetValue(m, out var state))
-            return false;
-
-        int renderSlot = state.renderSlot;
+        int renderSlot = asyncState.renderSlot;
         if (renderSlot < 0 || renderSlot > 2)
             return false;
 
         slot = renderSlot;
+        return true;
+    }
+
+    public bool TryGetGlobalRenderBatch(out GlobalDTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets) {
+        hierarchy = null;
+        meshes = null;
+        baseOffsets = null;
+
+        int frame = Time.frameCount;
+        if (cachedGlobalBatchFrame != frame) {
+            BuildActiveMeshlessBatch();
+            if (activeMeshlessBatch.Count == 0) {
+                cachedGlobalBatchValid = false;
+                cachedGlobalBatchFrame = frame;
+                return false;
+            }
+
+            EnsureGlobalDTHierarchyBuilt();
+            cachedGlobalBatchValid = globalDTHierarchy != null && globalDTHierarchy.MaxLayer >= 0;
+            cachedGlobalBatchFrame = frame;
+        }
+
+        if (!cachedGlobalBatchValid)
+            return false;
+
+        hierarchy = globalDTHierarchy;
+        meshes = activeMeshlessBatch;
+        baseOffsets = activeMeshlessBaseOffsets;
         return true;
     }
 
@@ -195,52 +228,31 @@ public sealed class SimulationController : MonoBehaviour {
 
         renderFenceCmd.Clear();
 
-        // Record a fence for the current render slot of each active Meshless
-        foreach (var m in meshless) {
-            if (m == null) continue;
-            if (!asyncStates.TryGetValue(m, out var state)) continue;
+        int slot = asyncState.renderSlot;
+        if (slot < 0 || slot > 2)
+            return;
 
-            int slot = state.renderSlot;
-            GraphicsFence fence = renderFenceCmd.CreateGraphicsFence(
-                GraphicsFenceType.AsyncQueueSynchronisation,
-                SynchronisationStageFlags.PixelProcessing);
-
-            // Update state immediately – the fence handle is valid now.
-            state.renderFences[slot] = fence;
-            asyncStates[m] = state;
-        }
-
-        // No manual execution – the camera will execute this command buffer automatically.
+        GraphicsFence fence = renderFenceCmd.CreateGraphicsFence(
+            GraphicsFenceType.AsyncQueueSynchronisation,
+            SynchronisationStageFlags.PixelProcessing);
+        asyncState.renderFences[slot] = fence;
     }
 
     void AutoUpdateAsync(float frameDt, float tickDt) {
         accumulator += frameDt;
 
-        int ticksToRun = 0;
-        while (accumulator >= tickDt && ticksToRun < maxTicksPerBatch) {
-            accumulator -= tickDt;
-            ticksToRun++;
-        }
+        int ticksToRun = Mathf.Min(maxTicksPerBatch, (int)(accumulator / tickDt));
 
         if (ticksToRun <= 0) return;
 
         float dt = tickDt * simulationSpeed;
-        bool submittedAny = false;
 
-        for (int i = meshless.Count - 1; i >= 0; i--) {
-            var m = meshless[i];
-            if (m == null || !m.isActiveAndEnabled) {
-                meshless.RemoveAt(i);
-                if (m != null) Unregister(m);
-                continue;
-            }
-
-            if (SubmitMeshlessAsyncBatch(m, dt, ticksToRun))
-                submittedAny = true;
-        }
-
-        if (submittedAny)
+        if (SubmitGlobalAsyncBatch(dt, ticksToRun)) {
+            accumulator -= tickDt * ticksToRun;
+            if (accumulator < 0f)
+                accumulator = 0f;
             lastFrameTicks += ticksToRun;
+        }
     }
 
     void ManualUpdateAsync(float frameDt, float tickDt) {
@@ -255,30 +267,16 @@ public sealed class SimulationController : MonoBehaviour {
             if (keyHeldTime >= holdThreshold) {
                 accumulator += frameDt;
 
-                int ticksToRun = 0;
-                while (accumulator >= tickDt && ticksToRun < maxTicksPerBatch) {
-                    accumulator -= tickDt;
-                    ticksToRun++;
-                }
+                int ticksToRun = Mathf.Min(maxTicksPerBatch, (int)(accumulator / tickDt));
 
                 if (ticksToRun > 0) {
                     float dt = tickDt * simulationSpeed;
-                    bool submittedAny = false;
-
-                    for (int i = meshless.Count - 1; i >= 0; i--) {
-                        var m = meshless[i];
-                        if (m == null || !m.isActiveAndEnabled) {
-                            meshless.RemoveAt(i);
-                            if (m != null) Unregister(m);
-                            continue;
-                        }
-
-                        if (SubmitMeshlessAsyncBatch(m, dt, ticksToRun))
-                            submittedAny = true;
-                    }
-
-                    if (submittedAny)
+                    if (SubmitGlobalAsyncBatch(dt, ticksToRun)) {
+                        accumulator -= tickDt * ticksToRun;
+                        if (accumulator < 0f)
+                            accumulator = 0f;
                         lastFrameTicks += ticksToRun;
+                    }
                 }
             }
         }
@@ -286,21 +284,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (Input.GetKeyUp(KeyCode.T)) {
             if (keyHeldTime < holdThreshold) {
                 float dt = tickDt * simulationSpeed;
-                bool submittedAny = false;
-
-                for (int i = meshless.Count - 1; i >= 0; i--) {
-                    var m = meshless[i];
-                    if (m == null || !m.isActiveAndEnabled) {
-                        meshless.RemoveAt(i);
-                        if (m != null) Unregister(m);
-                        continue;
-                    }
-
-                    if (SubmitMeshlessAsyncBatch(m, dt, 1))
-                        submittedAny = true;
-                }
-
-                if (submittedAny)
+                if (SubmitGlobalAsyncBatch(dt, 1))
                     lastFrameTicks += 1;
             }
 
@@ -309,61 +293,58 @@ public sealed class SimulationController : MonoBehaviour {
         }
     }
 
-    bool SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
-        if (m == null || ticksToRun <= 0)
+    bool SubmitGlobalAsyncBatch(float dtPerTick, int ticksToRun) {
+        if (ticksToRun <= 0)
             return false;
 
-        if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
-            solver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
-            gpuSolverCache[m] = solver;
+        if (globalSolver == null)
+            globalSolver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
+
+        if (asyncState.renderFences == null || asyncState.renderFences.Length != 3)
+            return false;
+
+        if (asyncState.writePending || asyncState.computeCompleted) {
+            LogAsyncSubmitIssue("Cannot submit async batch: previous batch still pending.");
+            return false;
         }
 
-        GatherForceEventsForMeshless(m, dtPerTick, ticksToRun);
+        if (!TrySelectWritableSlot(ref asyncState, out int freeSlot)) {
+            LogAsyncSubmitIssue("Cannot submit async batch: no writable slot available.");
+            return false;
+        }
+
+        BuildActiveMeshlessBatch();
+        if (activeMeshlessBatch.Count == 0)
+            return false;
+
+        GatherForceEventsForGlobal(activeMeshlessBatch, activeMeshlessBaseOffsets, dtPerTick, ticksToRun);
         if (gatheredForceEvents.Count > 0) {
             EnsureForceUploadCapacity(gatheredForceEvents.Count);
             gatheredForceEvents.CopyTo(forceEventUpload, 0);
-            solver.SetGameplayForces(forceEventUpload, gatheredForceEvents.Count);
+            globalSolver.SetGameplayForces(forceEventUpload, gatheredForceEvents.Count);
         } else {
-            solver.ClearGameplayForces();
+            globalSolver.ClearGameplayForces();
         }
 
-        if (!tickCounters.ContainsKey(m)) tickCounters[m] = 0;
-        int lastTickId = tickCounters[m];
-        int tickIdAfterBatch = lastTickId + ticksToRun;
+        EnsureGlobalDTHierarchyBuilt();
 
-        if (!asyncStates.TryGetValue(m, out var state))
-            return false;
-
-        // If we already have a pending write, cannot start another.
-        if (state.writePending)
-            return false;
-
-        // If there's a completed slot waiting to become render, we cannot start a new batch because we have no free slot.
-        if (state.computeCompleted)
-            return false;
-
-        if (!TrySelectWritableSlot(ref state, out int freeSlot))
-            return false;
-
-        // Submit the batch, writing into the free slot.
-        GraphicsFence computeFence = solver.SubmitSolve(
-            m,
+        int readSlot = asyncState.renderSlot;
+        GraphicsFence computeFence = globalSolver.SubmitSolve(
+            activeMeshlessBatch,
             dtPerTick,
             ticksToRun,
             useHierarchicalSolver,
             ConvergenceDebugEnabled,
             asyncQueue,
-            freeSlot
+            readSlot,
+            freeSlot,
+            globalDTHierarchy
         );
 
-        // Update state
-        state.writePending = true;
-        state.writeSlot = freeSlot;
-        state.computeFence = computeFence;
-        state.freeSlot = -1; // temporarily no free slot
-        asyncStates[m] = state;
-
-        tickCounters[m] = tickIdAfterBatch;
+        asyncState.writePending = true;
+        asyncState.writeSlot = freeSlot;
+        asyncState.computeFence = computeFence;
+        asyncState.freeSlot = -1;
         return true;
     }
 
@@ -380,36 +361,88 @@ public sealed class SimulationController : MonoBehaviour {
         return IsFencePassedOrUnset(state.renderFences[slot]);
     }
 
+    static int NextRingSlot(int slot) {
+        if (slot < 0 || slot > 2)
+            return -1;
+
+        return (slot + 1) % 3;
+    }
+
     bool TrySelectWritableSlot(ref AsyncTripleState state, out int slot) {
         slot = -1;
 
-        if (IsSlotWritable(state, state.freeSlot)) {
-            slot = state.freeSlot;
-            return true;
-        }
+        int candidate = NextRingSlot(state.renderSlot);
+        if (!IsSlotWritable(state, candidate))
+            return false;
 
-        for (int i = 0; i < 3; i++) {
-            if (!IsSlotWritable(state, i))
-                continue;
-
-            slot = i;
-            state.freeSlot = i;
-            return true;
-        }
-
-        return false;
+        slot = candidate;
+        state.freeSlot = candidate;
+        return true;
     }
 
-    void GatherForceEventsForMeshless(Meshless target, float dtPerTick, int ticksToRun) {
+    void BuildActiveMeshlessBatch() {
+        activeMeshlessBatch.Clear();
+        activeMeshlessBaseOffsets.Clear();
+
+        int baseOffset = 0;
+        for (int i = meshless.Count - 1; i >= 0; i--) {
+            var m = meshless[i];
+            if (m == null || !m.isActiveAndEnabled || m.nodes == null || m.nodes.Count <= 0) {
+                meshless.RemoveAt(i);
+                globalHierarchyDirty = true;
+                cachedGlobalBatchFrame = -1;
+                continue;
+            }
+        }
+
+        for (int i = 0; i < meshless.Count; i++) {
+            var m = meshless[i];
+            activeMeshlessBatch.Add(m);
+            activeMeshlessBaseOffsets.Add(baseOffset);
+            baseOffset += m.nodes.Count;
+        }
+    }
+
+    void EnsureGlobalDTHierarchyBuilt() {
+        if (globalDTHierarchy == null)
+            globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
+        if (!globalHierarchyDirty)
+            return;
+
+        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, false);
+        globalHierarchyDirty = false;
+    }
+
+    void LogAsyncSubmitIssue(string message) {
+        if (Time.unscaledTime < lastAsyncSubmitIssueLogTime + 1f)
+            return;
+
+        lastAsyncSubmitIssueLogTime = Time.unscaledTime;
+        Debug.LogWarning(message);
+    }
+
+    void GatherForceEventsForGlobal(List<Meshless> activeMeshes, List<int> baseOffsets, float dtPerTick, int ticksToRun) {
         gatheredForceEvents.Clear();
 
         var controllers = MeshlessForceControllerRegistry.Controllers;
-        for (int i = 0; i < controllers.Count; i++) {
-            var controller = controllers[i];
-            if (controller == null || !controller.IsActive)
-                continue;
+        for (int meshIdx = 0; meshIdx < activeMeshes.Count; meshIdx++) {
+            Meshless target = activeMeshes[meshIdx];
+            int baseOffset = baseOffsets[meshIdx];
 
-            controller.GatherForceEvents(target, dtPerTick, ticksToRun, gatheredForceEvents);
+            for (int i = 0; i < controllers.Count; i++) {
+                var controller = controllers[i];
+                if (controller == null || !controller.IsActive)
+                    continue;
+
+                int startIndex = gatheredForceEvents.Count;
+                controller.GatherForceEvents(target, dtPerTick, ticksToRun, gatheredForceEvents);
+
+                for (int e = startIndex; e < gatheredForceEvents.Count; e++) {
+                    XPBISolver.ForceEvent evt = gatheredForceEvents[e];
+                    evt.node += (uint)baseOffset;
+                    gatheredForceEvents[e] = evt;
+                }
+            }
         }
     }
 
@@ -425,111 +458,142 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void ProcessAsyncBatchCompletions() {
-        if (asyncStates.Count == 0) return;
+        if (asyncState.renderFences == null)
+            return;
 
-        var keys = ListPool<Meshless>.Get();
-        foreach (var kv in asyncStates) keys.Add(kv.Key);
-
-        for (int i = 0; i < keys.Count; i++) {
-            var m = keys[i];
-            if (m == null) continue;
-
-            if (!asyncStates.TryGetValue(m, out var state))
-                continue;
-
-            // First, check if we have a compute batch that just finished
-            if (state.writePending && state.computeFence.passed) {
-                // Compute on writeSlot is done.
-                // Mark it as completed, waiting to become render.
-                state.computeCompleted = true;
-                state.completedWriteSlot = state.writeSlot;
-                state.writePending = false;
-                state.writeSlot = -1;
-                // writeSlot is now pending promotion; keep writeSlot as is for now.
-                // freeSlot remains -1 because we haven't freed anything yet.
-                asyncStates[m] = state;
-            }
-
-            // If we have a completed slot waiting, try to promote it to render.
-            if (state.computeCompleted) {
-                int candidateSlot = state.completedWriteSlot;
-                if (candidateSlot >= 0 && candidateSlot <= 2 && candidateSlot != state.renderSlot) {
-                    int oldRender = state.renderSlot;
-                    state.renderSlot = candidateSlot;
-                    state.freeSlot = oldRender;
-                }
-
-                state.computeCompleted = false;
-                state.completedWriteSlot = -1;
-                asyncStates[m] = state;
-            }
+        if (asyncState.writePending && asyncState.computeFence.passed) {
+            asyncState.computeCompleted = true;
+            asyncState.completedWriteSlot = asyncState.writeSlot;
+            asyncState.writePending = false;
+            asyncState.writeSlot = -1;
         }
 
-        ListPool<Meshless>.Release(keys);
+        if (asyncState.computeCompleted) {
+            int candidateSlot = asyncState.completedWriteSlot;
+            if (candidateSlot < 0 || candidateSlot > 2)
+                return;
+
+            GraphicsFence renderFence = asyncState.renderFences[asyncState.renderSlot];
+            if (renderFence.Equals(default(GraphicsFence)) || renderFence.passed) {
+                int oldRender = asyncState.renderSlot;
+                asyncState.renderSlot = candidateSlot;
+                asyncState.freeSlot = oldRender;
+                asyncState.computeCompleted = false;
+                asyncState.completedWriteSlot = -1;
+            }
+        }
     }
 
     void UpdateContinuousCpuReadback() {
         if (!enableContinuousCpuReadback)
             return;
 
-        for (int i = 0; i < meshless.Count; i++) {
-            var m = meshless[i];
-            if (m == null || !m.isActiveAndEnabled)
-                continue;
-
-            RequestCpuReadbackIfNeeded(m);
-        }
-    }
-
-    void RequestCpuReadbackIfNeeded(Meshless m) {
-        if (m == null)
+        if (globalCpuReadbackPending)
             return;
 
-        if (!cpuReadbackStates.TryGetValue(m, out var state)) {
-            state = new CpuReadbackState {
-                pending = false,
-                lastRequestTime = -999f,
-            };
-        }
-
-        if (state.pending)
+        if (Time.time < globalCpuReadbackLastRequestTime + cpuReadbackInterval)
             return;
 
-        if (Time.time < state.lastRequestTime + cpuReadbackInterval)
+        if (!TryGetGlobalRenderBatch(out GlobalDTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets))
             return;
 
-        if (!m.TryGetLayerDt(0, out var dt) || dt == null)
+        if (!TryGetStableReadSlot(out int slot))
             return;
 
-        if (!TryGetStableReadSlot(m, out int slot))
+        if (!hierarchy.TryGetLayerDt(0, out DT dt) || dt == null)
+            return;
+
+        if (!hierarchy.TryGetLayerMappings(0, out _, out int[] globalNodeByLocal, out _, out int activeCount, out _))
+            return;
+        if (activeCount <= 0)
             return;
 
         var positions = dt.GetPositionsBuffer(slot);
         if (positions == null)
             return;
 
-        state.pending = true;
-        state.lastRequestTime = Time.time;
-        cpuReadbackStates[m] = state;
+        globalCpuReadbackPending = true;
+        globalCpuReadbackLastRequestTime = Time.time;
 
-        AsyncGPUReadback.Request(positions, request => OnCpuReadbackComplete(m, request));
+        readbackMeshesSnapshot.Clear();
+        readbackBaseOffsetsSnapshot.Clear();
+        for (int i = 0; i < meshes.Count; i++)
+            readbackMeshesSnapshot.Add(meshes[i]);
+        for (int i = 0; i < baseOffsets.Count; i++)
+            readbackBaseOffsetsSnapshot.Add(baseOffsets[i]);
+
+        if (readbackMappingSnapshot.Length < globalNodeByLocal.Length)
+            readbackMappingSnapshot = new int[globalNodeByLocal.Length];
+        Array.Copy(globalNodeByLocal, 0, readbackMappingSnapshot, 0, globalNodeByLocal.Length);
+        readbackMappingCount = globalNodeByLocal.Length;
+
+        readbackNormCenter = hierarchy.NormCenter;
+        readbackNormInvHalfExtent = hierarchy.NormInvHalfExtent;
+
+        AsyncGPUReadback.Request(positions, OnGlobalCpuReadbackComplete);
     }
 
-    void OnCpuReadbackComplete(Meshless m, AsyncGPUReadbackRequest request) {
-        if (m != null && cpuReadbackStates.TryGetValue(m, out var state)) {
-            state.pending = false;
-            cpuReadbackStates[m] = state;
-        }
+    void OnGlobalCpuReadbackComplete(AsyncGPUReadbackRequest request) {
+        globalCpuReadbackPending = false;
 
-        if (m == null || request.hasError)
+        if (request.hasError)
             return;
 
-        int expectedCount = m.nodes != null ? m.nodes.Count : 0;
-        if (expectedCount <= 0)
+        if (readbackMeshesSnapshot == null || readbackBaseOffsetsSnapshot == null || readbackMappingSnapshot == null)
+            return;
+
+        int total = 0;
+        for (int i = 0; i < readbackMeshesSnapshot.Count; i++) {
+            Meshless m = readbackMeshesSnapshot[i];
+            if (m == null || m.nodes == null)
+                continue;
+            total += m.nodes.Count;
+        }
+        if (total <= 0)
             return;
 
         var data = request.GetData<float2>();
-        m.ApplyCpuReadbackNormalizedPositions(data, expectedCount);
+        if (data.Length <= 0)
+            return;
+
+        int safeTotal = Mathf.Max(1, total);
+        if (readbackGlobalToLocal.Length < safeTotal)
+            readbackGlobalToLocal = new int[safeTotal];
+        for (int i = 0; i < safeTotal; i++)
+            readbackGlobalToLocal[i] = -1;
+
+        int mapCount = Mathf.Min(readbackMappingCount, data.Length);
+        for (int li = 0; li < mapCount; li++) {
+            int gi = readbackMappingSnapshot[li];
+            if (gi >= 0 && gi < safeTotal)
+                readbackGlobalToLocal[gi] = li;
+        }
+
+        float inv = readbackNormInvHalfExtent > 0f ? (1f / readbackNormInvHalfExtent) : 0f;
+        if (!(inv > 0f))
+            return;
+
+        for (int meshIdx = 0; meshIdx < readbackMeshesSnapshot.Count; meshIdx++) {
+            Meshless m = readbackMeshesSnapshot[meshIdx];
+            if (m == null || m.nodes == null || !m.isActiveAndEnabled)
+                continue;
+
+            int baseOffset = readbackBaseOffsetsSnapshot[meshIdx];
+            int count = m.nodes.Count;
+            for (int i = 0; i < count; i++) {
+                int gi = baseOffset + i;
+                if (gi < 0 || gi >= safeTotal)
+                    continue;
+                int li = readbackGlobalToLocal[gi];
+                if (li < 0 || li >= data.Length)
+                    continue;
+
+                float2 worldPos = data[li] * inv + readbackNormCenter;
+                Node node = m.nodes[i];
+                node.pos = worldPos;
+                m.nodes[i] = node;
+            }
+        }
     }
 
     void UpdateTpsDisplay(float frameDt) {
@@ -562,16 +626,4 @@ public sealed class SimulationController : MonoBehaviour {
         GUI.Label(new Rect(tpsOverlayPos.x, tpsOverlayPos.y, 260f, 105f), text);
     }
 
-    static class ListPool<T> {
-        static readonly Stack<List<T>> pool = new Stack<List<T>>(16);
-
-        public static List<T> Get() {
-            return pool.Count > 0 ? pool.Pop() : new List<T>(64);
-        }
-
-        public static void Release(List<T> list) {
-            list.Clear();
-            pool.Push(list);
-        }
-    }
 }

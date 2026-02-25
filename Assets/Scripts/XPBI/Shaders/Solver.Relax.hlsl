@@ -7,7 +7,8 @@
         return true;
 
         // Only meaningful for active vertices in this layer.
-        if (gi >= _Base && gi < _Base + _ActiveCount)
+        uint li = LocalIndexFromGlobal(gi);
+        if (li != ~0u && li < _ActiveCount)
         return _CoarseFixed[gi] != 0u;
 
         return false;
@@ -43,7 +44,8 @@
         [unroll] for (uint k = 0; k < nCount; k++)
         {
             uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
+            uint gjLi = LocalIndexFromGlobal(gj);
+            if (gjLi == ~0u || gjLi >= _ActiveCount)
             continue;
 
             float2 xij = _Pos[gj] - xi;
@@ -72,8 +74,12 @@
     void Prolongate(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
-        uint childGi = _Base + (_ActiveCount + li);
-        if (childGi >= _Base + _FineCount)
+        uint childLi = _ActiveCount + li;
+        if (childLi >= _FineCount)
+        return;
+
+        uint childGi = GlobalIndexFromLocal(childLi);
+        if (childGi == ~0u)
         return;
 
         if (IsFixedVertex(childGi))
@@ -127,7 +133,9 @@
         if (li >= _FineCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         if (IsFixedVertex(gi))
         return;
 
@@ -147,7 +155,7 @@
         [unroll] for (uint k = 0; k < nCount; k++)
         {
             uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _FineCount)
+            if (gj == ~0u)
             continue;
 
             sum += _Vel[gj];
@@ -171,7 +179,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
 
         uint fixedChildCount = ReadFixedChildCount(gi);
         bool singleFixedAnchor = (fixedChildCount == 1u);
@@ -293,7 +303,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
 
         if (IsLayerFixed(gi))
         return;
@@ -370,7 +382,8 @@
         [unroll] for (uint k = 0; k < nCount; k++)
         {
             uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _ActiveCount) continue;
+            uint gjLi = LocalIndexFromGlobal(gj);
+            if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
 
             float2 xij = _Pos[gj] - xi;
             float2 gradW = GradWendlandC2(xij, WendlandKernelHFromSupport(h), EPS);
@@ -402,7 +415,8 @@
         [unroll] for (uint k1 = 0; k1 < nCount; k1++)
         {
             uint gj = ns[k1];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
+            uint gjLi = LocalIndexFromGlobal(gj);
+            if (gjLi == ~0u || gjLi >= _ActiveCount)
             continue;
             if (IsLayerFixed(gj))
             continue;
@@ -456,7 +470,8 @@
         [unroll] for (uint k2 = 0; k2 < nCount; k2++)
         {
             uint gj = ns[k2];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
+            uint gjLi = LocalIndexFromGlobal(gj);
+            if (gjLi == ~0u || gjLi >= _ActiveCount)
             continue;
             if (IsLayerFixed(gj))
             continue;

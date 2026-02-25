@@ -8,6 +8,7 @@
 #pragma kernel BuildRenderableTriToHE
 #pragma kernel ClearDirtyVertexFlags
 #pragma kernel MarkAllDirty
+#pragma kernel CopyHalfEdges
 
 //---------------------------------------------------------------------------
 // Half‑edge structure
@@ -25,6 +26,8 @@ struct HalfEdge
 //---------------------------------------------------------------------------
 StructuredBuffer<float2> _Positions;               // vertex positions
 RWStructuredBuffer<HalfEdge> _HalfEdges;           // half‑edge pool
+StructuredBuffer<HalfEdge> _HalfEdgesSrc;
+RWStructuredBuffer<HalfEdge> _HalfEdgesDst;
 RWStructuredBuffer<int> _TriLocks;                  // 0 = free, >0 = locked by thread (thread ID = he0+1)
 RWStructuredBuffer<int> _VToE;                      // vertex → outgoing half‑edge
 RWStructuredBuffer<int> _Neighbors;                  // neighbour list per vertex (flat, size = _VertexCount * _NeighborCount)
@@ -186,6 +189,14 @@ void MarkAllDirty(uint3 id : SV_DispatchThreadID)
     uint v = id.x;
     if (v >= (uint)_RealVertexCount) return;
     _DirtyVertexFlags[v] = 1u;
+}
+
+[numthreads(256,1,1)]
+void CopyHalfEdges(uint3 id : SV_DispatchThreadID)
+{
+    uint he = id.x;
+    if (he >= (uint)_HalfEdgeCount) return;
+    _HalfEdgesDst[he] = _HalfEdgesSrc[he];
 }
 
 //---------------------------------------------------------------------------

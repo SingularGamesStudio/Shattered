@@ -26,6 +26,7 @@ namespace GPU.Delaunay {
         private readonly int _kernelBuildRenderableTriToHE;
         private readonly int _kernelClearDirtyVertexFlags;
         private readonly int _kernelMarkAllDirty;
+        private readonly int _kernelCopyHalfEdges;
 
         //---------------------------------------------------------------------------
         // Buffers – triple buffered for rendering, single working buffers for topology ops
@@ -112,6 +113,7 @@ namespace GPU.Delaunay {
             _kernelBuildRenderableTriToHE = _shader.FindKernel("BuildRenderableTriToHE");
             _kernelClearDirtyVertexFlags = _shader.FindKernel("ClearDirtyVertexFlags");
             _kernelMarkAllDirty = _shader.FindKernel("MarkAllDirty");
+            _kernelCopyHalfEdges = _shader.FindKernel("CopyHalfEdges");
         }
 
         //---------------------------------------------------------------------------
@@ -220,6 +222,7 @@ namespace GPU.Delaunay {
         /// </summary>
         /// <param name="cb">Command buffer to record into.</param>
         /// <param name="positionsForMaintain">Position buffer to use (usually the slot's own positions, but can be a separate velocity‑updated buffer).</param>
+        /// <param name="readSlot">Source slot (0‑2) used as topology input for this step.</param>
         /// <param name="writeSlot">Target slot (0‑2) whose half‑edges will be modified.</param>
         /// <param name="fixIterations">Number of “FixHalfEdges” passes.</param>
         /// <param name="legalizeIterations">Number of “LegalizeHalfEdges” passes.</param>
@@ -227,15 +230,23 @@ namespace GPU.Delaunay {
         public void EnqueueMaintain(
             CommandBuffer cb,
             ComputeBuffer positionsForMaintain,
+            int readSlot,
             int writeSlot,
             int fixIterations,
             int legalizeIterations,
             bool rebuildAdjacencyAndTriMap = true) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
+            if (readSlot < 0 || readSlot > 2) throw new ArgumentOutOfRangeException(nameof(readSlot));
             if (writeSlot < 0 || writeSlot > 2) throw new ArgumentOutOfRangeException(nameof(writeSlot));
 
             SetCommonParams(cb);
+
+            if (readSlot != writeSlot) {
+                cb.SetComputeBufferParam(_shader, _kernelCopyHalfEdges, "_HalfEdgesSrc", _halfEdges[readSlot]);
+                cb.SetComputeBufferParam(_shader, _kernelCopyHalfEdges, "_HalfEdgesDst", _halfEdges[writeSlot]);
+                cb.DispatchCompute(_shader, _kernelCopyHalfEdges, (_halfEdgeCount + 255) / 256, 1, 1);
+            }
 
             // Clear dirty flags once for this maintenance batch.
             DispatchClearDirtyVertexFlags(cb);

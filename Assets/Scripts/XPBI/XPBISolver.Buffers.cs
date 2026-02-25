@@ -2,6 +2,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using GPU.Delaunay;
 using System;
+using System.Collections.Generic;
 
 namespace GPU.Solver {
     public sealed partial class XPBISolver {
@@ -31,7 +32,18 @@ namespace GPU.Solver {
         private ComputeBuffer restrictedDeltaVCount;
         private ComputeBuffer restrictedDeltaVAvg;
         private ComputeBuffer convergenceDebug;
-        private ComputeBuffer[] relaxArgsByLayer;
+        private readonly Dictionary<int, ComputeBuffer> globalLayerNodeMapBuffers = new Dictionary<int, ComputeBuffer>(16);
+        private readonly Dictionary<int, ComputeBuffer> globalLayerGlobalToLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
+        private readonly Dictionary<int, int[]> globalLayerGlobalToLocalCpu = new Dictionary<int, int[]>(16);
+        private readonly Dictionary<int, int[]> globalLayerNodeMapRefs = new Dictionary<int, int[]>(16);
+        private readonly Dictionary<int, int[]> globalLayerGlobalToLocalRefs = new Dictionary<int, int[]>(16);
+        private readonly Dictionary<int, int> globalLayerNodeMapRefCounts = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerGlobalToLocalRefCounts = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerNodeMapHashes = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerGlobalToLocalHashes = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerGlobalToLocalTotals = new Dictionary<int, int>(16);
+        private ComputeBuffer defaultDtGlobalNodeMap;
+        private ComputeBuffer defaultDtGlobalToLocalMap;
 
 
         // CPU mirror arrays.
@@ -45,7 +57,6 @@ namespace GPU.Solver {
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
         private uint[] convergenceDebugCpu;
-        private float[] layerCellSizeCpu;
 
         // Capacity and event counts.
         private int capacity;
@@ -55,42 +66,39 @@ namespace GPU.Solver {
         private int convergenceDebugMaxIter;
         private int convergenceDebugLayers;
 
-        private void InitializeFromMeshless(Meshless m) {
-            meshless = m;
-            int n = m.nodes.Count;
-            EnsureCapacity(n);
+        private void InitializeFromMeshless(System.Collections.Generic.List<MeshRange> ranges, int totalCount) {
+            EnsureCapacity(totalCount);
 
-            for (int i = 0; i < n; i++) {
-                var node = m.nodes[i];
-                posCpu[i] = node.pos;
-                velCpu[i] = float2.zero;
-                materialIdsCpu[i] = node.materialId;
-                invMassCpu[i] = node.invMass;
-                restVolumeCpu[i] = node.restVolume;
-                parentIndexCpu[i] = -1;
-                FCpu[i] = new float4(1f, 0f, 0f, 1f);
-                FpCpu[i] = new float4(1f, 0f, 0f, 1f);
+            for (int rangeIdx = 0; rangeIdx < ranges.Count; rangeIdx++) {
+                MeshRange range = ranges[rangeIdx];
+                Meshless m = range.meshless;
+                int baseIndex = range.baseIndex;
+
+                for (int i = 0; i < range.totalCount; i++) {
+                    int gi = baseIndex + i;
+                    var node = m.nodes[i];
+                    posCpu[gi] = node.pos;
+                    velCpu[gi] = float2.zero;
+                    materialIdsCpu[gi] = node.materialId;
+                    invMassCpu[gi] = node.invMass;
+                    restVolumeCpu[gi] = node.restVolume;
+                    parentIndexCpu[gi] = -1;
+                    FCpu[gi] = new float4(1f, 0f, 0f, 1f);
+                    FpCpu[gi] = new float4(1f, 0f, 0f, 1f);
+                }
             }
 
-            pos.SetData(posCpu, 0, 0, n);
-            vel.SetData(velCpu, 0, 0, n);
-            materialIds.SetData(materialIdsCpu, 0, 0, n);
-            invMass.SetData(invMassCpu, 0, 0, n);
-            restVolume.SetData(restVolumeCpu, 0, 0, n);
-            parentIndex.SetData(parentIndexCpu, 0, 0, n);
-            F.SetData(FCpu, 0, 0, n);
-            Fp.SetData(FpCpu, 0, 0, n);
+            pos.SetData(posCpu, 0, 0, totalCount);
+            vel.SetData(velCpu, 0, 0, totalCount);
+            materialIds.SetData(materialIdsCpu, 0, 0, totalCount);
+            invMass.SetData(invMassCpu, 0, 0, totalCount);
+            restVolume.SetData(restVolumeCpu, 0, 0, totalCount);
+            parentIndex.SetData(parentIndexCpu, 0, 0, totalCount);
+            F.SetData(FCpu, 0, 0, totalCount);
+            Fp.SetData(FpCpu, 0, 0, totalCount);
 
-            if (coloringPerLayer == null || coloringPerLayer.Length <= m.maxLayer) {
-                int newSize = m.maxLayer + 1;
-                Array.Resize(ref coloringPerLayer, newSize);
-                Array.Resize(ref relaxArgsByLayer, newSize);
-                Array.Resize(ref layerCellSizeCpu, newSize);
-                for (int i = 0; i <= m.maxLayer; i++)
-                    layerCellSizeCpu[i] = m.layerRadii[i];
-            }
-
-            initializedCount = n;
+            initializedCount = totalCount;
+            layoutInitialized = true;
         }
 
         public void EnsureCapacity(int n) {
@@ -142,6 +150,11 @@ namespace GPU.Solver {
 
             EnsureForceEventCapacity(64);
 
+            defaultDtGlobalNodeMap = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
+            defaultDtGlobalNodeMap.SetData(new[] { 0 });
+            defaultDtGlobalToLocalMap = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
+            defaultDtGlobalToLocalMap.SetData(new[] { -1 });
+
             initializedCount = -1;
         }
 
@@ -180,30 +193,32 @@ namespace GPU.Solver {
             forceEventsCpu = new ForceEvent[forceEventsCapacity];
         }
 
-        private void SetCommonShaderParams(float dt, float gravity, float compliance, int total) {
+        private void SetCommonShaderParams(float dt, float gravity, float compliance, int total, int baseIndex) {
             asyncCb.SetComputeFloatParam(shader, "_Dt", dt);
             asyncCb.SetComputeFloatParam(shader, "_Gravity", gravity);
             asyncCb.SetComputeFloatParam(shader, "_Compliance", compliance);
             asyncCb.SetComputeFloatParam(shader, "_MaxSpeed", Const.MaxVelocity);
             asyncCb.SetComputeFloatParam(shader, "_MaxStep", Const.MaxDisplacementPerTick);
             asyncCb.SetComputeIntParam(shader, "_TotalCount", total);
-            asyncCb.SetComputeIntParam(shader, "_Base", 0);
+            asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
             asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
             asyncCb.SetComputeFloatParam(shader, "_PostProlongSmoothing", Const.PostProlongSmoothing);
             asyncCb.SetComputeFloatParam(shader, "_WendlandSupport", Const.WendlandSupport);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
-        void PrepareParentRebuildBuffers(DT dtLayer, int activeCount, int fineCount) {
+        void PrepareParentRebuildBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
+            asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
-            asyncCb.SetComputeIntParam(shader, "_ParentRangeStart", activeCount);
-            asyncCb.SetComputeIntParam(shader, "_ParentRangeEnd", fineCount);
+            asyncCb.SetComputeIntParam(shader, "_ParentRangeStart", baseIndex + activeCount);
+            asyncCb.SetComputeIntParam(shader, "_ParentRangeEnd", baseIndex + fineCount);
             asyncCb.SetComputeIntParam(shader, "_ParentCoarseCount", activeCount);
 
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            BindDtGlobalMappingParams(kRebuildParentsAtLayer, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
         }
 
         void PrepareHierarchicalStatsBuffers(int activeCount, int fineCount) {
@@ -238,16 +253,128 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kIntegratePositions, "_InvMass", invMass);
         }
 
-        private void PrepareUpdateDtPosParams(int layer, DT dtLayer, int activeCount,
-            Meshless m, int pingWrite) {
+        private static int ComputeMappingHash(int[] mapping, int count) {
+            unchecked {
+                int hash = 17;
+                hash = (hash * 31) ^ count;
+                for (int i = 0; i < count; i++)
+                    hash = (hash * 31) ^ mapping[i];
+                return hash;
+            }
+        }
+
+        private ComputeBuffer EnsureGlobalLayerNodeMapBuffer(int layer, int[] globalNodeByLocal, int activeCount) {
+            if (globalNodeByLocal == null)
+                throw new ArgumentNullException(nameof(globalNodeByLocal));
+
+            if (activeCount < 0 || activeCount > globalNodeByLocal.Length)
+                throw new ArgumentOutOfRangeException(nameof(activeCount));
+
+            if (!globalLayerNodeMapBuffers.TryGetValue(layer, out ComputeBuffer mapBuffer) || mapBuffer == null || !mapBuffer.IsValid() || mapBuffer.count != activeCount) {
+                mapBuffer?.Dispose();
+                mapBuffer = new ComputeBuffer(math.max(1, activeCount), sizeof(int), ComputeBufferType.Structured);
+                globalLayerNodeMapBuffers[layer] = mapBuffer;
+                globalLayerNodeMapHashes[layer] = int.MinValue;
+            }
+
+            if (globalLayerNodeMapRefs.TryGetValue(layer, out int[] previousRef) &&
+                ReferenceEquals(previousRef, globalNodeByLocal) &&
+                globalLayerNodeMapRefCounts.TryGetValue(layer, out int previousCount) &&
+                previousCount == activeCount)
+                return mapBuffer;
+
+            int mappingHash = ComputeMappingHash(globalNodeByLocal, activeCount);
+            bool shouldUpload = !globalLayerNodeMapHashes.TryGetValue(layer, out int previousHash) || previousHash != mappingHash;
+
+            if (shouldUpload && activeCount > 0)
+                mapBuffer.SetData(globalNodeByLocal, 0, 0, activeCount);
+
+            if (shouldUpload)
+                globalLayerNodeMapHashes[layer] = mappingHash;
+
+            globalLayerNodeMapRefs[layer] = globalNodeByLocal;
+            globalLayerNodeMapRefCounts[layer] = activeCount;
+
+            return mapBuffer;
+        }
+
+        private ComputeBuffer EnsureGlobalLayerGlobalToLocalBufferCached(int layer, int[] globalNodeByLocal, int activeCount, int totalNodeCount) {
+            if (globalNodeByLocal == null)
+                throw new ArgumentNullException(nameof(globalNodeByLocal));
+
+            int safeTotal = math.max(1, totalNodeCount);
+
+            if (!globalLayerGlobalToLocalBuffers.TryGetValue(layer, out ComputeBuffer mapBuffer) || mapBuffer == null || !mapBuffer.IsValid() || mapBuffer.count != safeTotal) {
+                mapBuffer?.Dispose();
+                mapBuffer = new ComputeBuffer(safeTotal, sizeof(int), ComputeBufferType.Structured);
+                globalLayerGlobalToLocalBuffers[layer] = mapBuffer;
+                globalLayerGlobalToLocalHashes[layer] = int.MinValue;
+            }
+
+            if (globalLayerGlobalToLocalRefs.TryGetValue(layer, out int[] previousRef) &&
+                ReferenceEquals(previousRef, globalNodeByLocal) &&
+                globalLayerGlobalToLocalRefCounts.TryGetValue(layer, out int previousCount) &&
+                previousCount == activeCount &&
+                globalLayerGlobalToLocalTotals.TryGetValue(layer, out int previousTotal) &&
+                previousTotal == safeTotal)
+                return mapBuffer;
+
+            if (!globalLayerGlobalToLocalCpu.TryGetValue(layer, out int[] globalToLocal) || globalToLocal == null || globalToLocal.Length != safeTotal) {
+                globalToLocal = new int[safeTotal];
+                globalLayerGlobalToLocalCpu[layer] = globalToLocal;
+            }
+
+            int mappingHash = ComputeMappingHash(globalNodeByLocal, activeCount);
+            bool totalChanged = !globalLayerGlobalToLocalTotals.TryGetValue(layer, out int prevTotal) || prevTotal != safeTotal;
+            bool mappingChanged = !globalLayerGlobalToLocalHashes.TryGetValue(layer, out int prevHash) || prevHash != mappingHash;
+            if (!totalChanged && !mappingChanged)
+                return mapBuffer;
+
+            for (int i = 0; i < globalToLocal.Length; i++)
+                globalToLocal[i] = -1;
+
+            for (int li = 0; li < activeCount; li++) {
+                int gi = globalNodeByLocal[li];
+                if (gi >= 0 && gi < globalToLocal.Length)
+                    globalToLocal[gi] = li;
+            }
+
+            mapBuffer.SetData(globalToLocal);
+            globalLayerGlobalToLocalHashes[layer] = mappingHash;
+            globalLayerGlobalToLocalTotals[layer] = safeTotal;
+            globalLayerGlobalToLocalRefs[layer] = globalNodeByLocal;
+            globalLayerGlobalToLocalRefCounts[layer] = activeCount;
+            return mapBuffer;
+        }
+
+        private void BindDtGlobalMappingParams(int kernel, bool useDtGlobalNodeMap, int dtLocalBase, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap) {
+            asyncCb.SetComputeIntParam(shader, "_UseDtGlobalNodeMap", useDtGlobalNodeMap ? 1 : 0);
+            asyncCb.SetComputeIntParam(shader, "_DtLocalBase", dtLocalBase);
+
+            asyncCb.SetComputeBufferParam(shader, kernel, "_DtGlobalNodeMap", dtGlobalNodeMap ?? defaultDtGlobalNodeMap);
+            asyncCb.SetComputeBufferParam(shader, kernel, "_DtGlobalToLayerLocalMap", dtGlobalToLayerLocalMap ?? defaultDtGlobalToLocalMap);
+        }
+
+        private void PrepareUpdateDtPosParamsMapped(DT dtLayer, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap, int activeCount, float2 dtNormCenter, float dtNormInvHalfExtent, int pingWrite) {
+            asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositionsMapped, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositionsMapped, "_DtPositions", dtLayer.GetPositionsBuffer(pingWrite));
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositionsMapped, "_DtGlobalNodeMap", dtGlobalNodeMap);
+            BindDtGlobalMappingParams(kUpdateDtPositionsMapped, true, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            asyncCb.SetComputeVectorParam(shader, "_DtNormCenter", new Vector4(dtNormCenter.x, dtNormCenter.y, 0f, 0f));
+            asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", dtNormInvHalfExtent);
+        }
+
+        private void PrepareUpdateDtPosParamsUnmapped(DT dtLayer, int baseIndex, int activeCount, float2 dtNormCenter, float dtNormInvHalfExtent, int pingWrite) {
+            asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
             asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_Pos", pos);
-            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions",
-                dtLayer.GetPositionsBuffer(pingWrite));
-            asyncCb.SetComputeVectorParam(shader, "_DtNormCenter",
-                new Vector4(m.DtNormCenter.x, m.DtNormCenter.y, 0f, 0f));
-            asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", m.DtNormInvHalfExtent);
+            asyncCb.SetComputeBufferParam(shader, kUpdateDtPositions, "_DtPositions", dtLayer.GetPositionsBuffer(pingWrite));
+            BindDtGlobalMappingParams(kUpdateDtPositions, false, 0, null, null);
+            asyncCb.SetComputeVectorParam(shader, "_DtNormCenter", new Vector4(dtNormCenter.x, dtNormCenter.y, 0f, 0f));
+            asyncCb.SetComputeFloatParam(shader, "_DtNormInvHalfExtent", dtNormInvHalfExtent);
         }
 
         void PrepareApplyForcesParams() {
@@ -258,11 +385,12 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
         }
 
-        void PrepareRelaxBuffers(DT dtLayer, int activeCount, int fineCount, int tickIndex, float layerKernelH) {
+        void PrepareRelaxBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, int tickIndex, float layerKernelH, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
 
+            asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
             asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
@@ -333,12 +461,28 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            BindDtGlobalMappingParams(kComputeCorrectionL, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            BindDtGlobalMappingParams(kClearHierarchicalStats, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kCacheHierarchicalStats, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kFinalizeHierarchicalStats, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kCacheF0AndResetLambda, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kSaveVelPrefix, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kClearVelDelta, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kClearRestrictedDeltaV, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kRestrictGameplayDeltaVFromEvents, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kRestrictFineVelocityResidualToActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kApplyRestrictedDeltaVToActiveAndPrefix, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kRemoveRestrictedDeltaVFromActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kProlongate, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            BindDtGlobalMappingParams(kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            BindDtGlobalMappingParams(kCommitDeformation, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CoarseFixed", coarseFixed);
@@ -374,6 +518,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            BindDtGlobalMappingParams(kSmoothProlongatedFineVel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             if (physicalParams != null) {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_PhysicalParams", physicalParams);
@@ -414,6 +559,27 @@ namespace GPU.Solver {
             restrictedDeltaVCount?.Dispose(); restrictedDeltaVCount = null;
             restrictedDeltaVAvg?.Dispose(); restrictedDeltaVAvg = null;
             convergenceDebug?.Dispose(); convergenceDebug = null;
+
+            foreach (var kv in globalLayerNodeMapBuffers)
+                kv.Value?.Dispose();
+            globalLayerNodeMapBuffers.Clear();
+            globalLayerNodeMapRefs.Clear();
+            globalLayerNodeMapRefCounts.Clear();
+            globalLayerNodeMapHashes.Clear();
+
+            foreach (var kv in globalLayerGlobalToLocalBuffers)
+                kv.Value?.Dispose();
+            globalLayerGlobalToLocalBuffers.Clear();
+            globalLayerGlobalToLocalCpu.Clear();
+            globalLayerGlobalToLocalRefs.Clear();
+            globalLayerGlobalToLocalRefCounts.Clear();
+            globalLayerGlobalToLocalHashes.Clear();
+            globalLayerGlobalToLocalTotals.Clear();
+
+            defaultDtGlobalNodeMap?.Dispose();
+            defaultDtGlobalNodeMap = null;
+            defaultDtGlobalToLocalMap?.Dispose();
+            defaultDtGlobalToLocalMap = null;
 
             initializedCount = -1;
         }

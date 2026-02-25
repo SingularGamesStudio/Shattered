@@ -15,6 +15,7 @@ namespace GPU.Solver {
         private int kCommitDeformation;
         private int kIntegratePositions;
         private int kUpdateDtPositions;
+        private int kUpdateDtPositionsMapped;
         private int kRebuildParentsAtLayer;
         private int kClearConvergenceDebugStats;
         private int kClearRestrictedDeltaV;
@@ -46,6 +47,7 @@ namespace GPU.Solver {
 
             kIntegratePositions = shader.FindKernel("IntegratePositions");
             kUpdateDtPositions = shader.FindKernel("UpdateDtPositions");
+            kUpdateDtPositionsMapped = shader.FindKernel("UpdateDtPositionsMapped");
             kRebuildParentsAtLayer = shader.FindKernel("RebuildParentsAtLayer");
             kClearConvergenceDebugStats = shader.FindKernel("ClearConvergenceDebugStats");
 

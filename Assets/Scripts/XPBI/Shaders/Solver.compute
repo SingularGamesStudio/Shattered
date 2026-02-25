@@ -14,6 +14,7 @@
 #pragma kernel ClampVelocities
 #pragma kernel IntegratePositions
 #pragma kernel UpdateDtPositions
+#pragma kernel UpdateDtPositionsMapped
 #pragma kernel RebuildParentsAtLayer
 #pragma kernel ClearConvergenceDebugStats
 #pragma kernel CopyConvergenceDebug

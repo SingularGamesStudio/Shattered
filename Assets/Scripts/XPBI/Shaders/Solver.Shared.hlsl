@@ -39,6 +39,10 @@
     // Neighbour lists
     StructuredBuffer<uint> _DtNeighbors;
     StructuredBuffer<uint> _DtNeighborCounts;
+    StructuredBuffer<int> _DtGlobalNodeMap;
+    StructuredBuffer<int> _DtGlobalToLayerLocalMap;
+    uint _UseDtGlobalNodeMap;
+    uint _DtLocalBase;
 
     // Colouring order
     StructuredBuffer<uint> _ColorOrder;
@@ -144,8 +148,29 @@
         return 0.0;
     }
 
-    static uint LocalIndexFromGlobal(uint gi) { return gi - _Base; }
-    static uint GlobalIndexFromLocal(uint li) { return _Base + li; }
+    static uint LocalIndexFromGlobal(uint gi)
+    {
+        if (_UseDtGlobalNodeMap != 0u)
+        {
+            int liSigned = _DtGlobalToLayerLocalMap[gi];
+            if (liSigned < 0)
+            return ~0u;
+            return (uint)liSigned;
+        }
+        return gi - _Base;
+    }
+
+    static uint GlobalIndexFromLocal(uint li)
+    {
+        if (_UseDtGlobalNodeMap != 0u)
+        {
+            int giSigned = _DtGlobalNodeMap[li];
+            if (giSigned < 0)
+            return ~0u;
+            return (uint)giSigned;
+        }
+        return _Base + li;
+    }
 
     static float4 ReadMaterialPhysical(uint gi)
     {
@@ -187,12 +212,20 @@
     [forceinline] static void GetNeighborsRaw(uint gi, out uint nCount, out uint ns[targetNeighborCount])
     {
         uint li = LocalIndexFromGlobal(gi);
+        if (li == ~0u)
+        {
+            nCount = 0u;
+            [unroll] for (uint i = 0; i < targetNeighborCount; i++) ns[i] = ~0u;
+            return;
+        }
 
-        nCount = _DtNeighborCounts[li];
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+
+        nCount = _DtNeighborCounts[dtLi];
         nCount = min(nCount, _DtNeighborCount);
         nCount = min(nCount, targetNeighborCount);
 
-        uint baseIdx = li * _DtNeighborCount;
+        uint baseIdx = dtLi * _DtNeighborCount;
 
         [unroll] for (uint i = 0; i < targetNeighborCount; i++)
         {

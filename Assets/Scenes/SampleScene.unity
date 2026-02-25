@@ -155,10 +155,10 @@ MonoBehaviour:
   targetTPS: 500
   targetFPS: 1
   simulationSpeed: 10
-  manual: 0
+  manual: 1
   showTpsOverlay: 1
-  ConvergenceDebugEnabled: 1
-  useHierarchicalSolver: 0
+  ConvergenceDebugEnabled: 0
+  useHierarchicalSolver: 1
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
@@ -410,7 +410,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 2
   generateOnStart: 1
-  pointCount: 20000
+  pointCount: 1000
   maxLayer: 3
   layerRatio: 0.12
   radiusScale: 0.85

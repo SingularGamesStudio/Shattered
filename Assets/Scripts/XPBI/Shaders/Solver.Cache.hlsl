@@ -103,9 +103,6 @@
         _Pos[gi] = p + dx;
     }
 
-    // ----------------------------------------------------------------------------
-    // UpdateDtPositions: transform to normalised space for downsampling
-    // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void UpdateDtPositions(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
@@ -116,28 +113,56 @@
         _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
     }
 
+    [numthreads(256, 1, 1)] void UpdateDtPositionsMapped(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        int giSigned = _DtGlobalNodeMap[li];
+        if (giSigned < 0)
+        return;
+
+        uint gi = (uint)giSigned;
+        _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
+    }
+
     // ----------------------------------------------------------------------------
     // RebuildParentsAtLayer: find nearest coarse particle using local search
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
     {
-        uint gi = _ParentRangeStart + id.x;
-        if (gi >= _ParentRangeEnd)
+        uint liFine = _ParentRangeStart + id.x;
+        if (liFine >= _ParentRangeEnd)
+        return;
+
+        uint gi = (_UseDtGlobalNodeMap != 0u) ? GlobalIndexFromLocal(liFine) : (_Base + liFine);
+        if (gi == ~0u)
         return;
 
         float2 q = _Pos[gi];
 
         int cur = _ParentIndex[gi];
-        if (cur < int(_Base) || cur >= int(_Base + _ParentCoarseCount))
-        cur = int(_Base);
+        uint curLi = (cur >= 0) ? LocalIndexFromGlobal((uint)cur) : ~0u;
+        if (curLi == ~0u || curLi >= _ParentCoarseCount)
+        {
+            uint firstGi = GlobalIndexFromLocal(0u);
+            if (firstGi == ~0u)
+            return;
+            cur = int(firstGi);
+        }
 
         float2 d0 = _Pos[cur] - q;
         float best = dot(d0, d0);
 
         [loop] for (uint iter = 0; iter < 32; iter++)
         {
-            uint li = uint(cur - int(_Base));
-            if (li >= _ParentCoarseCount)
+            uint liBase = LocalIndexFromGlobal((uint)cur);
+            if (liBase == ~0u)
+            break;
+
+            uint li = (_UseDtGlobalNodeMap != 0u) ? liBase : (_DtLocalBase + liBase);
+            if (liBase >= _ParentCoarseCount)
             break;
 
             uint cnt = _DtNeighborCounts[li];
@@ -150,9 +175,12 @@
             for (uint k = 0; k < cnt; k++)
             {
                 uint njLocal = _DtNeighbors[baseIdx + k];
-                uint nj = _Base + njLocal;
+                uint nj = GlobalIndexFromLocal(njLocal);
+                if (nj == ~0u)
+                continue;
 
-                if (nj < _Base || nj >= _Base + _ParentCoarseCount)
+                uint njLi = LocalIndexFromGlobal(nj);
+                if (njLi == ~0u || njLi >= _ParentCoarseCount)
                 continue;
 
                 float2 d = _Pos[nj] - q;
@@ -182,7 +210,9 @@
         uint li = id.x;
         if (li >= _ActiveCount)
         return;
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _CurrentVolumeBits[gi] = 0u;
         _CurrentTotalMassBits[gi] = 0u;
         _FixedChildPosBits[gi * 2u + 0u] = 0u;
@@ -200,7 +230,9 @@
         if (li >= _FineCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
 
         float invM = _InvMass[gi];
         float leafMass = (invM > EPS) ? (1.0 / invM) : 0.0;
@@ -224,16 +256,26 @@
             if (owner < int(_ActiveCount))
             break;
 
-            int p = _ParentIndex[_Base + uint(owner)];
+            uint ownerGi = GlobalIndexFromLocal((uint)owner);
+            if (ownerGi == ~0u)
+            return;
+
+            int p = _ParentIndex[ownerGi];
             if (p < 0)
             return;
-            owner = p - int(_Base);
+
+            uint ownerLi = LocalIndexFromGlobal((uint)p);
+            if (ownerLi == ~0u)
+            return;
+            owner = (int)ownerLi;
         }
 
         if (owner < 0 || owner >= int(_ActiveCount))
         return;
 
-        uint ownerGi = _Base + uint(owner);
+        uint ownerGi = GlobalIndexFromLocal((uint)owner);
+        if (ownerGi == ~0u)
+        return;
 
         if (IsFixedVertex(gi))
         {
@@ -260,7 +302,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _CoarseFixed[gi] = (_FixedChildCount[gi] > 1u) ? 1u : 0u;
     }
 
@@ -273,7 +317,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
 
         float h = max(_LayerKernelH, 1e-4);
         if (h <= EPS)
@@ -306,7 +352,8 @@
         [unroll] for (uint k = 0; k < nCount; k++)
         {
             uint gj = ns[k];
-            if (gj < _Base || gj >= _Base + _ActiveCount)
+            uint gjLi = LocalIndexFromGlobal(gj);
+            if (gjLi == ~0u || gjLi >= _ActiveCount)
             continue;
 
             float2 xij = _Pos[gj] - xi;
@@ -369,7 +416,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _F0[gi] = _F[gi];
         _Lambda[gi] = 0.0;
     }
@@ -383,7 +432,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _SavedVelPrefix[gi] = _Vel[gi];
     }
 
@@ -396,7 +447,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _VelDeltaBits[gi * 2u + 0u] = 0u;
         _VelDeltaBits[gi * 2u + 1u] = 0u;
     }
@@ -410,7 +463,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _RestrictedDeltaVBits[gi * 2u + 0u] = 0u;
         _RestrictedDeltaVBits[gi * 2u + 1u] = 0u;
         _RestrictedDeltaVCount[gi] = 0u;
@@ -436,24 +491,29 @@
 
         float2 leafDeltaV = e.force * _Dt;
 
-        int owner = int(gi - _Base);
+        int owner = -1;
+        uint ownerGi = gi;
         [loop] for (uint it = 0; it < 64; it++)
         {
-            if (owner < 0)
-            return;
-            if (owner < int(_ActiveCount))
-            break;
+            uint ownerLi = LocalIndexFromGlobal(ownerGi);
+            if (ownerLi != ~0u && ownerLi < _ActiveCount)
+            {
+                owner = (int)ownerLi;
+                break;
+            }
 
-            int p = _ParentIndex[_Base + uint(owner)];
+            int p = _ParentIndex[ownerGi];
             if (p < 0)
             return;
-            owner = p - int(_Base);
+            ownerGi = (uint)p;
         }
 
         if (owner < 0 || owner >= int(_ActiveCount))
         return;
 
-        uint ownerGi = _Base + uint(owner);
+        ownerGi = GlobalIndexFromLocal((uint)owner);
+        if (ownerGi == ~0u)
+        return;
 
         AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, leafDeltaV.x);
         AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, leafDeltaV.y);
@@ -469,7 +529,9 @@
         if (li >= _FineCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         if (IsFixedVertex(gi))
         return;
 
@@ -495,7 +557,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
 
         if (_CoarseFixed[gi] != 0u)
         {
@@ -531,7 +595,9 @@
         if (li >= _ActiveCount)
         return;
 
-        uint gi = _Base + li;
+        uint gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
         _Vel[gi] -= _RestrictedDeltaVAvg[gi];
     }
 
