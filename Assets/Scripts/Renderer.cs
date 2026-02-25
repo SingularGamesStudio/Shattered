@@ -7,6 +7,14 @@ using GPU.Delaunay;
 
 [DefaultExecutionOrder(1000)]
 public sealed class Renderer : MonoBehaviour {
+    enum WireframeMode {
+        Off = 0,
+        SingleLevel = 1,
+        MultiLevel = 2,
+        SingleLevelCulled = 3,
+        MultiLevelCulled = 4
+    }
+
     public enum SdfSmoothMode {
         None = 0,
         Blur = 1,
@@ -42,6 +50,8 @@ public sealed class Renderer : MonoBehaviour {
     [Header("Wireframe")]
     public bool showWireframe = true;
     public bool drawCoarseLayers = true;
+    public bool cullOverstretchedWireEdges = false;
+    public KeyCode wireframeCycleKey = KeyCode.W;
     [Range(0.5f, 10f)] public float wireWidthPixels = 1.5f;
     Color wireColorLayer0 = new Color(0.15f, 0.35f, 1f, 1f);
     Color wireColorMaxLayer = new Color(1f, 0.2f, 0.2f, 1f);
@@ -140,6 +150,7 @@ public sealed class Renderer : MonoBehaviour {
     static readonly int ID_RealPointCount = Shader.PropertyToID("_RealPointCount");
     static readonly int ID_LayerKernelH = Shader.PropertyToID("_LayerKernelH");
     static readonly int ID_WendlandSupportScale = Shader.PropertyToID("_WendlandSupportScale");
+    static readonly int ID_WireCullOverstretched = Shader.PropertyToID("_CullOverstretched");
 
     static readonly int ID_NormCenter = Shader.PropertyToID("_NormCenter");
     static readonly int ID_NormInvHalfExtent = Shader.PropertyToID("_NormInvHalfExtent");
@@ -194,6 +205,55 @@ public sealed class Renderer : MonoBehaviour {
 
         mpb = null;
         cam = null;
+    }
+
+    void Update() {
+        if (Input.GetKeyDown(wireframeCycleKey))
+            CycleWireframeMode();
+    }
+
+    void CycleWireframeMode() {
+        WireframeMode mode = GetWireframeMode();
+        mode = (WireframeMode)(((int)mode + 1) % 5);
+        SetWireframeMode(mode);
+    }
+
+    WireframeMode GetWireframeMode() {
+        if (!showWireframe)
+            return WireframeMode.Off;
+        if (!drawCoarseLayers)
+            return cullOverstretchedWireEdges ? WireframeMode.SingleLevelCulled : WireframeMode.SingleLevel;
+        return cullOverstretchedWireEdges ? WireframeMode.MultiLevelCulled : WireframeMode.MultiLevel;
+    }
+
+    void SetWireframeMode(WireframeMode mode) {
+        switch (mode) {
+            case WireframeMode.Off:
+                showWireframe = false;
+                drawCoarseLayers = false;
+                cullOverstretchedWireEdges = false;
+                return;
+            case WireframeMode.SingleLevel:
+                showWireframe = true;
+                drawCoarseLayers = false;
+                cullOverstretchedWireEdges = false;
+                return;
+            case WireframeMode.MultiLevel:
+                showWireframe = true;
+                drawCoarseLayers = true;
+                cullOverstretchedWireEdges = false;
+                return;
+            case WireframeMode.SingleLevelCulled:
+                showWireframe = true;
+                drawCoarseLayers = false;
+                cullOverstretchedWireEdges = true;
+                return;
+            default:
+                showWireframe = true;
+                drawCoarseLayers = true;
+                cullOverstretchedWireEdges = true;
+                return;
+        }
     }
 
     void OnPreCull() {
@@ -270,6 +330,7 @@ public sealed class Renderer : MonoBehaviour {
                         SetupCommonGlobal(layerState, dt, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
                         mpb.SetColor("_WireColor", wireColor);
                         mpb.SetFloat("_WireWidthPx", wireWidthPixels);
+                        mpb.SetInt(ID_WireCullOverstretched, cullOverstretchedWireEdges ? 1 : 0);
 
                         int vertexCount = dt.TriCount * 3 * 6;
                         cr.wireCmd.DrawProcedural(Matrix4x4.identity, wireMaterial, 0, MeshTopology.Triangles, vertexCount, 1, mpb);

@@ -335,7 +335,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &961765556
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -356,7 +356,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 1000
+  pointCount: 500
   generateOnStart: 1
   defaultAnchorMode: 1
   seed: 1
@@ -410,7 +410,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 2
   generateOnStart: 1
-  pointCount: 1000
+  pointCount: 500
   maxLayer: 3
   layerRatio: 0.12
   radiusScale: 0.85

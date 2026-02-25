@@ -122,8 +122,8 @@ namespace GPU.Delaunay {
         /// <summary>
         /// Initialises the triangulation with a fixed set of points and an initial half‑edge mesh.
         /// </summary>
-        /// <param name="allPoints">All vertex positions (real points + three super points).</param>
-        /// <param name="realPointCount">Number of real points (must be allPoints.Length - 3).</param>
+        /// <param name="allPoints">All vertex positions (real points followed by one or more ghost/super points).</param>
+        /// <param name="realPointCount">Number of real points (must be less than allPoints.Count).</param>
         /// <param name="initialHalfEdges">Initial half‑edge array describing the triangulation.</param>
         /// <param name="triangleCount">Number of triangles.</param>
         /// <param name="neighborCount">Maximum number of neighbours per vertex (used for neighbour lists).</param>
@@ -144,9 +144,9 @@ namespace GPU.Delaunay {
             _vertexCount = allPoints.Count;
             _realVertexCount = realPointCount;
 
-            // Validate super‑point convention: exactly three extra points.
-            if (_vertexCount != _realVertexCount + 3)
-                throw new ArgumentException("Expected real points + 3 super points.", nameof(allPoints));
+            // Require at least one super-triangle worth of ghost points.
+            if (_vertexCount < _realVertexCount + 3)
+                throw new ArgumentException("Expected at least real points + 3 super points.", nameof(allPoints));
 
             _halfEdgeCount = initialHalfEdges.Length;
             if (_halfEdgeCount == 0) throw new ArgumentException("Half-edge buffer is empty.", nameof(initialHalfEdges));

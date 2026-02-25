@@ -182,6 +182,7 @@ namespace GPU.Delaunay {
                         fineGlobals.Add(gi);
                     }
                 } else {
+                    var fineTailGlobals = new List<int>(1024);
 
                     for (int meshIdx = 0; meshIdx < meshes.Count; meshIdx++) {
                         Meshless m = meshes[meshIdx];
@@ -210,9 +211,12 @@ namespace GPU.Delaunay {
                         }
 
                         for (int i = active; i < fine; i++) {
-                            fineGlobals.Add(baseOffset + i);
+                            fineTailGlobals.Add(baseOffset + i);
                         }
                     }
+
+                    for (int i = 0; i < fineTailGlobals.Count; i++)
+                        fineGlobals.Add(fineTailGlobals[i]);
                 }
 
                 int activeCount = points.Count;
@@ -235,16 +239,74 @@ namespace GPU.Delaunay {
                     continue;
                 }
 
-                points.Add((super0 - normCenter) * normInvHalfExtent);
-                points.Add((super1 - normCenter) * normInvHalfExtent);
-                points.Add((super2 - normCenter) * normInvHalfExtent);
+                List<float2> dtPoints;
+                float2 super0Norm = (super0 - normCenter) * normInvHalfExtent;
+                float2 super1Norm = (super1 - normCenter) * normInvHalfExtent;
+                float2 super2Norm = (super2 - normCenter) * normInvHalfExtent;
+                if (allowCrossBodyTopology || !HasMultipleOwners(owners, activeCount)) {
+                    points.Add(super0Norm);
+                    points.Add(super1Norm);
+                    points.Add(super2Norm);
 
-                triangles.Clear();
-                DTBuilder.BuildDelaunay(points.ToArray(), activeCount, triangles);
+                    triangles.Clear();
+                    DTBuilder.BuildDelaunay(points.ToArray(), activeCount, triangles);
+                    dtPoints = points;
+                } else {
+                    dtPoints = new List<float2>(activeCount + math.max(3, meshes.Count * 3));
+                    for (int i = 0; i < activeCount; i++)
+                        dtPoints.Add(points[i]);
 
-                var he = DTBuilder.BuildHalfEdges(points.ToArray(), triangles);
+                    triangles.Clear();
+                    int segmentStart = 0;
+                    while (segmentStart < activeCount) {
+                        int segmentEnd = segmentStart + 1;
+                        while (segmentEnd < activeCount && owners[segmentEnd] == owners[segmentStart])
+                            segmentEnd++;
+
+                        int segmentCount = segmentEnd - segmentStart;
+                        if (segmentCount >= 3) {
+                            float2 localMin = points[segmentStart];
+                            float2 localMax = localMin;
+                            for (int i = segmentStart + 1; i < segmentEnd; i++) {
+                                float2 p = points[i];
+                                localMin = math.min(localMin, p);
+                                localMax = math.max(localMax, p);
+                            }
+
+                            ComputeSuperTriangleForRange(localMin, localMax, 2f, out float2 ls0, out float2 ls1, out float2 ls2);
+
+                            var segmentPoints = new float2[segmentCount + 3];
+                            for (int i = 0; i < segmentCount; i++)
+                                segmentPoints[i] = points[segmentStart + i];
+                            segmentPoints[segmentCount] = ls0;
+                            segmentPoints[segmentCount + 1] = ls1;
+                            segmentPoints[segmentCount + 2] = ls2;
+
+                            var segmentTriangles = new List<DTBuilder.Triangle>(math.max(4, segmentCount * 2));
+                            DTBuilder.BuildDelaunay(segmentPoints, segmentCount, segmentTriangles);
+
+                            int superBase = dtPoints.Count;
+                            dtPoints.Add(ls0);
+                            dtPoints.Add(ls1);
+                            dtPoints.Add(ls2);
+
+                            for (int ti = 0; ti < segmentTriangles.Count; ti++) {
+                                DTBuilder.Triangle t = segmentTriangles[ti];
+                                triangles.Add(new DTBuilder.Triangle(
+                                    MapSegmentVertexIndex(t.a, segmentStart, segmentCount, superBase),
+                                    MapSegmentVertexIndex(t.b, segmentStart, segmentCount, superBase),
+                                    MapSegmentVertexIndex(t.c, segmentStart, segmentCount, superBase)
+                                ));
+                            }
+                        }
+
+                        segmentStart = segmentEnd;
+                    }
+                }
+
+                var he = DTBuilder.BuildHalfEdges(dtPoints, triangles);
                 var dt = new DT(shader);
-                dt.Init(points, activeCount, he, triangles.Count, Const.NeighborCount);
+                dt.Init(dtPoints, activeCount, he, triangles.Count, Const.NeighborCount);
 
                 if (!allowCrossBodyTopology && HasMultipleOwners(owners, activeCount))
                     FilterNeighborsByOwner(dt, owners, activeCount);
@@ -363,6 +425,23 @@ namespace GPU.Delaunay {
             p0 = center + new float2(0f, 2f * s);
             p1 = center + new float2(-2f * s, -2f * s);
             p2 = center + new float2(2f * s, -2f * s);
+        }
+
+        static void ComputeSuperTriangleForRange(float2 min, float2 max, float scale, out float2 p0, out float2 p1, out float2 p2) {
+            float2 center = 0.5f * (min + max);
+            float2 extent = max - min;
+            float d = math.max(extent.x, extent.y);
+            float s = math.max(1f, scale) * math.max(1e-6f, d);
+            p0 = center + new float2(0f, 2f * s);
+            p1 = center + new float2(-2f * s, -2f * s);
+            p2 = center + new float2(2f * s, -2f * s);
+        }
+
+        static int MapSegmentVertexIndex(int localIndex, int segmentStart, int segmentCount, int superBase) {
+            if (localIndex < segmentCount)
+                return segmentStart + localIndex;
+
+            return superBase + (localIndex - segmentCount);
         }
 
         static void FilterNeighborsByOwner(DT dt, List<int> owners, int activeCount) {

@@ -45,6 +45,7 @@ Shader "Unlit/Wireframe"
 
             float4 _WireColor;
             float _WireWidthPx;
+            int _CullOverstretched;
 
             static int Next(int he) { return _HalfEdges[he].next; }
             static int Dest(int he) { return _HalfEdges[Next(he)].v; }
@@ -105,6 +106,15 @@ Shader "Unlit/Wireframe"
                 float a = saturate(_RenderAlpha);
                 float2 p0 = lerp(_PositionsPrev[v0], _PositionsCurr[v0], a);
                 float2 p1 = lerp(_PositionsPrev[v1], _PositionsCurr[v1], a);
+
+                if (_CullOverstretched != 0) {
+                    float support = _LayerKernelH * _WendlandSupportScale;
+                    if (support <= 0.0 || dot(p1 - p0, p1 - p0) > support * support) {
+                        o.pos = float4(0, 0, 0, 0);
+                        o.valid = 0;
+                        return o;
+                    }
+                }
 
                 float2 p0W = GpuToWorld(p0);
                 float2 p1W = GpuToWorld(p1);
