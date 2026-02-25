@@ -104,7 +104,7 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
             stress = gameObject.AddComponent<ReadbackMultiForceController>();
 
         stress.targetMeshless = box;
-        stress.pullStrength = 0.03f;
+        stress.pullStrength = 0.3f;
         stress.cornerBoost = 0.02f;
         stress.oscillationAmplitude = 0.4f;
         stress.oscillationFrequency = 1.1f;

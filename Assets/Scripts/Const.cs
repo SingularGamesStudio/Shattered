@@ -25,4 +25,6 @@ public static class Const {
     public const int HierarchyVCyclesPerTick = 1;
     public const float RestrictResidualDeltaVScale = 0.35f;
     public const float PostProlongSmoothing = 0.2f;
+
+    public const bool DebugSupportRadius = false;
 }

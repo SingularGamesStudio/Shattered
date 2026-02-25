@@ -225,6 +225,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (ticksToRun <= 0) return;
 
         float dt = tickDt * simulationSpeed;
+        bool submittedAny = false;
 
         for (int i = meshless.Count - 1; i >= 0; i--) {
             var m = meshless[i];
@@ -234,10 +235,12 @@ public sealed class SimulationController : MonoBehaviour {
                 continue;
             }
 
-            SubmitMeshlessAsyncBatch(m, dt, ticksToRun);
+            if (SubmitMeshlessAsyncBatch(m, dt, ticksToRun))
+                submittedAny = true;
         }
 
-        lastFrameTicks += ticksToRun;
+        if (submittedAny)
+            lastFrameTicks += ticksToRun;
     }
 
     void ManualUpdateAsync(float frameDt, float tickDt) {
@@ -260,6 +263,7 @@ public sealed class SimulationController : MonoBehaviour {
 
                 if (ticksToRun > 0) {
                     float dt = tickDt * simulationSpeed;
+                    bool submittedAny = false;
 
                     for (int i = meshless.Count - 1; i >= 0; i--) {
                         var m = meshless[i];
@@ -269,10 +273,12 @@ public sealed class SimulationController : MonoBehaviour {
                             continue;
                         }
 
-                        SubmitMeshlessAsyncBatch(m, dt, ticksToRun);
+                        if (SubmitMeshlessAsyncBatch(m, dt, ticksToRun))
+                            submittedAny = true;
                     }
 
-                    lastFrameTicks += ticksToRun;
+                    if (submittedAny)
+                        lastFrameTicks += ticksToRun;
                 }
             }
         }
@@ -280,6 +286,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (Input.GetKeyUp(KeyCode.T)) {
             if (keyHeldTime < holdThreshold) {
                 float dt = tickDt * simulationSpeed;
+                bool submittedAny = false;
 
                 for (int i = meshless.Count - 1; i >= 0; i--) {
                     var m = meshless[i];
@@ -289,10 +296,12 @@ public sealed class SimulationController : MonoBehaviour {
                         continue;
                     }
 
-                    SubmitMeshlessAsyncBatch(m, dt, 1);
+                    if (SubmitMeshlessAsyncBatch(m, dt, 1))
+                        submittedAny = true;
                 }
 
-                lastFrameTicks += 1;
+                if (submittedAny)
+                    lastFrameTicks += 1;
             }
 
             keyHeldTime = 0f;
@@ -300,9 +309,9 @@ public sealed class SimulationController : MonoBehaviour {
         }
     }
 
-    void SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
+    bool SubmitMeshlessAsyncBatch(Meshless m, float dtPerTick, int ticksToRun) {
         if (m == null || ticksToRun <= 0)
-            return;
+            return false;
 
         if (!gpuSolverCache.TryGetValue(m, out XPBISolver solver) || solver == null) {
             solver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
@@ -323,26 +332,18 @@ public sealed class SimulationController : MonoBehaviour {
         int tickIdAfterBatch = lastTickId + ticksToRun;
 
         if (!asyncStates.TryGetValue(m, out var state))
-            return;
+            return false;
 
         // If we already have a pending write, cannot start another.
         if (state.writePending)
-            return;
+            return false;
 
         // If there's a completed slot waiting to become render, we cannot start a new batch because we have no free slot.
         if (state.computeCompleted)
-            return;
+            return false;
 
-        // The free slot should be >=0. Check its render fence.
-        int freeSlot = state.freeSlot;
-        if (freeSlot < 0 || freeSlot > 2)
-            return;
-
-        GraphicsFence freeRenderFence = state.renderFences[freeSlot];
-        if (!freeRenderFence.Equals(default(GraphicsFence)) && !freeRenderFence.passed) {
-            // The free slot is still being read by the renderer – cannot write to it yet.
-            return;
-        }
+        if (!TrySelectWritableSlot(ref state, out int freeSlot))
+            return false;
 
         // Submit the batch, writing into the free slot.
         GraphicsFence computeFence = solver.SubmitSolve(
@@ -363,6 +364,40 @@ public sealed class SimulationController : MonoBehaviour {
         asyncStates[m] = state;
 
         tickCounters[m] = tickIdAfterBatch;
+        return true;
+    }
+
+    static bool IsFencePassedOrUnset(GraphicsFence fence) {
+        return fence.Equals(default(GraphicsFence)) || fence.passed;
+    }
+
+    static bool IsSlotWritable(in AsyncTripleState state, int slot) {
+        if (slot < 0 || slot > 2)
+            return false;
+        if (slot == state.renderSlot || slot == state.writeSlot || slot == state.completedWriteSlot)
+            return false;
+
+        return IsFencePassedOrUnset(state.renderFences[slot]);
+    }
+
+    bool TrySelectWritableSlot(ref AsyncTripleState state, out int slot) {
+        slot = -1;
+
+        if (IsSlotWritable(state, state.freeSlot)) {
+            slot = state.freeSlot;
+            return true;
+        }
+
+        for (int i = 0; i < 3; i++) {
+            if (!IsSlotWritable(state, i))
+                continue;
+
+            slot = i;
+            state.freeSlot = i;
+            return true;
+        }
+
+        return false;
     }
 
     void GatherForceEventsForMeshless(Meshless target, float dtPerTick, int ticksToRun) {
@@ -409,6 +444,7 @@ public sealed class SimulationController : MonoBehaviour {
                 state.computeCompleted = true;
                 state.completedWriteSlot = state.writeSlot;
                 state.writePending = false;
+                state.writeSlot = -1;
                 // writeSlot is now pending promotion; keep writeSlot as is for now.
                 // freeSlot remains -1 because we haven't freed anything yet.
                 asyncStates[m] = state;
@@ -416,20 +452,16 @@ public sealed class SimulationController : MonoBehaviour {
 
             // If we have a completed slot waiting, try to promote it to render.
             if (state.computeCompleted) {
-                if (state.computeCompleted) {
-                    int candidateSlot = state.completedWriteSlot;
-                    GraphicsFence renderFence = state.renderFences[state.renderSlot];
-                    if (renderFence.Equals(default(GraphicsFence)) || renderFence.passed) {
-                        // Old render slot is free (either never used or rendering finished)
-                        int oldRender = state.renderSlot;
-                        state.renderSlot = candidateSlot;
-                        state.freeSlot = oldRender;
-                        state.computeCompleted = false;
-                        state.completedWriteSlot = -1;
-                        asyncStates[m] = state;
-                    }
-                    // else: cannot promote yet, wait until next frame.
+                int candidateSlot = state.completedWriteSlot;
+                if (candidateSlot >= 0 && candidateSlot <= 2 && candidateSlot != state.renderSlot) {
+                    int oldRender = state.renderSlot;
+                    state.renderSlot = candidateSlot;
+                    state.freeSlot = oldRender;
                 }
+
+                state.computeCompleted = false;
+                state.completedWriteSlot = -1;
+                asyncStates[m] = state;
             }
         }
 

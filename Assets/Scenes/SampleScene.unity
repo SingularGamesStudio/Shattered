@@ -155,7 +155,7 @@ MonoBehaviour:
   targetTPS: 500
   targetFPS: 1
   simulationSpeed: 10
-  manual: 1
+  manual: 0
   showTpsOverlay: 1
   ConvergenceDebugEnabled: 1
   useHierarchicalSolver: 0
@@ -410,8 +410,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 2
   generateOnStart: 1
-  pointCount: 450
-  maxLayer: 2
+  pointCount: 20000
+  maxLayer: 3
   layerRatio: 0.12
   radiusScale: 0.85
   hangCenter: {x: 0, y: 0}

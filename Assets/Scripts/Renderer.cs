@@ -500,6 +500,16 @@ public sealed class Renderer : MonoBehaviour {
         var sc = SimulationController.Instance;
         if (sc != null) alpha = sc.RenderAlpha;
 
+        int slot = 0;
+        if (sc != null)
+            sc.TryGetStableReadSlot(m, out slot);
+
+        var positions = dt.GetPositionsBuffer(slot);
+        var halfEdges = dt.GetHalfEdgesBuffer(slot);
+        var triToHe = dt.GetTriToHEBuffer(slot);
+        if (positions == null || halfEdges == null || triToHe == null)
+            return;
+
         mpb.Clear();
 
         if (lib != null && lib.AlbedoArray != null) {
@@ -507,14 +517,14 @@ public sealed class Renderer : MonoBehaviour {
             mpb.SetInt(ID_MaterialCount, lib.MaterialCount);
         }
 
-        mpb.SetBuffer(ID_PositionsPrev, dt.PositionsBuffer);
-        mpb.SetBuffer(ID_PositionsCurr, dt.PositionsBuffer);
+        mpb.SetBuffer(ID_PositionsPrev, positions);
+        mpb.SetBuffer(ID_PositionsCurr, positions);
         mpb.SetFloat(ID_RenderAlpha, alpha);
 
-        mpb.SetBuffer(ID_Positions, dt.PositionsBuffer);
+        mpb.SetBuffer(ID_Positions, positions);
 
-        mpb.SetBuffer(ID_HalfEdges, dt.HalfEdgesBuffer);
-        mpb.SetBuffer(ID_TriToHE, dt.TriToHEBuffer);
+        mpb.SetBuffer(ID_HalfEdges, halfEdges);
+        mpb.SetBuffer(ID_TriToHE, triToHe);
 
         mpb.SetBuffer(ID_MaterialIds, st.materialIds);
         mpb.SetBuffer(ID_RestVolumes, st.restVolumes);

@@ -82,7 +82,7 @@ public class Meshless : MonoBehaviour {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
         BuildLayerEndIndex();
-        LogGenerationSupportNeighborStats();
+        if (Const.DebugSupportRadius) LogGenerationSupportNeighborStats();
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
 
