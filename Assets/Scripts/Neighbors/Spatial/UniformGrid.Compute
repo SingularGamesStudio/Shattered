@@ -1,0 +1,98 @@
+#pragma kernel ClearHeads
+#pragma kernel ClearCounts
+#pragma kernel BuildLists
+#pragma kernel BuildNeighbors
+
+StructuredBuffer<float2> _Positions;
+
+RWStructuredBuffer<int> _CellHeads;   // size = _GridW * _GridH, init -1
+RWStructuredBuffer<int> _Next;        // size = _N
+
+RWStructuredBuffer<int> _Neighbors;   // size = _N * _MaxNeighbors
+RWStructuredBuffer<int> _Counts;      // size = _N
+
+int _N;
+int _MaxNeighbors;
+int _GridW, _GridH;
+float4 _BoundsMin;        // xy used
+float _InvCellSize;
+float _SupportRadius2;
+
+int ClampCellX(int x) { return clamp(x, 0, _GridW - 1); }
+int ClampCellY(int y) { return clamp(y, 0, _GridH - 1); }
+
+int2 PosToCell(float2 p) {
+    float2 rel = (p - _BoundsMin.xy) * _InvCellSize;
+    return int2(floor(rel));
+}
+
+int CellToIndex(int2 c) { return c.x + c.y * _GridW; }
+
+[numthreads(256,1,1)]
+void ClearHeads(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    uint cellCount = (uint)(_GridW * _GridH);
+    if (i >= cellCount) return;
+    _CellHeads[i] = -1;
+}
+
+[numthreads(256,1,1)]
+void ClearCounts(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= (uint)_N) return;
+    _Counts[i] = 0;
+}
+
+[numthreads(256,1,1)]
+void BuildLists(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= (uint)_N) return;
+
+    int2 c = PosToCell(_Positions[i]);
+    c.x = ClampCellX(c.x);
+    c.y = ClampCellY(c.y);
+    int cellIdx = CellToIndex(c);
+
+    int prev;
+    InterlockedExchange(_CellHeads[cellIdx], (int)i, prev);
+    _Next[i] = prev;
+}
+
+[numthreads(256,1,1)]
+void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= (uint)_N) return;
+
+    float2 pi = _Positions[i];
+    int2 ci = PosToCell(pi);
+    ci.x = ClampCellX(ci.x);
+    ci.y = ClampCellY(ci.y);
+
+    int outBase = (int)i * _MaxNeighbors;
+    int count = 0;
+
+    // Adjacent grid cells in 2D (3x3), distance test uses k=2r. [web:9]
+    [unroll]
+    for (int oy = -1; oy <= 1; oy++) {
+        [unroll]
+        for (int ox = -1; ox <= 1; ox++) {
+            int2 c = int2(ClampCellX(ci.x + ox), ClampCellY(ci.y + oy));
+            int head = _CellHeads[CellToIndex(c)];
+
+            int j = head;
+            while (j != -1) {
+                if (j != (int)i) {
+                    float2 d = _Positions[j] - pi;
+                    if (dot(d, d) <= _SupportRadius2) {
+                        _Neighbors[outBase + count] = j;
+                        count++;
+                        if (count >= _MaxNeighbors) { _Counts[i] = count; return; }
+                    }
+                }
+                j = _Next[j];
+            }
+        }
+    }
+
+    _Counts[i] = count;
+}

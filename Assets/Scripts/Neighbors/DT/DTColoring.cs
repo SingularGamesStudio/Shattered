@@ -1,4 +1,5 @@
 using System;
+using GPU.Neighbors;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -141,7 +142,7 @@ namespace GPU.Delaunay {
         /// <param name="positions">Buffer of vertex positions (float2).</param>
         /// <param name="dt">Delaunay triangulation data (needed for neighbour info).</param>
         /// <param name="layerCellSize">Grid cell size for the triangular pattern.</param>
-        public void EnqueueInitTriGrid(CommandBuffer cb, ComputeBuffer positions, DT dt, float layerCellSize) {
+        public void EnqueueInitTriGrid(CommandBuffer cb, ComputeBuffer positions, float layerCellSize) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
@@ -169,30 +170,31 @@ namespace GPU.Delaunay {
         public void EnqueueUpdateAfterMaintain(
             CommandBuffer cb,
             ComputeBuffer positions,
-            DT dt,
+            INeighborSearch neighborSearch,
             float layerCellSize,
             int iterations
         ) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
-            if (dt == null) throw new ArgumentNullException(nameof(dt));
+            if (neighborSearch == null) throw new ArgumentNullException(nameof(neighborSearch));
             if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
             if (iterations <= 0) throw new ArgumentOutOfRangeException(nameof(iterations));
 
             SetCommonParams(cb, positions, layerCellSize);
 
             // Bind neighbour buffers (needed by several kernels)
-            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtNeighbors", dt.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtNeighborCounts", dt.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtDirtyFlags", dt.DirtyVertexFlagsBuffer);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            if (neighborSearch.DirtyVertexFlagsBuffer != null)
+                cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringDtDirtyFlags", neighborSearch.DirtyVertexFlagsBuffer);
 
-            cb.SetComputeBufferParam(shader, kBuildWorkListFromConflicts, "_ColoringDtNeighbors", dt.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildWorkListFromConflicts, "_ColoringDtNeighborCounts", dt.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromConflicts, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromConflicts, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
 
-            cb.SetComputeBufferParam(shader, kChooseWork, "_ColoringDtNeighbors", dt.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kChooseWork, "_ColoringDtNeighborCounts", dt.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(shader, kApplyWork, "_ColoringDtNeighbors", dt.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kApplyWork, "_ColoringDtNeighborCounts", dt.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kChooseWork, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kChooseWork, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyWork, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyWork, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
 
             // Bind coloring buffers for all kernels that need them.
             BindColoringBuffers(cb, kBuildWorkListFromDirty);
@@ -206,12 +208,14 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kBuildWorkArgs, "_ColoringWorkCount", workCount);
             cb.SetComputeBufferParam(shader, kBuildWorkArgs, "_ColoringWorkArgs", workArgs);
 
-            // First pass: build work list from dirty vertices (wake‑up region)
-            epoch++;
-            cb.SetComputeIntParam(shader, "_ColoringEpoch", unchecked((int)epoch));
-            cb.DispatchCompute(shader, kClearWork, 1, 1, 1);
-            cb.DispatchCompute(shader, kBuildWorkListFromDirty, activeGroups, 1, 1);
-            cb.DispatchCompute(shader, kBuildWorkArgs, 1, 1, 1);
+            if (neighborSearch.DirtyVertexFlagsBuffer != null) {
+                // First pass: build work list from dirty vertices (wake‑up region)
+                epoch++;
+                cb.SetComputeIntParam(shader, "_ColoringEpoch", unchecked((int)epoch));
+                cb.DispatchCompute(shader, kClearWork, 1, 1, 1);
+                cb.DispatchCompute(shader, kBuildWorkListFromDirty, activeGroups, 1, 1);
+                cb.DispatchCompute(shader, kBuildWorkArgs, 1, 1, 1);
+            }
 
             for (int i = 0; i < iterations; i++) {
                 // Rebuild work list from conflicts (global) using new epoch
@@ -232,8 +236,8 @@ namespace GPU.Delaunay {
 
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringPrio", prio);
-            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighbors", dt.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighborCounts", dt.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringDtNeighborCount", dtNeighborCount);
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDebug", debug);

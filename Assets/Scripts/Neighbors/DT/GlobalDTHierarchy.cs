@@ -104,7 +104,7 @@ namespace GPU.Delaunay {
             return activeCount > 0;
         }
 
-        public void Rebuild(IReadOnlyList<Meshless> meshes, IReadOnlyList<int> baseOffsets, bool allowCrossBodyTopology) {
+        public void Rebuild(IReadOnlyList<Meshless> meshes, IReadOnlyList<int> baseOffsets, bool allowCrossBodyTopology, int maxLayerOverride = -1) {
             if (meshes == null) throw new ArgumentNullException(nameof(meshes));
             if (baseOffsets == null) throw new ArgumentNullException(nameof(baseOffsets));
             if (meshes.Count != baseOffsets.Count) throw new ArgumentException("meshes/baseOffsets count mismatch.");
@@ -117,6 +117,9 @@ namespace GPU.Delaunay {
 
                 localMaxLayer = math.max(localMaxLayer, m.maxLayer);
             }
+
+            if (maxLayerOverride >= 0)
+                localMaxLayer = math.min(localMaxLayer, maxLayerOverride);
 
             DisposeLayers();
             maxLayer = localMaxLayer;

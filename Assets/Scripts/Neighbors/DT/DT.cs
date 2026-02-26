@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using GPU.Neighbors;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -9,7 +10,7 @@ namespace GPU.Delaunay {
     /// Manages the GPU‑based Delaunay triangulation.
     /// Provides triple‑buffered geometry data for rendering and a set of shared working buffers.
     /// </summary>
-    public sealed class DT : IDisposable {
+    public sealed class DT : INeighborSearch {
         //---------------------------------------------------------------------------
         // Shader and kernel IDs
         //---------------------------------------------------------------------------
@@ -227,7 +228,7 @@ namespace GPU.Delaunay {
         /// <param name="fixIterations">Number of “FixHalfEdges” passes.</param>
         /// <param name="legalizeIterations">Number of “LegalizeHalfEdges” passes.</param>
         /// <param name="rebuildAdjacencyAndTriMap">If true, rebuilds neighbour lists and triangle maps after all flips.</param>
-        public void EnqueueMaintain(
+        public void EnqueueBuild(
             CommandBuffer cb,
             ComputeBuffer positionsForMaintain,
             int readSlot,
@@ -300,6 +301,22 @@ namespace GPU.Delaunay {
             if (rebuildAdjacencyAndTriMap) {
                 EnqueueRebuildVertexAdjacencyAndTriMap(cb, writeSlot);
             }
+        }
+
+        public void EnqueueBuild(
+            CommandBuffer cb,
+            ComputeBuffer positions,
+            int realVertexCount,
+            float cellSize,
+            float supportRadius,
+            float2 boundsMin,
+            float2 boundsMax,
+            int readSlot,
+            int writeSlot,
+            int fixIterations,
+            int legalizeIterations,
+            bool rebuildAdjacencyAndTriMap = true) {
+            EnqueueBuild(cb, positions, readSlot, writeSlot, fixIterations, legalizeIterations, rebuildAdjacencyAndTriMap);
         }
 
         /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using GPU.Delaunay;
+using GPU.Neighbors;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -102,7 +103,10 @@ namespace GPU.Solver {
     ComputeQueueType queueType,
     int readSlot,
     int writeSlot,
-    GlobalDTHierarchy globalDTHierarchy
+    GlobalDTHierarchy globalDTHierarchy,
+    INeighborSearch layer0NeighborSearch = null,
+    float2 layer0NeighborBoundsMin = default,
+    float2 layer0NeighborBoundsMax = default
 ) {
             EnsureKernelsCached();
 
@@ -118,6 +122,11 @@ namespace GPU.Solver {
                 return default;
 
             maxSolveLayer = Mathf.Max(maxSolveLayer, globalDTHierarchy.MaxLayer);
+            bool useOverrideLayer0NeighborSearch = layer0NeighborSearch != null;
+            if (useOverrideLayer0NeighborSearch) {
+                useHierarchical = false;
+                maxSolveLayer = 0;
+            }
 
             EnsureCapacity(totalCount);
 
@@ -130,32 +139,60 @@ namespace GPU.Solver {
             for (int tick = 0; tick < tickCount; tick++) {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, totalCount, 0);
 
-                for (int layer = globalDTHierarchy.MaxLayer; layer >= 1; layer--) {
-                    if (!globalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
-                        continue;
+                if (useHierarchical) {
+                    for (int layer = globalDTHierarchy.MaxLayer; layer >= 1; layer--) {
+                        if (!globalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
+                            continue;
 
-                    if (!globalDTHierarchy.TryGetLayerMappings(layer, out _, out _, out int[] globalFineNodeByLocal, out int activeCount, out int fineCount))
-                        continue;
-                    if (fineCount <= activeCount)
-                        continue;
+                        if (!globalDTHierarchy.TryGetLayerMappings(layer, out _, out _, out int[] globalFineNodeByLocal, out int activeCount, out int fineCount))
+                            continue;
+                        if (fineCount <= activeCount)
+                            continue;
 
-                    bool useMappedIndices = !IsIdentityMapping(globalFineNodeByLocal, fineCount);
-                    if (useMappedIndices) {
-                        ComputeBuffer globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, fineCount);
-                        ComputeBuffer globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, fineCount, totalCount);
-                        PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, true, 0, globalNodeMap, globalToLocalMap);
-                    } else {
-                        PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, false, 0, null, null);
+                        bool useMappedIndices = !IsIdentityMapping(globalFineNodeByLocal, fineCount);
+                        if (useMappedIndices) {
+                            ComputeBuffer globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, fineCount);
+                            ComputeBuffer globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, fineCount, totalCount);
+                            PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, true, 0, globalNodeMap, globalToLocalMap);
+                        } else {
+                            PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, false, 0, null, null);
+                        }
+                        Dispatch(shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
                     }
-                    Dispatch(shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
                 }
 
                 ApplyForces(totalCount, forceEventsCount);
+
+                if (useOverrideLayer0NeighborSearch) {
+                    if (globalDTHierarchy.TryGetLayerExecutionContext(0, out int activeCount, out _, out float layerKernelH)) {
+                        float supportRadius = Mathf.Max(1e-5f, Const.WendlandSupport * layerKernelH);
+                        float cellSize = supportRadius;
+                        layer0NeighborSearch.EnqueueBuild(
+                            asyncCb,
+                            pos,
+                            activeCount,
+                            cellSize,
+                            supportRadius,
+                            layer0NeighborBoundsMin,
+                            layer0NeighborBoundsMax,
+                            readSlot,
+                            writeSlot,
+                            Const.DTFixIterations,
+                            Const.DTLegalizeIterations,
+                            true);
+                    }
+                }
 
                 int vCycles = useHierarchical ? Mathf.Max(1, Const.HierarchyVCyclesPerTick) : 1;
                 for (int cycle = 0; cycle < vCycles; cycle++) {
                     for (int layer = maxSolveLayer; layer >= 0; layer--) {
                         if (!globalDTHierarchy.TryGetLayerDt(layer, out DT globalLayerDt) || globalLayerDt == null)
+                            continue;
+
+                        INeighborSearch layerNeighborSearch = useOverrideLayer0NeighborSearch && layer == 0
+                            ? layer0NeighborSearch
+                            : globalLayerDt;
+                        if (layerNeighborSearch == null)
                             continue;
 
                         if (!globalDTHierarchy.TryGetLayerMappings(layer, out int[] ownerBodyByLocal, out _, out int[] globalFineNodeByLocal, out int globalActiveCount, out int globalFineCount))
@@ -180,7 +217,7 @@ namespace GPU.Solver {
 
                         ProcessGlobalLayer(
                             layer,
-                            globalLayerDt,
+                            layerNeighborSearch,
                             execActiveCount,
                             execFineCount,
                             layerKernelH,
@@ -202,7 +239,7 @@ namespace GPU.Solver {
                 Dispatch(shader, kClampVelocities, Groups256(totalCount), 1, 1);
                 Dispatch(shader, kIntegratePositions, Groups256(totalCount), 1, 1);
 
-                for (int layer = globalDTHierarchy.MaxLayer; layer >= 0; layer--) {
+                for (int layer = maxSolveLayer; layer >= 0; layer--) {
                     if (!globalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                         continue;
 
@@ -222,8 +259,10 @@ namespace GPU.Solver {
                         Dispatch(shader, kUpdateDtPositions, Groups256(activeCount), 1, 1);
                     }
 
-                    dtLayer.EnqueueMaintain(asyncCb, dtLayer.GetPositionsBuffer(writeSlot),
-                        readSlot, writeSlot, Const.DTFixIterations, Const.DTLegalizeIterations);
+                    if (!(useOverrideLayer0NeighborSearch && layer == 0)) {
+                        dtLayer.EnqueueBuild(asyncCb, dtLayer.GetPositionsBuffer(writeSlot),
+                            readSlot, writeSlot, Const.DTFixIterations, Const.DTLegalizeIterations);
+                    }
                 }
             }
 
@@ -331,7 +370,7 @@ namespace GPU.Solver {
 
         private void ProcessGlobalLayer(
             int layer,
-            DT dtLayer,
+            INeighborSearch neighborSearch,
             int activeCount,
             int fineCount,
             float layerKernelH,
@@ -344,7 +383,7 @@ namespace GPU.Solver {
             ComputeBuffer dtGlobalToLayerLocalMap,
             ComputeBuffer dtOwnerByLocal
         ) {
-            PrepareRelaxBuffers(dtLayer, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
+            PrepareRelaxBuffers(neighborSearch, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
 
             Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
             Dispatch(shader, kCacheHierarchicalStats, Groups256(fineCount), 1, 1);
@@ -386,7 +425,7 @@ namespace GPU.Solver {
             Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
             Dispatch(shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
 
-            var coloring = RebuildGlobalColoringForLayer(layer, dtLayer, activeCount, dtLayer.NeighborCount, layerKernelH);
+            var coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, activeCount, layerKernelH);
             if (coloring != null) {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
@@ -444,7 +483,7 @@ namespace GPU.Solver {
         }
 
 
-        private DTColoring RebuildGlobalColoringForLayer(int layer, DT dtLayer, int activeCount, int dtNeighborCount, float layerCellSize) {
+        private DTColoring RebuildGlobalColoringForLayer(int layer, INeighborSearch neighborSearch, int activeCount, float layerCellSize) {
             if (coloringShader == null) {
                 Debug.LogError("XPBISolver: No coloring shader provided. Cannot rebuild global coloring.");
                 return null;
@@ -458,12 +497,12 @@ namespace GPU.Solver {
 
             uint seed = 12345u + (uint)layer;
             if (coloring.ColorBuffer == null) {
-                coloring.Init(activeCount, dtNeighborCount, seed);
-                coloring.EnqueueInitTriGrid(asyncCb, pos, dtLayer, layerCellSize);
-                dtLayer.MarkAllDirty(asyncCb);
+                coloring.Init(activeCount, neighborSearch.NeighborCount, seed);
+                coloring.EnqueueInitTriGrid(asyncCb, pos, layerCellSize);
+                neighborSearch.MarkAllDirty(asyncCb);
             }
 
-            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, dtLayer, layerCellSize, Const.ColoringConflictRounds);
+            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.ColoringConflictRounds);
             coloring.EnqueueRebuildOrderAndArgs(asyncCb);
             return coloring;
         }

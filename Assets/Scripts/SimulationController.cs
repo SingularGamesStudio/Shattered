@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using GPU.Delaunay;
+using GPU.Neighbors;
 using GPU.Solver;
 using Unity.Mathematics;
 using UnityEngine;
@@ -8,6 +9,11 @@ using UnityEngine.Rendering;
 
 [DefaultExecutionOrder(-1000)]
 public sealed class SimulationController : MonoBehaviour {
+    public enum NeighborSearchMode {
+        DelaunayTriangulation = 0,
+        UniformGridPaper = 1,
+    }
+
     public static SimulationController Instance { get; private set; }
 
     [Header("Rate")]
@@ -29,10 +35,14 @@ public sealed class SimulationController : MonoBehaviour {
     [Header("Hierarchy")]
     public bool useHierarchicalSolver = true;
 
+    [Header("Neighbor Search")]
+    public NeighborSearchMode neighborSearchMode = NeighborSearchMode.DelaunayTriangulation;
+
     [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
     public ComputeShader gpuXpbiSolverShader;
     public ComputeShader ColoringShader;
     public ComputeShader delaunayShader;
+    public ComputeShader uniformGridNeighborShader;
 
     [Header("GPU")]
     public ComputeQueueType asyncQueue = ComputeQueueType.Background;
@@ -47,6 +57,7 @@ public sealed class SimulationController : MonoBehaviour {
     readonly List<int> activeMeshlessBaseOffsets = new List<int>(64);
     XPBISolver globalSolver;
     GlobalDTHierarchy globalDTHierarchy;
+    UniformGridNeighborSearch uniformGridNeighborSearch;
     bool globalHierarchyDirty = true;
 
     readonly List<XPBISolver.ForceEvent> gatheredForceEvents = new List<XPBISolver.ForceEvent>(256);
@@ -125,6 +136,9 @@ public sealed class SimulationController : MonoBehaviour {
         globalDTHierarchy?.Dispose();
         globalDTHierarchy = null;
 
+        uniformGridNeighborSearch?.Dispose();
+        uniformGridNeighborSearch = null;
+
         meshless.Clear();
         activeMeshlessBatch.Clear();
         activeMeshlessBaseOffsets.Clear();
@@ -140,6 +154,8 @@ public sealed class SimulationController : MonoBehaviour {
                 globalSolver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
             if (globalDTHierarchy == null)
                 globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
+            if (uniformGridNeighborSearch == null && uniformGridNeighborShader != null)
+                uniformGridNeighborSearch = new UniformGridNeighborSearch(uniformGridNeighborShader, Const.NeighborCount);
 
             if (asyncState.renderFences == null || asyncState.renderFences.Length != 3) {
                 asyncState = new AsyncTripleState {
@@ -317,6 +333,14 @@ public sealed class SimulationController : MonoBehaviour {
         if (activeMeshlessBatch.Count == 0)
             return false;
 
+        bool useUniformGridSearch = neighborSearchMode == NeighborSearchMode.UniformGridPaper;
+        if (useUniformGridSearch && uniformGridNeighborSearch == null) {
+            if (uniformGridNeighborShader == null)
+                return false;
+
+            uniformGridNeighborSearch = new UniformGridNeighborSearch(uniformGridNeighborShader, Const.NeighborCount);
+        }
+
         GatherForceEventsForGlobal(activeMeshlessBatch, activeMeshlessBaseOffsets, dtPerTick, ticksToRun);
         if (gatheredForceEvents.Count > 0) {
             EnsureForceUploadCapacity(gatheredForceEvents.Count);
@@ -328,17 +352,27 @@ public sealed class SimulationController : MonoBehaviour {
 
         EnsureGlobalDTHierarchyBuilt();
 
+        float2 neighborBoundsMin = default;
+        float2 neighborBoundsMax = default;
+        if (useUniformGridSearch && !TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax))
+            return false;
+
+        bool useHierarchicalThisBatch = useHierarchicalSolver && !useUniformGridSearch;
+
         int readSlot = asyncState.renderSlot;
         GraphicsFence computeFence = globalSolver.SubmitSolve(
             activeMeshlessBatch,
             dtPerTick,
             ticksToRun,
-            useHierarchicalSolver,
+            useHierarchicalThisBatch,
             ConvergenceDebugEnabled,
             asyncQueue,
             readSlot,
             freeSlot,
-            globalDTHierarchy
+            globalDTHierarchy,
+            useUniformGridSearch ? uniformGridNeighborSearch : null,
+            neighborBoundsMin,
+            neighborBoundsMax
         );
 
         asyncState.writePending = true;
@@ -409,8 +443,43 @@ public sealed class SimulationController : MonoBehaviour {
         if (!globalHierarchyDirty)
             return;
 
-        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, true);
+        int maxLayerOverride = neighborSearchMode == NeighborSearchMode.UniformGridPaper ? 0 : -1;
+        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, true, maxLayerOverride);
         globalHierarchyDirty = false;
+    }
+
+    bool TryComputeBatchBounds(List<Meshless> activeMeshes, out float2 boundsMin, out float2 boundsMax) {
+        boundsMin = new float2(float.PositiveInfinity, float.PositiveInfinity);
+        boundsMax = new float2(float.NegativeInfinity, float.NegativeInfinity);
+
+        bool hasPoint = false;
+        for (int meshIdx = 0; meshIdx < activeMeshes.Count; meshIdx++) {
+            Meshless m = activeMeshes[meshIdx];
+            if (m == null || m.nodes == null || m.nodes.Count == 0)
+                continue;
+
+            for (int i = 0; i < m.nodes.Count; i++) {
+                float2 p = m.nodes[i].pos;
+                boundsMin = math.min(boundsMin, p);
+                boundsMax = math.max(boundsMax, p);
+                hasPoint = true;
+            }
+        }
+
+        if (!hasPoint)
+            return false;
+
+        float2 ext = boundsMax - boundsMin;
+        if (ext.x <= 1e-5f) {
+            boundsMin.x -= 0.5f;
+            boundsMax.x += 0.5f;
+        }
+        if (ext.y <= 1e-5f) {
+            boundsMin.y -= 0.5f;
+            boundsMax.y += 0.5f;
+        }
+
+        return true;
     }
 
     void LogAsyncSubmitIssue(string message) {

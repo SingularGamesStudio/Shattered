@@ -1,6 +1,7 @@
 using Unity.Mathematics;
 using UnityEngine;
 using GPU.Delaunay;
+using GPU.Neighbors;
 using System;
 using System.Collections.Generic;
 
@@ -222,17 +223,17 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
-        void PrepareParentRebuildBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
+        void PrepareParentRebuildBuffers(INeighborSearch neighborSearch, int baseIndex, int activeCount, int fineCount, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
             asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
-            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", neighborSearch.NeighborCount);
             asyncCb.SetComputeIntParam(shader, "_ParentRangeStart", baseIndex + activeCount);
             asyncCb.SetComputeIntParam(shader, "_ParentRangeEnd", baseIndex + fineCount);
             asyncCb.SetComputeIntParam(shader, "_ParentCoarseCount", activeCount);
 
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             BindDtGlobalMappingParams(kRebuildParentsAtLayer, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
         }
 
@@ -433,7 +434,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kExternalForces, "_InvMass", invMass);
         }
 
-        void PrepareRelaxBuffers(DT dtLayer, int baseIndex, int activeCount, int fineCount, int tickIndex, float layerKernelH, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null, ComputeBuffer dtOwnerByLocal = null) {
+        void PrepareRelaxBuffers(INeighborSearch neighborSearch, int baseIndex, int activeCount, int fineCount, int tickIndex, float layerKernelH, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null, ComputeBuffer dtOwnerByLocal = null) {
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
@@ -441,7 +442,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
             asyncCb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
             asyncCb.SetComputeIntParam(shader, "_FineCount", fineCount);
-            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", dtLayer.NeighborCount);
+            asyncCb.SetComputeIntParam(shader, "_DtNeighborCount", neighborSearch.NeighborCount);
             asyncCb.SetComputeIntParam(shader, "_PhysicalParamCount", physicalParamCount);
             asyncCb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
             asyncCb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
@@ -510,8 +511,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kComputeCorrectionL, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
@@ -529,13 +530,13 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(kRemoveRestrictedDeltaVFromActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kProlongate, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kCommitDeformation, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
@@ -571,8 +572,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_InvMass", invMass);
-            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", dtLayer.NeighborsBuffer);
-            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", dtLayer.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kSmoothProlongatedFineVel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
