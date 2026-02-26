@@ -5,7 +5,7 @@ using UnityEditor.Build.Reporting;
 using UnityEngine;
 
 public static class BuildAndRunStandalone {
-    const string BuildDir = "Builds/Win64Dev";
+    const string BuildDir = "Build";
     const string ExeName = "ShatteredDev.exe";
 
     [MenuItem("Tools/Build/Build & Run Win64 Dev _F5")]

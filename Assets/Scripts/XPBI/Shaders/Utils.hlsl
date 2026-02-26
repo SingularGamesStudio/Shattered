@@ -163,4 +163,12 @@
         }
     }
 
+    static void AtomicAddFloat2(RWStructuredBuffer<uint> bits, uint gi, float2 dv)
+    {
+        uint baseIdx = gi * 2u;
+        AtomicAddFloatBits(bits, baseIdx + 0u, dv.x);
+        AtomicAddFloatBits(bits, baseIdx + 1u, dv.y);
+    }
+
+
 #endif // XPBI_UTILS_INCLUDED

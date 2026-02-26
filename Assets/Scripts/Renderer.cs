@@ -67,6 +67,9 @@ public sealed class Renderer : MonoBehaviour {
     Camera cam;
 
     sealed class GlobalLayerState {
+        public ComputeBuffer ownerByLocal;
+        public int[] ownerByLocalCpu;
+
         public ComputeBuffer materialIds;
         public int[] materialIdsCpu;
 
@@ -141,6 +144,7 @@ public sealed class Renderer : MonoBehaviour {
 
     static readonly int ID_HalfEdges = Shader.PropertyToID("_HalfEdges");
     static readonly int ID_TriToHE = Shader.PropertyToID("_TriToHE");
+    static readonly int ID_OwnerByLocal = Shader.PropertyToID("_OwnerByLocal");
 
     static readonly int ID_MaterialIds = Shader.PropertyToID("_MaterialIds");
     static readonly int ID_MaterialCount = Shader.PropertyToID("_MaterialCount");
@@ -186,6 +190,7 @@ public sealed class Renderer : MonoBehaviour {
 
     void OnDisable() {
         foreach (var kv in layerStates) {
+            kv.Value.ownerByLocal?.Dispose();
             kv.Value.materialIds?.Dispose();
             kv.Value.restVolumes?.Dispose();
             kv.Value.restNorm?.Dispose();
@@ -279,12 +284,12 @@ public sealed class Renderer : MonoBehaviour {
                 sc.TryGetStableReadSlot(out int slot) &&
                 sc.TryGetGlobalRenderBatch(out var globalHierarchy, out var globalMeshes, out var globalBaseOffsets) &&
                 globalHierarchy.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0 &&
-                globalHierarchy.TryGetLayerMappings(0, out _, out int[] globalNodeByLocal, out _, out int activeCount, out _) &&
+                    globalHierarchy.TryGetLayerMappings(0, out int[] ownerBodyByLocal, out int[] globalNodeByLocal, out _, out int activeCount, out _) &&
                 globalHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH)) {
                 cr.fillCmd.SetRenderTarget(cr.accum);
                 cr.fillCmd.ClearRenderTarget(true, true, Color.clear);
 
-                var layerState = EnsureGlobalLayerBuffers(0, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
+                var layerState = EnsureGlobalLayerBuffers(0, ownerBodyByLocal, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
                 SetupCommonGlobal(layerState, dt0, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
                 mpb.SetFloat(ID_UvScale, uvScale);
 
@@ -315,7 +320,7 @@ public sealed class Renderer : MonoBehaviour {
                         if (!globalHierarchy.TryGetLayerDt(layer, out var dt) || dt == null || dt.TriCount <= 0)
                             continue;
 
-                        if (!globalHierarchy.TryGetLayerMappings(layer, out _, out int[] globalNodeByLocal, out _, out int activeCount, out _))
+                        if (!globalHierarchy.TryGetLayerMappings(layer, out int[] ownerBodyByLocal, out int[] globalNodeByLocal, out _, out int activeCount, out _))
                             continue;
                         if (activeCount <= 0)
                             continue;
@@ -326,7 +331,7 @@ public sealed class Renderer : MonoBehaviour {
                         float t = maxLayer <= 0 ? 0f : (float)layer / maxLayer;
                         Color wireColor = Color.Lerp(wireColorLayer0, wireColorMaxLayer, t);
 
-                        var layerState = EnsureGlobalLayerBuffers(layer, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
+                        var layerState = EnsureGlobalLayerBuffers(layer, ownerBodyByLocal, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
                         SetupCommonGlobal(layerState, dt, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
                         mpb.SetColor("_WireColor", wireColor);
                         mpb.SetFloat("_WireWidthPx", wireWidthPixels);
@@ -342,32 +347,26 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
+    [SerializeField] int sdfEveryNFrames = 3;
+    RenderTexture cachedSdf;
+
     void OnRenderImage(RenderTexture src, RenderTexture dest) {
-        if (!drawLayer0Fill || compositeShader == null || sdfCompute == null || cr == null || cr.accum == null) {
+        if (!drawLayer0Fill || compositeShader == null || sdfCompute == null || cr?.accum == null) {
             Graphics.Blit(src, dest);
             return;
         }
 
+        if (cachedSdf == null) cachedSdf = cr.sdf;
+
+        if (Time.frameCount % sdfEveryNFrames == 0) {
+            cachedSdf = RunSdfAndSmooth(); // updates cr.sdf/tmp
+        }
+
         compositeMaterial ??= new Material(compositeShader);
-
-        RenderTexture sdfFinal = RunSdfAndSmooth();
-
         compositeMaterial.SetTexture(ID_AccumTex, cr.accum);
-        compositeMaterial.SetTexture(ID_SdfTex, sdfFinal);
+        compositeMaterial.SetTexture(ID_SdfTex, cachedSdf);
         compositeMaterial.SetFloat(ID_RoundPixels, roundPixels);
-
-        if (debugShowAccum) {
-            Graphics.Blit(src, dest, compositeMaterial, 1);
-            return;
-        }
-
-        if (debugShowSdf) {
-            Graphics.Blit(src, dest, compositeMaterial, 2);
-            return;
-        }
-
         Graphics.Blit(src, dest, compositeMaterial, 0);
-        // Wireframe is drawn AFTER this via cr.wireCmd at CameraEvent.AfterImageEffects.
     }
 
     void EnsureCameraResources(int w, int h) {
@@ -494,6 +493,7 @@ public sealed class Renderer : MonoBehaviour {
 
     GlobalLayerState EnsureGlobalLayerBuffers(
         int layer,
+        int[] ownerBodyByLocal,
         int[] globalNodeByLocal,
         int activeCount,
         IReadOnlyList<Meshless> meshes,
@@ -506,11 +506,15 @@ public sealed class Renderer : MonoBehaviour {
             layerStates[layer] = st;
         }
 
-        bool reallocated = st.capacity != activeCount || st.materialIds == null || st.restNorm == null;
+        bool reallocated = st.capacity != activeCount || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null;
         if (reallocated) {
+            st.ownerByLocal?.Dispose();
             st.materialIds?.Dispose();
             st.restVolumes?.Dispose();
             st.restNorm?.Dispose();
+
+            st.ownerByLocal = new ComputeBuffer(activeCount, sizeof(int), ComputeBufferType.Structured);
+            st.ownerByLocalCpu = new int[activeCount];
 
             st.materialIds = new ComputeBuffer(activeCount, sizeof(int), ComputeBufferType.Structured);
             st.materialIdsCpu = new int[activeCount];
@@ -526,12 +530,19 @@ public sealed class Renderer : MonoBehaviour {
             st.lastInvHalfExtent = float.NaN;
         }
 
+        bool ownerChanged = reallocated;
         bool materialIdsChanged = reallocated;
         bool restVolumesChanged = reallocated;
         bool restNormChanged = reallocated || !math.all(st.lastCenter == normCenter) || st.lastInvHalfExtent != normInvHalfExtent;
         int meshHint = 0;
 
         for (int li = 0; li < activeCount; li++) {
+            int owner = (ownerBodyByLocal != null && li < ownerBodyByLocal.Length) ? ownerBodyByLocal[li] : -1;
+            if (st.ownerByLocalCpu[li] != owner) {
+                st.ownerByLocalCpu[li] = owner;
+                ownerChanged = true;
+            }
+
             int gi = (globalNodeByLocal != null && li < globalNodeByLocal.Length) ? globalNodeByLocal[li] : -1;
             if (!TryResolveGlobalNode(gi, meshes, baseOffsets, ref meshHint, out Node node))
                 continue;
@@ -554,6 +565,8 @@ public sealed class Renderer : MonoBehaviour {
             }
         }
 
+        if (ownerChanged)
+            st.ownerByLocal.SetData(st.ownerByLocalCpu, 0, 0, activeCount);
         if (materialIdsChanged)
             st.materialIds.SetData(st.materialIdsCpu, 0, 0, activeCount);
         if (restVolumesChanged)
@@ -648,7 +661,7 @@ public sealed class Renderer : MonoBehaviour {
         float normInvHalfExtent,
         int slot
     ) {
-        if (st == null || st.materialIds == null || st.restNorm == null)
+        if (st == null || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null)
             return;
 
         float alpha = 0f;
@@ -675,6 +688,7 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetBuffer(ID_Positions, positions);
         mpb.SetBuffer(ID_HalfEdges, halfEdges);
         mpb.SetBuffer(ID_TriToHE, triToHe);
+        mpb.SetBuffer(ID_OwnerByLocal, st.ownerByLocal);
 
         mpb.SetBuffer(ID_MaterialIds, st.materialIds);
         mpb.SetBuffer(ID_RestVolumes, st.restVolumes);

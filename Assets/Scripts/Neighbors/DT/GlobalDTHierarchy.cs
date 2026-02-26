@@ -223,11 +223,7 @@ namespace GPU.Delaunay {
                 }
 
                 int activeCount = points.Count;
-                int fineCount = activeCount;
-                if (layer == 1)
-                    fineCount = CountAllNodes(meshes);
-                else if (layer > 1)
-                    fineCount = CountLayerActive(meshes, layer - 1);
+                int fineCount = fineGlobals.Count;
 
                 if (activeCount < 3) {
                     layers[layer] = new LayerData {
@@ -333,20 +329,6 @@ namespace GPU.Delaunay {
                 if (m == null || m.nodes == null)
                     continue;
                 total += m.nodes.Count;
-            }
-
-            return total;
-        }
-
-        static int CountLayerActive(IReadOnlyList<Meshless> meshes, int layer) {
-            int total = 0;
-            for (int i = 0; i < meshes.Count; i++) {
-                Meshless m = meshes[i];
-                if (m == null || m.nodes == null || m.nodes.Count <= 0)
-                    continue;
-                if (layer > m.maxLayer)
-                    continue;
-                total += m.NodeCount(layer);
             }
 
             return total;

@@ -15,6 +15,9 @@ namespace GPU.Solver {
             for (int layer = maxSolveLayer; layer >= 0; layer--) {
                 int iterations = GetIterationsForLayer(layer, maxSolveLayer);
                 int baseIter = layer * maxIter;
+                int gsSplitIter = (layer == 0 && Const.EnableTwoStageGS2)
+                    ? Mathf.Min(Const.TwoStagePreGsItersL0, iterations)
+                    : -1;
 
                 var table = new System.Text.StringBuilder();
                 table.AppendLine($"Layer {layer} convergence stats:");
@@ -24,6 +27,10 @@ namespace GPU.Solver {
                 bool hasData = false;
 
                 for (int iter = 0; iter < iterations; iter++) {
+                    if (iter == gsSplitIter) {
+                        table.AppendLine("-----|--------|-------|--------------|--------------|---------------|---------------");
+                    }
+
                     int baseU = (baseIter + iter) * ConvergenceDebugIterBufSize;
                     if (baseU + 7 >= data.Length)
                         continue;
@@ -63,9 +70,10 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIterCount", iterations);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebug);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ConvergenceDebug", convergenceDebug);
             asyncCb.SetComputeBufferParam(shader, kClearConvergenceDebugStats, "_ConvergenceDebug", convergenceDebug);
 
-            Dispatch(shader, kClearConvergenceDebugStats, (iterations + 255) / 256, 1, 1);
+            Dispatch("XPBI.ClearConvergenceDebugStats", shader, kClearConvergenceDebugStats, (iterations + 255) / 256, 1, 1);
         }
     }
 }

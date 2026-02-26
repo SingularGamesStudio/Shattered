@@ -100,6 +100,19 @@
     static const float MIN_EFFECTIVE_MASS = 1e-4;
     static const float MAX_EFFECTIVE_INV_MASS = 1e4;
 
+    // JR stage buffers
+    RWStructuredBuffer<float2> _VelPrev;     // snapshot of _Vel
+    RWStructuredBuffer<float>  _LambdaPrev;  // snapshot of _Lambda
+
+    RWStructuredBuffer<uint>   _JRVelDeltaBits;  // asuint(float2) packed as [2*gi+0, 2*gi+1]
+    RWStructuredBuffer<float>  _JRLambdaDelta;   // per-vertex, no contention (1 thread -> 1 gi)
+
+    // JR relaxation factors
+    float _JROmegaV;
+    float _JROmegaL;
+
+
+
     static float WendlandSupportRadius(float h)
     {
         return max(_WendlandSupport, 0.0) * h;

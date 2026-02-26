@@ -5,6 +5,10 @@ public static class Const {
     public static int IterationsL0 = 25;
     public const int IterationsLMax = 2;
     public const int IterationsLMid = 4;
+    public const bool EnableTwoStageGS2 = true;
+    public const int TwoStagePreGsItersL0 = 4;
+    public const float TwoStageJROmegaV = 0.3f;
+    public const float TwoStageJROmegaL = 0.3f;
 
     public const int ColoringConflictRounds = 24;
     public const float RestrictedDeltaVScale = 0.75f;

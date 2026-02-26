@@ -20,6 +20,7 @@ namespace GPU.Solver {
 
         private readonly List<MeshRange> solveRanges = new List<MeshRange>(64);
         private readonly Dictionary<ulong, DTColoring> coloringByMeshLayer = new Dictionary<ulong, DTColoring>(128);
+        private readonly Dictionary<int, string[]> relaxDispatchMarkersByLayer = new Dictionary<int, string[]>(8);
 
         private readonly ComputeShader shader;
         private readonly ComputeShader coloringShader;
@@ -59,8 +60,31 @@ namespace GPU.Solver {
             asyncCb.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
         }
 
-        private void Dispatch(ComputeShader shader, int kernel, int x, int y, int z) {
+        private void Dispatch(string marker, ComputeShader shader, int kernel, int x, int y, int z) {
+            asyncCb.BeginSample(marker);
             asyncCb.DispatchCompute(shader, kernel, x, y, z);
+            asyncCb.EndSample(marker);
+        }
+
+        private void DispatchIndirect(string marker, ComputeShader shader, int kernel, ComputeBuffer args, uint argsOffset) {
+            asyncCb.BeginSample(marker);
+            asyncCb.DispatchCompute(shader, kernel, args, argsOffset);
+            asyncCb.EndSample(marker);
+        }
+
+        private string GetRelaxDispatchMarker(int layer, int color) {
+            if (!relaxDispatchMarkersByLayer.TryGetValue(layer, out string[] markersByColor) || markersByColor == null) {
+                markersByColor = new string[16];
+                relaxDispatchMarkersByLayer[layer] = markersByColor;
+            }
+
+            string marker = markersByColor[color];
+            if (marker == null) {
+                marker = $"XPBI.RelaxColored.L{layer}.C{color}";
+                markersByColor[color] = marker;
+            }
+
+            return marker;
         }
 
         /// <summary>
@@ -157,7 +181,7 @@ namespace GPU.Solver {
                         } else {
                             PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, false, 0, null, null);
                         }
-                        Dispatch(shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
+                        Dispatch("XPBI.RebuildParentsAtLayer", shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
                     }
                 }
 
@@ -236,8 +260,8 @@ namespace GPU.Solver {
                 asyncCb.SetComputeIntParam(shader, "_Base", 0);
                 asyncCb.SetComputeIntParam(shader, "_TotalCount", totalCount);
                 PrepareIntegratePosParams();
-                Dispatch(shader, kClampVelocities, Groups256(totalCount), 1, 1);
-                Dispatch(shader, kIntegratePositions, Groups256(totalCount), 1, 1);
+                Dispatch("XPBI.ClampVelocities", shader, kClampVelocities, Groups256(totalCount), 1, 1);
+                Dispatch("XPBI.IntegratePositions", shader, kIntegratePositions, Groups256(totalCount), 1, 1);
 
                 for (int layer = maxSolveLayer; layer >= 0; layer--) {
                     if (!globalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
@@ -253,10 +277,10 @@ namespace GPU.Solver {
                         ComputeBuffer globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, fineCount);
                         ComputeBuffer globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, fineCount, totalCount);
                         PrepareUpdateDtPosParamsMapped(dtLayer, globalNodeMap, globalToLocalMap, activeCount, globalDTHierarchy.NormCenter, globalDTHierarchy.NormInvHalfExtent, writeSlot);
-                        Dispatch(shader, kUpdateDtPositionsMapped, Groups256(activeCount), 1, 1);
+                        Dispatch("XPBI.UpdateDtPositionsMapped", shader, kUpdateDtPositionsMapped, Groups256(activeCount), 1, 1);
                     } else {
                         PrepareUpdateDtPosParamsUnmapped(dtLayer, 0, activeCount, globalDTHierarchy.NormCenter, globalDTHierarchy.NormInvHalfExtent, writeSlot);
-                        Dispatch(shader, kUpdateDtPositions, Groups256(activeCount), 1, 1);
+                        Dispatch("XPBI.UpdateDtPositions", shader, kUpdateDtPositions, Groups256(activeCount), 1, 1);
                     }
 
                     if (!(useOverrideLayer0NeighborSearch && layer == 0)) {
@@ -271,9 +295,15 @@ namespace GPU.Solver {
 
             Graphics.ExecuteCommandBufferAsync(asyncCb, queueType);
 
-            if (ConvergenceDebugEnabled && convergenceDebug != null && convergenceDebugCpu != null && convergenceDebugRequiredUInts > 0) {
-                convergenceDebug.GetData(convergenceDebugCpu);
-                LogConvergenceStatsFromData(convergenceDebugCpu, maxSolveLayer, convergenceDebugMaxIter);
+            if (ConvergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
+                int dbgMaxLayer = maxSolveLayer;
+                int dbgMaxIter = convergenceDebugMaxIter;
+
+                AsyncGPUReadback.Request(convergenceDebug, req => {
+                    if (req.hasError) return;
+                    var data = req.GetData<uint>();
+                    LogConvergenceStatsFromData(data.ToArray(), dbgMaxLayer, dbgMaxIter);
+                });
             }
 
             return fence;
@@ -359,12 +389,12 @@ namespace GPU.Solver {
             if (gameplayCountThisTick > 0 && forceEvents != null) {
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", gameplayCountThisTick);
                 asyncCb.SetComputeBufferParam(shader, kApplyGameplayForces, "_ForceEvents", forceEvents);
-                Dispatch(shader, kApplyGameplayForces, Groups256(gameplayCountThisTick), 1, 1);
+                Dispatch("XPBI.ApplyGameplayForces", shader, kApplyGameplayForces, Groups256(gameplayCountThisTick), 1, 1);
             } else {
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", 0);
             }
 
-            Dispatch(shader, kExternalForces, Groups256(total), 1, 1);
+            Dispatch("XPBI.ExternalForces", shader, kExternalForces, Groups256(total), 1, 1);
         }
 
 
@@ -385,11 +415,11 @@ namespace GPU.Solver {
         ) {
             PrepareRelaxBuffers(neighborSearch, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
 
-            Dispatch(shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
-            Dispatch(shader, kCacheHierarchicalStats, Groups256(fineCount), 1, 1);
-            Dispatch(shader, kFinalizeHierarchicalStats, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.ClearHierarchicalStats", shader, kClearHierarchicalStats, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.CacheHierarchicalStats", shader, kCacheHierarchicalStats, Groups256(fineCount), 1, 1);
+            Dispatch("XPBI.FinalizeHierarchicalStats", shader, kFinalizeHierarchicalStats, Groups256(activeCount), 1, 1);
 
-            Dispatch(shader, kSaveVelPrefix, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.SaveVelPrefix", shader, kSaveVelPrefix, Groups256(activeCount), 1, 1);
 
             bool useHierarchyTransfer = layer > 0 && fineCount > activeCount;
             bool injectRestrictedGameplay =
@@ -403,66 +433,98 @@ namespace GPU.Solver {
                 Const.RestrictResidualDeltaVScale > 0f;
 
             if (injectRestrictedResidual) {
-                Dispatch(shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
-                Dispatch(shader, kRestrictFineVelocityResidualToActive, Groups256(fineCount - activeCount), 1, 1);
+                Dispatch("XPBI.ClearRestrictedDeltaV", shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.RestrictFineVelocityResidualToActive", shader, kRestrictFineVelocityResidualToActive, Groups256(fineCount - activeCount), 1, 1);
                 asyncCb.SetComputeFloatParam(shader, "_RestrictedDeltaVScale", Const.RestrictResidualDeltaVScale);
-                Dispatch(shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.ApplyRestrictedDeltaVToActiveAndPrefix", shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
             }
 
             if (injectRestrictedGameplay) {
-                Dispatch(shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.ClearRestrictedDeltaV", shader, kClearRestrictedDeltaV, Groups256(activeCount), 1, 1);
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", gameplayCountThisTick);
                 asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
-                Dispatch(shader, kRestrictGameplayDeltaVFromEvents, Groups256(gameplayCountThisTick), 1, 1);
+                Dispatch("XPBI.RestrictGameplayDeltaVFromEvents", shader, kRestrictGameplayDeltaVFromEvents, Groups256(gameplayCountThisTick), 1, 1);
                 asyncCb.SetComputeFloatParam(shader, "_RestrictedDeltaVScale", Const.RestrictedDeltaVScale);
-                Dispatch(shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.ApplyRestrictedDeltaVToActiveAndPrefix", shader, kApplyRestrictedDeltaVToActiveAndPrefix, Groups256(activeCount), 1, 1);
             }
 
             if (!injectRestrictedGameplay)
                 asyncCb.SetComputeIntParam(shader, "_ForceEventCount", 0);
 
-            Dispatch(shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
-            Dispatch(shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
-            Dispatch(shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.ComputeCorrectionL", shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.CacheF0AndResetLambda", shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
+            Dispatch("XPBI.ResetCollisionLambda", shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
 
-            var coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, activeCount, layerKernelH);
-            if (coloring != null) {
-                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
-                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
-                asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
+            int totalIterations = GetIterationsForLayer(layer, maxSolveLayer);
+            bool useGs2Layer0 = Const.EnableTwoStageGS2 && layer == 0;
+            int preGsIterations = layer == 0
+                ? (useGs2Layer0 ? Mathf.Min(Const.TwoStagePreGsItersL0, totalIterations) : totalIterations)
+                : Mathf.Min(1, totalIterations);
+            int jrIterations = Mathf.Max(0, totalIterations - preGsIterations);
+
+            DTColoring coloring = null;
+            if (preGsIterations > 0) {
+                coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, activeCount, layerKernelH);
+                if (coloring != null) {
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
+                }
             }
 
-            int iterations = GetIterationsForLayer(layer, maxSolveLayer);
-
+            int debugIterations = preGsIterations + jrIterations;
             bool dbg = debugBuffer != null && tickIndex == 0;
-            if (dbg) {
-                ClearDebugBuffer(layer, iterations);
+            if (dbg && debugIterations > 0) {
+                ClearDebugBuffer(layer, debugIterations);
             } else {
                 asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
             }
 
-            for (int iter = 0; iter < iterations; iter++) {
-                if (dbg)
-                    asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
+            // ----- Stage 1: GS solve (full solve unless GS2 is active for layer 0) -----
+            if (preGsIterations > 0 && coloring != null) {
+                asyncCb.SetComputeIntParam(shader, "_CollisionEnable", 1);
 
-                for (int c = 0; c < 16; c++) {
-                    asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
-                    if (coloring != null && coloring.RelaxArgsBuffer != null)
-                        asyncCb.DispatchCompute(shader, kRelaxColored, coloring.RelaxArgsBuffer, (uint)c * 12);
+                for (int iter = 0; iter < preGsIterations; iter++) {
+                    if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
+
+                    for (int c = 0; c < 16; c++) {
+                        asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
+                        if (coloring.RelaxArgsBuffer != null)
+                            DispatchIndirect(GetRelaxDispatchMarker(layer, c), shader, kRelaxColored,
+                                             coloring.RelaxArgsBuffer, (uint)c * 12);
+                    }
+                }
+            }
+
+            // ----- Stage 2: JR bulk solve (uncolored) -----
+            if (jrIterations > 0) {
+                asyncCb.SetComputeIntParam(shader, "_CollisionEnable", 0);
+
+                asyncCb.SetComputeFloatParam(shader, "_JROmegaV", Const.TwoStageJROmegaV);
+                asyncCb.SetComputeFloatParam(shader, "_JROmegaL", Const.TwoStageJROmegaL);
+
+                for (int iter = 0; iter < jrIterations; iter++) {
+                    if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", preGsIterations + iter);
+
+                    Dispatch("XPBI.JR.SavePrevAndClear", shader, kJRSavePrevAndClear, Groups256(activeCount), 1, 1);
+
+                    Dispatch("XPBI.JR.ComputeDeltas", shader, kJRComputeDeltas, Groups256(activeCount), 1, 1);
+
+                    Dispatch("XPBI.JR.Apply", shader, kJRApply, Groups256(activeCount), 1, 1);
                 }
             }
 
             if (layer > 0 && fineCount > activeCount) {
-                Dispatch(shader, kProlongate, Groups256(fineCount - activeCount), 1, 1);
+                Dispatch("XPBI.Prolongate", shader, kProlongate, Groups256(fineCount - activeCount), 1, 1);
                 if (Const.PostProlongSmoothing > 0f)
-                    Dispatch(shader, kSmoothProlongatedFineVel, Groups256(fineCount - activeCount), 1, 1);
+                    Dispatch("XPBI.SmoothProlongatedFineVel", shader, kSmoothProlongatedFineVel, Groups256(fineCount - activeCount), 1, 1);
             }
 
             if (injectRestrictedGameplay || injectRestrictedResidual)
-                Dispatch(shader, kRemoveRestrictedDeltaVFromActive, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.RemoveRestrictedDeltaVFromActive", shader, kRemoveRestrictedDeltaVFromActive, Groups256(activeCount), 1, 1);
 
             if (layer == 0)
-                Dispatch(shader, kCommitDeformation, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.CommitDeformation", shader, kCommitDeformation, Groups256(activeCount), 1, 1);
         }
 
         private int GetIterationsForLayer(int layer, int maxSolveLayer) {
@@ -538,6 +600,7 @@ namespace GPU.Solver {
             foreach (var kv in coloringByMeshLayer)
                 kv.Value?.Dispose();
             coloringByMeshLayer.Clear();
+            relaxDispatchMarkersByLayer.Clear();
 
             solveRanges.Clear();
             layoutInitialized = false;

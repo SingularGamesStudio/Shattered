@@ -34,6 +34,7 @@ Shader "Unlit/TriangulationAccum"
 
             StructuredBuffer<HalfEdge> _HalfEdges;
             StructuredBuffer<int> _TriToHE;
+            StructuredBuffer<int> _OwnerByLocal;
 
             StructuredBuffer<int> _MaterialIds;
             int _MaterialCount;
@@ -516,6 +517,19 @@ Shader "Unlit/TriangulationAccum"
                 int v2 = Dest(Next(he0));
 
                 if (v0 >= _RealPointCount || v1 >= _RealPointCount || v2 >= _RealPointCount)
+                {
+                    o.pos = 0;
+                    o.restNorm = 0;
+                    o.bary = 0;
+                    o.mats = 0;
+                    o.valid = 0;
+                    return o;
+                }
+
+                int owner0 = _OwnerByLocal[v0];
+                int owner1 = _OwnerByLocal[v1];
+                int owner2 = _OwnerByLocal[v2];
+                if (owner0 < 0 || owner1 < 0 || owner2 < 0 || owner0 != owner1 || owner0 != owner2)
                 {
                     o.pos = 0;
                     o.restNorm = 0;

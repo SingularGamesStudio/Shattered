@@ -25,6 +25,10 @@ namespace GPU.Solver {
         private ComputeBuffer collisionLambda;
         private ComputeBuffer savedVelPrefix;
         private ComputeBuffer velDeltaBits;
+        private ComputeBuffer velPrev;
+        private ComputeBuffer lambdaPrev;
+        private ComputeBuffer jrVelDeltaBits;
+        private ComputeBuffer jrLambdaDelta;
         private ComputeBuffer coloringColor;
         private ComputeBuffer coloringProposed;
         private ComputeBuffer coloringPrio;
@@ -137,6 +141,10 @@ namespace GPU.Solver {
 
             savedVelPrefix = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
+            velPrev = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            lambdaPrev = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
+            jrVelDeltaBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
+            jrLambdaDelta = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
 
             coloringColor = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             coloringProposed = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
@@ -508,6 +516,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_L", L);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_Fp", Fp);
 
@@ -534,6 +544,47 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_VelPrev", velPrev);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaPrev", lambdaPrev);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRVelDeltaBits", jrVelDeltaBits);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRLambdaDelta", jrLambdaDelta);
+
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_MaterialIds", materialIds);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_F0", F0);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_L", L);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_VelPrev", velPrev);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaPrev", lambdaPrev);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVelDeltaBits", jrVelDeltaBits);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRLambdaDelta", jrLambdaDelta);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CoarseFixed", coarseFixed);
+
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_MaterialIds", materialIds);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_JRVelDeltaBits", jrVelDeltaBits);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_JRLambdaDelta", jrLambdaDelta);
+
+            BindDtGlobalMappingParams(kJRSavePrevAndClear, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kJRComputeDeltas, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kJRApply, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
@@ -579,6 +630,8 @@ namespace GPU.Solver {
 
             if (physicalParams != null) {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_PhysicalParams", physicalParams);
+                asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_PhysicalParams", physicalParams);
+                asyncCb.SetComputeBufferParam(shader, kJRApply, "_PhysicalParams", physicalParams);
                 asyncCb.SetComputeBufferParam(shader, kProlongate, "_PhysicalParams", physicalParams);
                 asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_PhysicalParams", physicalParams);
             }
@@ -605,6 +658,10 @@ namespace GPU.Solver {
 
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;
+            velPrev?.Dispose(); velPrev = null;
+            lambdaPrev?.Dispose(); lambdaPrev = null;
+            jrVelDeltaBits?.Dispose(); jrVelDeltaBits = null;
+            jrLambdaDelta?.Dispose(); jrLambdaDelta = null;
 
             coloringColor?.Dispose(); coloringColor = null;
             coloringProposed?.Dispose(); coloringProposed = null;

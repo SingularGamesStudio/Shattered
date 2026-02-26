@@ -1,3 +1,5 @@
+#pragma enable_d3d11_debug_symbols
+
 #pragma kernel ClearHierarchicalStats
 #pragma kernel CacheHierarchicalStats
 #pragma kernel FinalizeHierarchicalStats
@@ -10,6 +12,9 @@
 #pragma kernel CommitDeformation
 #pragma kernel ExternalForces
 #pragma kernel RelaxColored
+#pragma kernel JR_SavePrevAndClear
+#pragma kernel JR_ComputeDeltas
+#pragma kernel JR_Apply
 
 #pragma kernel ApplyGameplayForces
 #pragma kernel ClampVelocities
