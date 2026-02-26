@@ -153,19 +153,19 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetTPS: 500
-  targetFPS: 1
+  targetFPS: 30
   simulationSpeed: 10
-  manual: 1
+  manual: 0
   showTpsOverlay: 1
   ConvergenceDebugEnabled: 0
   useHierarchicalSolver: 1
-  neighborSearchMode: 1
+  neighborSearchMode: 0
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
-  asyncQueue: 1
-  maxTicksPerBatch: 2
+  asyncQueue: 2
+  maxTicksPerBatch: 32
   enableContinuousCpuReadback: 0
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
@@ -311,15 +311,12 @@ MonoBehaviour:
   uvScale: 5
   sdfDownsample: 1
   roundPixels: 0.8
-  fillRenderMode: 0
-  meatballRadiusScale: 4
-  meatballEdgeSoftness: 0.35
   smoothMode: 1
   blurRadiusPixels: 6
   blurIterations: 2
   curvatureIterations: 40
   curvatureDt: 0.2
-  debugShowAccum: 1
+  debugShowAccum: 0
   debugShowSdf: 0
   showWireframe: 1
   drawCoarseLayers: 1

@@ -295,60 +295,97 @@
             uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
             InterlockedAdd(_ConvergenceDebug[baseU + 7], 1u);
         }
-        if (idx >= count)
-        return;
+
+        if (idx >= count) return;
 
         uint start = _ColorStarts[_ColorIndex];
         uint li = _ColorOrder[start + idx];
-        if (li >= _ActiveCount)
-        return;
+        if (li >= _ActiveCount) return;
 
+        // Map once: local -> global for the center vertex
         uint gi = GlobalIndexFromLocal(li);
-        if (gi == ~0u)
-        return;
+        if (gi == ~0u) return;
 
-        if (IsLayerFixed(gi))
-        return;
-        if (_RestVolume[gi] <= EPS)
-        return;
+        if (IsLayerFixed(gi)) return;
+        if (_RestVolume[gi] <= EPS) return;
 
         float h = max(_LayerKernelH, 1e-4);
-        if (h <= EPS)
-        return;
+        float kernelH = WendlandKernelHFromSupport(h);
+        if (kernelH <= EPS) return;
 
-        uint nCount;
-        uint ns[targetNeighborCount];
-        GetNeighbors(gi, nCount, ns);
-        if (nCount == 0)
-        return;
+        float support = WendlandSupportRadius(h);
+        if (support <= EPS) return;
+
+        // DT neighbor addressing (use local indexing everywhere possible)
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+        uint rawCount = _DtNeighborCounts[dtLi];
+        uint nCount = min(rawCount, _DtNeighborCount);
+        nCount = min(nCount, targetNeighborCount);
+        if (nCount == 0u) return;
+
+        uint baseIdx = dtLi * _DtNeighborCount;
+
+        // Optional owner filter (all-local, cheap)
+        bool useOwnerFilter = (_UseDtOwnerFilter != 0u);
+        int ownerI = useOwnerFilter ? _DtOwnerByLocal[li] : -1;
+
+        float supportSq = support * support;
 
         float2 xi = _Pos[gi];
         float2 vi = _Vel[gi];
 
         Mat2 Lm = Mat2FromFloat4(_L[gi]);
-        Mat2 gradV = EstimateVelocityGradient(gi, xi, vi, Lm, h);
+
+        // --- Velocity gradient for Ftrial/Fel (still needs neighbor pass) ---
+        Mat2 gradV = Mat2Zero();
+        {
+            [loop] for (uint k = 0u; k < nCount; k++)
+            {
+                uint gjLi = _DtNeighbors[baseIdx + k];
+                if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
+
+                if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+
+                uint gj = GlobalIndexFromLocal(gjLi);
+                if (gj == ~0u) continue;
+
+                float2 xij = _Pos[gj] - xi;
+                if (dot(xij, xij) > supportSq) continue;
+
+                float2 gradW = GradWendlandC2(xij, kernelH, EPS);
+                float gradW2 = dot(gradW, gradW);
+                if (gradW2 <= EPS * EPS) continue;
+
+                float Vb = ReadCurrentVolume(gj);
+                if (Vb <= EPS) continue;
+
+                float2 correctedGrad = MulMat2Vec(Lm, gradW);
+                float2 dv = _Vel[gj] - vi;
+
+                gradV.c0 += dv * (Vb * correctedGrad.x);
+                gradV.c1 += dv * (Vb * correctedGrad.y);
+            }
+        }
 
         Mat2 F0 = Mat2FromFloat4(_F0[gi]);
         Mat2 I = Mat2Identity();
 
         Mat2 dF = Mat2FromCols(I.c0 + gradV.c0 * _Dt, I.c1 + gradV.c1 * _Dt);
-        if (DetMat2(dF) <= 0.0)
-        return;
+        if (DetMat2(dF) <= 0.0) return;
 
         Mat2 Ftrial = MulMat2(dF, F0);
+
         float yieldHencky = ReadMaterialYieldHencky(gi);
         float volHenckyLimit = ReadMaterialVolHenckyLimit(gi);
         Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
         STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
-        if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1)))
-        return;
+        if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1))) return;
 
         float mu, lambda;
         ComputeMaterialLame(gi, mu, lambda);
 
         float C = XPBI_ConstraintC(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
-        if (!isfinite(C))
-        return;
+        if (!isfinite(C)) return;
 
         if (_ConvergenceDebugEnable != 0)
         {
@@ -356,37 +393,42 @@
             uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
 
             uint uAbsC = (uint)min(abs(C) * _ConvergenceDebugScaleC, 4294967295.0);
-
             InterlockedAdd(_ConvergenceDebug[baseU + 0], uAbsC);
             InterlockedMax(_ConvergenceDebug[baseU + 1], uAbsC);
             InterlockedAdd(_ConvergenceDebug[baseU + 4], 1u);
         }
 
-        if (abs(C) < EPS)
-        return;
-        if (abs(C) > 5.0)
-        return;
+        if (abs(C) < EPS) return;
+        if (abs(C) > 5.0) return;
 
         Mat2 dCdF = XPBI_ComputeGradient(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
         Mat2 FT = TransposeMat2(Fel);
 
         float invDt = 1.0 / max(_Dt, EPS);
-        float alphaTilde = (_Compliance / EffectiveVolumeForCompliance(gi)) * (invDt * invDt);
+        float invDt2 = invDt * invDt;
+        float alphaTilde = (_Compliance / EffectiveVolumeForCompliance(gi)) * invDt2;
 
-        float2 gradC_vi = 0.0f;
-        float2 gradC_vj[targetNeighborCount];
-        [unroll] for (uint kInit = 0; kInit < targetNeighborCount; kInit++)
-        gradC_vj[kInit] = 0.0f;
-        uint validConstraintNeighbors = 0u;
+        // --- Pass A: build gradC_vi and denom contribution (no gradC_vj[] array) ---
+        float2 gradC_vi = 0.0;
+        float denomNeighbors = 0.0;
+        float maxInvMassLocal = ReadEffectiveInvMass(gi);
+        float maxGradNorm2Local = 0.0;
+        uint valid = 0u;
 
-        [unroll] for (uint k = 0; k < nCount; k++)
+        [loop] for (uint k = 0u; k < nCount; k++)
         {
-            uint gj = ns[k];
-            uint gjLi = LocalIndexFromGlobal(gj);
+            uint gjLi = _DtNeighbors[baseIdx + k];
             if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
 
+            if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+
+            uint gj = GlobalIndexFromLocal(gjLi);
+            if (gj == ~0u) continue;
+
             float2 xij = _Pos[gj] - xi;
-            float2 gradW = GradWendlandC2(xij, WendlandKernelHFromSupport(h), EPS);
+            if (dot(xij, xij) > supportSq) continue;
+
+            float2 gradW = GradWendlandC2(xij, kernelH, EPS);
             if (dot(gradW, gradW) <= EPS * EPS) continue;
 
             float Vb = ReadCurrentVolume(gj);
@@ -397,44 +439,31 @@
             float2 q = Vb * MulMat2Vec(dCdF, t);
 
             gradC_vi -= q;
-            gradC_vj[k] = q;
-            validConstraintNeighbors++;
+            valid++;
+
+            // Treat fixed neighbors as invMass=0 without branching explosion:
+            // if you can precompute an invMass buffer that is already 0 for fixed, do that.
+            float invMassJ = IsLayerFixed(gj) ? 0.0 : ReadEffectiveInvMass(gj);
+            float q2 = dot(q, q);
+
+            denomNeighbors += invMassJ * q2;
+            maxInvMassLocal = max(maxInvMassLocal, invMassJ);
+            maxGradNorm2Local = max(maxGradNorm2Local, q2);
         }
 
-        if (validConstraintNeighbors < 3u)
-        return;
+        if (valid < 3u) return;
 
         float invMassI = ReadEffectiveInvMass(gi);
         float gradNormI2 = dot(gradC_vi, gradC_vi);
-        if (!(gradNormI2 > 1e-8))
-        return;
+        if (!(gradNormI2 > 1e-8)) return;
 
-        float denom = invMassI * gradNormI2;
-        float maxInvMassLocal = invMassI;
-        float maxGradNorm2Local = gradNormI2;
-        [unroll] for (uint k1 = 0; k1 < nCount; k1++)
-        {
-            uint gj = ns[k1];
-            uint gjLi = LocalIndexFromGlobal(gj);
-            if (gjLi == ~0u || gjLi >= _ActiveCount)
-            continue;
-            if (IsLayerFixed(gj))
-            continue;
-            float invMassJ = ReadEffectiveInvMass(gj);
-            float gradNormJ2 = dot(gradC_vj[k1], gradC_vj[k1]);
-            denom += invMassJ * gradNormJ2;
-            maxInvMassLocal = max(maxInvMassLocal, invMassJ);
-            maxGradNorm2Local = max(maxGradNorm2Local, gradNormJ2);
-        }
-        if (denom < 1e-4)
-        return;
+        float denom = invMassI * gradNormI2 + denomNeighbors;
+        if (denom < 1e-4) return;
 
         float lambdaBefore = _Lambda[gi];
         float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
-        if (isnan(dLambda) || isinf(dLambda))
-        return;
-        if (abs(dLambda) > 100.0)
-        return;
+        if (isnan(dLambda) || isinf(dLambda)) return;
+        if (abs(dLambda) > 100.0) return;
 
         if (_ConvergenceDebugEnable != 0)
         {
@@ -442,120 +471,156 @@
             uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
 
             uint uAbsDL = (uint)min(abs(dLambda) * _ConvergenceDebugScaleDLambda, 4294967295.0);
-
             InterlockedAdd(_ConvergenceDebug[baseU + 2], uAbsDL);
             InterlockedMax(_ConvergenceDebug[baseU + 3], uAbsDL);
         }
 
         float velScale = dLambda * invDt;
-        float support = WendlandSupportRadius(h);
+
         float maxDeltaVPerIter = support * invDt;
         float maxSpeedLocal = (4.0 * support) * invDt;
 
-        float predictedMaxDv = abs(velScale) * maxInvMassLocal * sqrt(max(maxGradNorm2Local, 1e-12));
-        if (predictedMaxDv > maxDeltaVPerIter)
-        return;
-        if (predictedMaxDv > 0.5 * maxSpeedLocal)
-        return;
+        // predictedMaxDv check without sqrt (compare squared)
+        float pred2 = (velScale * velScale) * (maxInvMassLocal * maxInvMassLocal) * max(maxGradNorm2Local, 1e-12);
+        float maxDv2 = maxDeltaVPerIter * maxDeltaVPerIter;
+        float maxSpeedHalf2 = (0.5 * maxSpeedLocal) * (0.5 * maxSpeedLocal);
+        if (pred2 > maxDv2) return;
+        if (pred2 > maxSpeedHalf2) return;
 
+        // --- Apply to i (clamp with squared magnitude) ---
         float2 dVi = invMassI * velScale * gradC_vi;
-        float dViLen = length(dVi);
-        if (dViLen > maxDeltaVPerIter)
-        dVi *= maxDeltaVPerIter / max(dViLen, EPS);
-        _Vel[gi] += dVi;
-        float vILen = length(_Vel[gi]);
-        if (vILen > maxSpeedLocal)
-        _Vel[gi] *= maxSpeedLocal / max(vILen, EPS);
-
-        [unroll] for (uint k2 = 0; k2 < nCount; k2++)
+        float dVi2 = dot(dVi, dVi);
+        if (dVi2 > maxDv2)
         {
-            uint gj = ns[k2];
-            uint gjLi = LocalIndexFromGlobal(gj);
-            if (gjLi == ~0u || gjLi >= _ActiveCount)
-            continue;
-            if (IsLayerFixed(gj))
-            continue;
+            float invLen = rsqrt(max(dVi2, EPS * EPS));
+            dVi *= maxDeltaVPerIter * invLen;
+        }
+
+        float2 vI = _Vel[gi] + dVi;
+        float vI2 = dot(vI, vI);
+        float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
+        if (vI2 > maxSpeed2)
+        {
+            float invLen = rsqrt(max(vI2, EPS * EPS));
+            vI *= maxSpeedLocal * invLen;
+        }
+        _Vel[gi] = vI;
+
+        // --- Pass B: apply to neighbors (recompute q, still no array) ---
+        [loop] for (uint k = 0u; k < nCount; k++)
+        {
+            uint gjLi = _DtNeighbors[baseIdx + k];
+            if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
+
+            if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+
+            uint gj = GlobalIndexFromLocal(gjLi);
+            if (gj == ~0u) continue;
+            if (IsLayerFixed(gj)) continue;
+
+            float2 xij = _Pos[gj] - xi;
+            if (dot(xij, xij) > supportSq) continue;
+
+            float2 gradW = GradWendlandC2(xij, kernelH, EPS);
+            if (dot(gradW, gradW) <= EPS * EPS) continue;
+
+            float Vb = ReadCurrentVolume(gj);
+            if (Vb <= EPS) continue;
+
+            float2 correctedGrad = MulMat2Vec(Lm, gradW);
+            float2 t = MulMat2Vec(FT, correctedGrad);
+            float2 q = Vb * MulMat2Vec(dCdF, t);
+
             float invMassJ = ReadEffectiveInvMass(gj);
-            float2 dVj = invMassJ * velScale * gradC_vj[k2];
-            float dVjLen = length(dVj);
-            if (dVjLen > maxDeltaVPerIter)
-            dVj *= maxDeltaVPerIter / max(dVjLen, EPS);
-            _Vel[gj] += dVj;
-            float vJLen = length(_Vel[gj]);
-            if (vJLen > maxSpeedLocal)
-            _Vel[gj] *= maxSpeedLocal / max(vJLen, EPS);
+            float2 dVj = invMassJ * velScale * q;
+
+            float dVj2 = dot(dVj, dVj);
+            if (dVj2 > maxDv2)
+            {
+                float invLen = rsqrt(max(dVj2, EPS * EPS));
+                dVj *= maxDeltaVPerIter * invLen;
+            }
+
+            float2 vJ = _Vel[gj] + dVj;
+            float vJ2 = dot(vJ, vJ);
+            if (vJ2 > maxSpeed2)
+            {
+                float invLen = rsqrt(max(vJ2, EPS * EPS));
+                vJ *= maxSpeedLocal * invLen;
+            }
+            _Vel[gj] = vJ;
         }
 
         if (_CollisionEnable != 0u)
         {
+            // li is already the local index for gi (center)
             int ownerI = (li < _ActiveCount) ? _DtOwnerByLocal[li] : -1;
             if (ownerI >= 0)
             {
-                float targetSeparation = max(EPS, _CollisionSupportScale * WendlandSupportRadius(h));
+                float hCol = max(_LayerKernelH, 1e-4);
+                float supportCol = WendlandSupportRadius(hCol);
+
+                float targetSeparation = max(EPS, _CollisionSupportScale * supportCol);
                 float targetSeparationSq = targetSeparation * targetSeparation;
+
                 float alphaCollision = _CollisionCompliance / max(_Dt * _Dt, EPS);
-                uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
-                uint contactBase = dtLi * _DtNeighborCount;
 
-                uint colRawCount;
-                uint colRawNs[targetNeighborCount];
-                GetNeighborsRaw(gi, colRawCount, colRawNs);
+                uint dtLiCol = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+                uint baseIdxCol = dtLiCol * _DtNeighborCount;
 
-                [unroll] for (uint ck = 0u; ck < targetNeighborCount; ck++)
+                uint rawCountCol = _DtNeighborCounts[dtLiCol];
+                uint nCountCol = min(rawCountCol, _DtNeighborCount);
+                nCountCol = min(nCountCol, targetNeighborCount);
+
+                uint contactBase = dtLiCol * _DtNeighborCount;
+
+                // Center fixedness computed once
+                bool fixedI = IsLayerFixed(gi);
+                float invMassICol = fixedI ? 0.0 : ReadEffectiveInvMass(gi);
+
+                [loop] for (uint k = 0u; k < nCountCol; k++)
                 {
-                    if (ck >= colRawCount || ck >= _DtNeighborCount) break;
-
-                    uint gj = colRawNs[ck];
-                    if (gj == ~0u || gj <= gi)
-                    continue;
-
-                    uint gjLi = LocalIndexFromGlobal(gj);
-                    if (gjLi == ~0u || gjLi >= _ActiveCount)
-                    continue;
+                    uint gjLi = _DtNeighbors[baseIdxCol + k];
+                    if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
 
                     int ownerJ = _DtOwnerByLocal[gjLi];
-                    if (ownerJ < 0 || ownerJ == ownerI)
-                    continue;
+                    if (ownerJ < 0 || ownerJ == ownerI) continue;
 
-                    bool fixedI = IsLayerFixed(gi);
+                    uint gj = GlobalIndexFromLocal(gjLi);
+                    if (gj == ~0u || gj <= gi) continue;
+
                     bool fixedJ = IsLayerFixed(gj);
-                    if (fixedI && fixedJ)
-                    continue;
+                    if (fixedI && fixedJ) continue;
 
                     float2 dx = _Pos[gj] - _Pos[gi];
                     float distSq = dot(dx, dx);
-                    if (distSq <= EPS * EPS || distSq > targetSeparationSq)
-                    continue;
+                    if (distSq <= EPS * EPS || distSq > targetSeparationSq) continue;
 
                     float dist = sqrt(distSq);
                     float Cn = dist - targetSeparation;
-                    if (Cn >= 0.0)
-                    continue;
+                    if (Cn >= 0.0) continue;
 
                     float2 nrm = dx / max(dist, EPS);
 
-                    float invMassICol = fixedI ? 0.0 : ReadEffectiveInvMass(gi);
                     float invMassJCol = fixedJ ? 0.0 : ReadEffectiveInvMass(gj);
                     float denomCol = invMassICol + invMassJCol;
-                    if (denomCol <= EPS)
-                    continue;
+                    if (denomCol <= EPS) continue;
 
-                    uint lambdaIdx = contactBase + ck;
+                    uint lambdaIdx = contactBase + k;
                     float lambdaPrev = _CollisionLambda[lambdaIdx];
+
                     float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / (denomCol + alphaCollision);
                     float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
                     dLambdaCol = lambdaNew - lambdaPrev;
-                    if (dLambdaCol <= 0.0)
-                    continue;
+                    if (dLambdaCol <= 0.0) continue;
 
                     float2 relVelBefore = _Vel[gj] - _Vel[gi];
                     float relNormalBefore = dot(relVelBefore, nrm);
 
                     float impulseVel = dLambdaCol / max(_Dt, EPS);
-                    if (!fixedI)
-                    _Vel[gi] -= invMassICol * impulseVel * nrm;
-                    if (!fixedJ)
-                    _Vel[gj] += invMassJCol * impulseVel * nrm;
+
+                    if (!fixedI) _Vel[gi] -= invMassICol * impulseVel * nrm;
+                    if (!fixedJ) _Vel[gj] += invMassJCol * impulseVel * nrm;
 
                     if (_CollisionFriction > 0.0)
                     {
@@ -570,20 +635,18 @@
                             float frictionLimit = _CollisionFriction * impulseVel;
                             frictionImpulseVel = clamp(frictionImpulseVel, -frictionLimit, frictionLimit);
 
-                            if (!fixedI)
-                            _Vel[gi] -= invMassICol * frictionImpulseVel * tangentDir;
-                            if (!fixedJ)
-                            _Vel[gj] += invMassJCol * frictionImpulseVel * tangentDir;
+                            if (!fixedI) _Vel[gi] -= invMassICol * frictionImpulseVel * tangentDir;
+                            if (!fixedJ) _Vel[gj] += invMassJCol * frictionImpulseVel * tangentDir;
                         }
                     }
 
                     if (_CollisionRestitution > 0.0 && relNormalBefore < -_CollisionRestitutionThreshold)
                     {
-                        float restitutionImpulseVel = (-(1.0 + _CollisionRestitution) * relNormalBefore) / max(denomCol, EPS);
-                        if (!fixedI)
-                        _Vel[gi] -= invMassICol * restitutionImpulseVel * nrm;
-                        if (!fixedJ)
-                        _Vel[gj] += invMassJCol * restitutionImpulseVel * nrm;
+                        float restitutionImpulseVel =
+                        (-(1.0 + _CollisionRestitution) * relNormalBefore) / max(denomCol, EPS);
+
+                        if (!fixedI) _Vel[gi] -= invMassICol * restitutionImpulseVel * nrm;
+                        if (!fixedJ) _Vel[gj] += invMassJCol * restitutionImpulseVel * nrm;
                     }
 
                     _CollisionLambda[lambdaIdx] = lambdaNew;
@@ -591,12 +654,12 @@
             }
         }
 
+
         _Lambda[gi] = lambdaBefore + dLambda;
 
+        // Keep your single-anchor radial filter (unchanged)
         uint fixedChildCount = ReadFixedChildCount(gi);
-        bool singleFixedAnchor = (fixedChildCount == 1u);
-
-        if (singleFixedAnchor)
+        if (fixedChildCount == 1u)
         {
             float2 fixedAnchor = ReadFixedChildAnchor(gi);
             float2 r = _Pos[gi] - fixedAnchor;
@@ -610,5 +673,6 @@
             }
         }
     }
+
 
 #endif // XPBI_SOLVER_RELAX_KERNELS_INCLUDED
