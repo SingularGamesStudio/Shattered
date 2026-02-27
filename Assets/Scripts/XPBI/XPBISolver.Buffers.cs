@@ -496,6 +496,19 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_MaterialIds", materialIds);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_RestVolume", restVolume);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_F0", F0);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_L", L);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CurrentVolumeBits", currentVolumeBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CurrentTotalMassBits", currentTotalMassBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildPosBits", fixedChildPosBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
@@ -544,6 +557,10 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            BindDtGlobalMappingParams(kRelaxColoredPersistentCoarse, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Lambda", lambda);
@@ -592,6 +609,7 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(kCommitDeformation, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kCommitDeformation, "_CoarseFixed", coarseFixed);
 
             asyncCb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVBits", restrictedDeltaVBits);
@@ -630,6 +648,7 @@ namespace GPU.Solver {
 
             if (physicalParams != null) {
                 asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_PhysicalParams", physicalParams);
+                asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_PhysicalParams", physicalParams);
                 asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_PhysicalParams", physicalParams);
                 asyncCb.SetComputeBufferParam(shader, kJRApply, "_PhysicalParams", physicalParams);
                 asyncCb.SetComputeBufferParam(shader, kProlongate, "_PhysicalParams", physicalParams);

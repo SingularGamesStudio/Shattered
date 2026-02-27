@@ -469,8 +469,17 @@ namespace GPU.Solver {
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColorOrder", coloring.OrderBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColorStarts", coloring.StartsBuffer);
+                    asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColorCounts", coloring.CountsBuffer);
                 }
             }
+
+            bool usePersistentCoarseGs =
+                preGsIterations > 0 &&
+                coloring != null &&
+                Const.EnablePersistentCoarseGS &&
+                activeCount <= Const.PersistentCoarseMaxNodes;
 
             int debugIterations = preGsIterations + jrIterations;
             bool dbg = debugBuffer != null && tickIndex == 0;
@@ -484,14 +493,20 @@ namespace GPU.Solver {
             if (preGsIterations > 0 && coloring != null) {
                 asyncCb.SetComputeIntParam(shader, "_CollisionEnable", 1);
 
-                for (int iter = 0; iter < preGsIterations; iter++) {
-                    if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
+                if (usePersistentCoarseGs) {
+                    asyncCb.SetComputeIntParam(shader, "_PersistentIters", preGsIterations);
+                    asyncCb.SetComputeIntParam(shader, "_PersistentBaseDebugIter", 0);
+                    Dispatch("XPBI.RelaxColoredPersistentCoarse", shader, kRelaxColoredPersistentCoarse, 1, 1, 1);
+                } else {
+                    for (int iter = 0; iter < preGsIterations; iter++) {
+                        if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
 
-                    for (int c = 0; c < 16; c++) {
-                        asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
-                        if (coloring.RelaxArgsBuffer != null)
-                            DispatchIndirect(GetRelaxDispatchMarker(layer, c), shader, kRelaxColored,
-                                             coloring.RelaxArgsBuffer, (uint)c * 12);
+                        for (int c = 0; c < 16; c++) {
+                            asyncCb.SetComputeIntParam(shader, "_ColorIndex", c);
+                            if (coloring.RelaxArgsBuffer != null)
+                                DispatchIndirect(GetRelaxDispatchMarker(layer, c), shader, kRelaxColored,
+                                                 coloring.RelaxArgsBuffer, (uint)c * 12);
+                        }
                     }
                 }
             }

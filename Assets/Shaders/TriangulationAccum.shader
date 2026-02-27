@@ -65,7 +65,7 @@ Shader "Unlit/TriangulationAccum"
             }
 
             bool PatchTriangle(
-            int sourceCorner,
+            uint sourceCorner,
             float support,
             float2 p0, float2 p1, float2 p2,
             float2 r0, float2 r1, float2 r2,
@@ -77,8 +77,8 @@ Shader "Unlit/TriangulationAccum"
                 const float kEpsLen = 1e-6;
                 const float kEpsArea2 = 2e-10; // compares against |cross| (double-area), not TriangleArea()
 
-                int localTri = sourceCorner / 3;
-                int corner = sourceCorner - localTri * 3;
+                uint localTri = sourceCorner / 3;
+                uint corner = sourceCorner - localTri * 3;
 
                 float l01 = length(p1 - p0);
                 float l12 = length(p2 - p1);
@@ -562,7 +562,7 @@ Shader "Unlit/TriangulationAccum"
                 float2 p;
                 float2 restP;
                 float3 bary;
-                if (!PatchTriangle((int)sourceCorner, support, p0, p1, p2, r0, r1, r2,
+                if (!PatchTriangle(sourceCorner, support, p0, p1, p2, r0, r1, r2,
                 _RestVolumes[v0], _RestVolumes[v1], _RestVolumes[v2],
                 p, restP, bary))
                 {

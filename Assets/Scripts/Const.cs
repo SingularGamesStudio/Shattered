@@ -9,6 +9,8 @@ public static class Const {
     public const int TwoStagePreGsItersL0 = 4;
     public const float TwoStageJROmegaV = 0.3f;
     public const float TwoStageJROmegaL = 0.3f;
+    public const bool EnablePersistentCoarseGS = true;
+    public const int PersistentCoarseMaxNodes = 256;
 
     public const int ColoringConflictRounds = 24;
     public const float RestrictedDeltaVScale = 0.75f;

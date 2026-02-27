@@ -12,6 +12,7 @@ namespace GPU.Solver {
         private int kClearVelDelta;
         private int kResetCollisionLambda;
         private int kRelaxColored;
+        private int kRelaxColoredPersistentCoarse;
         private int kJRSavePrevAndClear;
         private int kJRComputeDeltas;
         private int kJRApply;
@@ -47,6 +48,7 @@ namespace GPU.Solver {
             kClearVelDelta = shader.FindKernel("ClearVelDelta");
             kResetCollisionLambda = shader.FindKernel("ResetCollisionLambda");
             kRelaxColored = shader.FindKernel("RelaxColored");
+            kRelaxColoredPersistentCoarse = shader.FindKernel("RelaxColoredPersistentCoarse");
             kJRSavePrevAndClear = shader.FindKernel("JR_SavePrevAndClear");
             kJRComputeDeltas = shader.FindKernel("JR_ComputeDeltas");
             kJRApply = shader.FindKernel("JR_Apply");

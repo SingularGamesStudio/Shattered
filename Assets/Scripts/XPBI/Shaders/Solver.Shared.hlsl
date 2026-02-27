@@ -2,7 +2,6 @@
     #define XPBI_SOLVER_SHARED_INCLUDED
 
     #include "Utils.hlsl"
-    #include "Deformation.hlsl"
 
     #define targetNeighborCount 16
 
@@ -52,6 +51,8 @@
     StructuredBuffer<uint> _ColorCounts;
     StructuredBuffer<uint> _ColorStarts;
     uint _ColorIndex;
+    uint _PersistentIters;
+    uint _PersistentBaseDebugIter;
 
     // Inherited forces for upper layers
     RWStructuredBuffer<uint>   _RestrictedDeltaVBits;
@@ -148,7 +149,7 @@
 
     static float2 ReadFixedChildPosSum(uint gi)
     {
-        float2 s;
+        float2 s = 0.0;
         s.x = asfloat(_FixedChildPosBits[gi * 2u + 0u]);
         s.y = asfloat(_FixedChildPosBits[gi * 2u + 1u]);
         return s;
@@ -156,54 +157,70 @@
 
     static float2 ReadFixedChildAnchor(uint gi)
     {
-        uint cnt = ReadFixedChildCount(gi);
-        if (cnt == 0u)
-        return 0.0;
-        return ReadFixedChildPosSum(gi) / max((float)cnt, 1.0);
+        float2 result = 0.0;
+        uint cnt = 0u;
+        cnt = ReadFixedChildCount(gi);
+        if (cnt != 0u)
+        {
+            float2 posSum = 0.0;
+            posSum = ReadFixedChildPosSum(gi);
+            result = posSum / max((float)cnt, 1.0);
+        }
+        return result;
     }
 
     static float ReadEffectiveInvMass(uint gi)
     {
-        float totalMass = ReadCurrentTotalMass(gi);
+        float result = 0.0;
+        float totalMass = 0.0;
+        totalMass = ReadCurrentTotalMass(gi);
         if (totalMass > EPS)
-        return min(1.0 / max(totalMass, MIN_EFFECTIVE_MASS), MAX_EFFECTIVE_INV_MASS);
-        return 0.0;
+        result = min(1.0 / max(totalMass, MIN_EFFECTIVE_MASS), MAX_EFFECTIVE_INV_MASS);
+        return result;
     }
 
     static uint LocalIndexFromGlobal(uint gi)
     {
+        uint result = ~0u;
         if (_UseDtGlobalNodeMap != 0u)
         {
             int liSigned = _DtGlobalToLayerLocalMap[gi];
-            if (liSigned < 0)
-            return ~0u;
-            return (uint)liSigned;
+            if (liSigned >= 0)
+            result = (uint)liSigned;
         }
-        return gi - _Base;
+        else
+        {
+            result = gi - _Base;
+        }
+        return result;
     }
 
     static uint GlobalIndexFromLocal(uint li)
     {
+        uint result = ~0u;
         if (_UseDtGlobalNodeMap != 0u)
         {
             int giSigned = _DtGlobalNodeMap[li];
-            if (giSigned < 0)
-            return ~0u;
-            return (uint)giSigned;
+            if (giSigned >= 0)
+            result = (uint)giSigned;
         }
-        return _Base + li;
+        else
+        {
+            result = _Base + li;
+        }
+        return result;
     }
 
     static float4 ReadMaterialPhysical(uint gi)
     {
-        if (_PhysicalParamCount <= 0)
-        return float4(DEFAULT_YOUNGS, DEFAULT_POISSON, DEFAULT_YIELD_HENCKY, DEFAULT_VOL_HENCKY_LIMIT);
-
-        int materialId = _MaterialIds[gi];
-        if (materialId < 0 || materialId >= _PhysicalParamCount)
-        return float4(DEFAULT_YOUNGS, DEFAULT_POISSON, DEFAULT_YIELD_HENCKY, DEFAULT_VOL_HENCKY_LIMIT);
-
-        return _PhysicalParams[materialId];
+        float4 result = float4(DEFAULT_YOUNGS, DEFAULT_POISSON, DEFAULT_YIELD_HENCKY, DEFAULT_VOL_HENCKY_LIMIT);
+        if (_PhysicalParamCount > 0)
+        {
+            int materialId = _MaterialIds[gi];
+            if (materialId >= 0 && materialId < _PhysicalParamCount)
+            result = _PhysicalParams[materialId];
+        }
+        return result;
     }
 
     static void ComputeMaterialLame(uint gi, out float mu, out float lambda)
@@ -218,26 +235,84 @@
 
     static float ReadMaterialYieldHencky(uint gi)
     {
-        float yieldHencky = ReadMaterialPhysical(gi).z;
-        return yieldHencky > EPS ? yieldHencky : DEFAULT_YIELD_HENCKY;
+        float4 mp = 0.0;
+        mp = ReadMaterialPhysical(gi);
+        float yieldHencky = mp.z;
+        float result = DEFAULT_YIELD_HENCKY;
+        if (yieldHencky > EPS)
+        result = yieldHencky;
+        return result;
     }
 
     static float ReadMaterialVolHenckyLimit(uint gi)
     {
-        float volHenckyLimit = ReadMaterialPhysical(gi).w;
-        return volHenckyLimit > EPS ? volHenckyLimit : DEFAULT_VOL_HENCKY_LIMIT;
+        float4 mp = 0.0;
+        mp = ReadMaterialPhysical(gi);
+        float volHenckyLimit = mp.w;
+        float result = DEFAULT_VOL_HENCKY_LIMIT;
+        if (volHenckyLimit > EPS)
+        result = volHenckyLimit;
+        return result;
+    }
+
+    static bool IsLayerFixed(uint gi)
+    {
+        bool result = false;
+        if (IsFixedVertex(gi))
+        {
+            result = true;
+        }
+        else
+        {
+            uint li = ~0u;
+            li = LocalIndexFromGlobal(gi);
+            if (li != ~0u && li < _ActiveCount)
+            result = _CoarseFixed[gi] != 0u;
+        }
+        return result;
+    }
+
+    static float EffectiveVolumeForCompliance(uint gi)
+    {
+        float result = max(_RestVolume[gi], EPS);
+        float currentVol = 0.0;
+        currentVol = ReadCurrentVolume(gi);
+        if (currentVol > EPS)
+        result = currentVol;
+        return result;
+    }
+
+    static void ApplySingleAnchorRadialDampingOnVel(uint gi, float mu, float lambda, float2 pos, inout float2 vel)
+    {
+        uint fixedChildCount = 0u;
+        fixedChildCount = ReadFixedChildCount(gi);
+        if (fixedChildCount != 1u)
+        return;
+
+        float2 fixedAnchor = 0.0;
+        fixedAnchor = ReadFixedChildAnchor(gi);
+        float2 r = pos - fixedAnchor;
+        float rLen = length(r);
+        if (rLen <= EPS)
+        return;
+
+        float2 radial = r / rLen;
+        float vr = dot(vel, radial);
+        float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (mu + lambda) / EffectiveVolumeForCompliance(gi)));
+        vel -= radial * vr * (1.0 - radialKeep);
     }
 
     // ----------------------------------------------------------------------------
     // Neighbour access
     // ----------------------------------------------------------------------------
-    [forceinline] static void GetNeighborsRaw(uint gi, out uint nCount, out uint ns[targetNeighborCount])
+    static void GetNeighborsRaw(uint gi, out uint nCount, out uint ns[targetNeighborCount])
     {
-        uint li = LocalIndexFromGlobal(gi);
+        uint li = ~0u;
+        li = LocalIndexFromGlobal(gi);
         if (li == ~0u)
         {
             nCount = 0u;
-            [unroll] for (uint i = 0; i < targetNeighborCount; i++) ns[i] = ~0u;
+            [unroll] for (uint clearIdx0 = 0u; clearIdx0 < targetNeighborCount; clearIdx0++) ns[clearIdx0] = ~0u;
             return;
         }
 
@@ -249,55 +324,62 @@
 
         uint baseIdx = dtLi * _DtNeighborCount;
 
-        [unroll] for (uint i = 0; i < targetNeighborCount; i++)
+        [unroll] for (uint copyIdx0 = 0u; copyIdx0 < targetNeighborCount; copyIdx0++)
         {
-            if (i < nCount)
-            ns[i] = GlobalIndexFromLocal(_DtNeighbors[baseIdx + i]);
+            if (copyIdx0 < nCount)
+            {
+                uint gjTmp = ~0u;
+                gjTmp = GlobalIndexFromLocal(_DtNeighbors[baseIdx + copyIdx0]);
+                ns[copyIdx0] = gjTmp;
+            }
             else
-            ns[i] = ~0u;
+            ns[copyIdx0] = ~0u;
         }
     }
 
-    [forceinline] static void GetNeighbors(uint gi, out uint nCount, out uint ns[targetNeighborCount])
+    static void GetNeighbors(uint gi, out uint nCount, out uint ns[targetNeighborCount])
     {
-        uint rawCount;
+        uint rawCount = 0u;
         uint rawNs[targetNeighborCount];
         GetNeighborsRaw(gi, rawCount, rawNs);
 
         if (rawCount == 0u)
         {
             nCount = 0u;
-            [unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+            [unroll] for (uint clearIdx1 = 0u; clearIdx1 < targetNeighborCount; clearIdx1++) ns[clearIdx1] = ~0u;
             return;
         }
 
         float h = max(_LayerKernelH, 1e-4);
-        float support = WendlandSupportRadius(h);
+        float support = 0.0;
+        support = WendlandSupportRadius(h);
         if (support <= EPS)
         {
             nCount = 0u;
-            [unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+            [unroll] for (uint clearIdx2 = 0u; clearIdx2 < targetNeighborCount; clearIdx2++) ns[clearIdx2] = ~0u;
             return;
         }
 
         float supportSq = support * support;
         float2 xi = _Pos[gi];
 
-        uint li = LocalIndexFromGlobal(gi);
+        uint li = ~0u;
+        li = LocalIndexFromGlobal(gi);
         bool useOwnerFilter = (_UseDtOwnerFilter != 0u) && (li != ~0u) && (li < _ActiveCount);
         int owner = useOwnerFilter ? _DtOwnerByLocal[li] : -1;
 
         uint outCount = 0u;
-        [unroll] for (uint i = 0u; i < targetNeighborCount; i++)
+        [unroll] for (uint filterIdx = 0u; filterIdx < targetNeighborCount; filterIdx++)
         {
-            if (i >= rawCount) break;
+            if (filterIdx >= rawCount) break;
 
-            uint gj = rawNs[i];
+            uint gj = rawNs[filterIdx];
             if (gj == ~0u) continue;
 
             if (useOwnerFilter)
             {
-                uint gjLi = LocalIndexFromGlobal(gj);
+                uint gjLi = ~0u;
+                gjLi = LocalIndexFromGlobal(gj);
                 if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
                 if (_DtOwnerByLocal[gjLi] != owner) continue;
             }
@@ -309,7 +391,7 @@
         }
 
         nCount = outCount;
-        [unroll] for (uint i = outCount; i < targetNeighborCount; i++) ns[i] = ~0u;
+        [unroll] for (uint clearIdx3 = outCount; clearIdx3 < targetNeighborCount; clearIdx3++) ns[clearIdx3] = ~0u;
     }
 
     // ----------------------------------------------------------------------------

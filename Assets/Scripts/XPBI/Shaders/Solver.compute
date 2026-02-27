@@ -12,6 +12,7 @@
 #pragma kernel CommitDeformation
 #pragma kernel ExternalForces
 #pragma kernel RelaxColored
+#pragma kernel RelaxColoredPersistentCoarse
 #pragma kernel JR_SavePrevAndClear
 #pragma kernel JR_ComputeDeltas
 #pragma kernel JR_Apply
@@ -36,3 +37,6 @@
 #include "Solver.Shared.hlsl"
 #include "Solver.Cache.hlsl"
 #include "Solver.Relax.hlsl"
+#include "Solver.Relax.Colored.hlsl"
+#include "Solver.Relax.NonParallel.hlsl"
+#include "Solver.Relax.Atomic.hlsl"

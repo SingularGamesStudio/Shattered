@@ -70,6 +70,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIterCount", iterations);
 
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebug);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ConvergenceDebug", convergenceDebug);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ConvergenceDebug", convergenceDebug);
             asyncCb.SetComputeBufferParam(shader, kClearConvergenceDebugStats, "_ConvergenceDebug", convergenceDebug);
 
