@@ -44,6 +44,8 @@ int _RealVertexCount;    // number of real vertices (0 … _RealVertexCount-1)
 int _HalfEdgeCount;      // number of allocated half‑edges
 int _TriCount;           // number of triangles
 int _NeighborCount;      // maximum neighbours per vertex (size of neighbour arrays)
+int _UseSupportRadiusFilter;
+float _SupportRadius2;
 
 //---------------------------------------------------------------------------
 // 2D orientation test (signed area of triangle abc)
@@ -262,6 +264,13 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID)
         // Only store real neighbours
         if (dst < _RealVertexCount)
         {
+            if (_UseSupportRadiusFilter != 0) {
+                float2 p0 = _Positions[v];
+                float2 p1 = _Positions[dst];
+                float2 d = p1 - p0;
+                if (dot(d, d) > _SupportRadius2) { int twSkip = _HalfEdges[Prev(he)].twin; if (twSkip < 0) break; he = twSkip; if (he == start) break; continue; }
+            }
+
             // Check for duplicates (neighbour list is small, linear scan is fine)
             bool dup = false;
             for (int k = 0; k < count; k++)

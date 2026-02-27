@@ -12,6 +12,7 @@
 #pragma kernel ColoringBuildRelaxArgs
 #pragma kernel ColoringCountFinalConflicts
 #pragma kernel ColoringBuildWorkListFromConflicts
+#pragma kernel ColoringRecordConflictCount
 
 // Input buffers (read-only)
 StructuredBuffer<float2> _Positions;               // Vertex positions in 2D
@@ -31,6 +32,8 @@ RWStructuredBuffer<uint> _ColoringMarkEpoch;
 RWStructuredBuffer<uint> _ColoringWorkCount;       // [0] = current number of items in work list
 RWStructuredBuffer<uint> _ColoringWorkList;        // Array of vertex indices (size >= _ColoringActiveCount)
 RWStructuredBuffer<uint> _ColoringWorkArgs;        // uint3 for DispatchIndirect (groups X,1,1)
+RWStructuredBuffer<uint> _ColoringConflictHistory;
+uint _ColoringConflictHistoryIndex;
 
 // Per-color metadata for scattering
 RWStructuredBuffer<uint> _ColoringCounts;          // Number of vertices per color (size 16)
@@ -42,7 +45,7 @@ RWStructuredBuffer<uint> _ColoringOrderOut;        // Output order buffer: verti
 RWStructuredBuffer<uint> _RelaxArgs;
 
 // Debug counters
-RWStructuredBuffer<uint> _ColoringDebug;           // [0] = total conflicts after final pass
+RWStructuredBuffer<uint> _ColoringDebug;           // [0] = total conflicting pairs after final pass
 
 // Constants
 uint _ColoringActiveCount;                         // Number of active vertices
@@ -186,6 +189,101 @@ static bool HasHigherPrioSameColor2Hop(uint i, int myC, uint myP)
     return false;
 }
 
+// Returns the number of unique conflicting pairs contributed by vertex i.
+// A conflicting pair is an unordered pair (i, j) with i < j, same color,
+// and j reachable within 1-hop or 2-hop in the DT neighborhood graph.
+static uint CountUniqueConflictPairsForVertex2Hop(uint i, int myC)
+{
+    static const uint MaxPairCandidates = 512u;
+    uint seen[MaxPairCandidates];
+    uint seenCount = 0u;
+
+    uint pairCount = 0u;
+
+    uint baseI = i * _ColoringDtNeighborCount;
+    uint nI = ClampNeighborCount((uint)_ColoringDtNeighborCounts[i]);
+
+    // 1-hop neighbors
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount || uNa <= i)
+        continue;
+
+        if (_ColoringColor[uNa] != myC)
+        continue;
+
+        bool duplicate = false;
+        for (uint s = 0; s < seenCount; s++)
+        {
+            if (seen[s] == uNa)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate)
+        {
+            if (seenCount < MaxPairCandidates)
+            seen[seenCount++] = uNa;
+            pairCount++;
+        }
+    }
+
+    // 2-hop neighbors
+    for (uint a = 0; a < nI; a++)
+    {
+        int na = _ColoringDtNeighbors[baseI + a];
+        if (na < 0)
+        continue;
+
+        uint uNa = (uint)na;
+        if (uNa >= _ColoringActiveCount)
+        continue;
+
+        uint baseA = uNa * _ColoringDtNeighborCount;
+        uint nA = ClampNeighborCount((uint)_ColoringDtNeighborCounts[uNa]);
+
+        for (uint b = 0; b < nA; b++)
+        {
+            int nb = _ColoringDtNeighbors[baseA + b];
+            if (nb < 0)
+            continue;
+
+            uint uNb = (uint)nb;
+            if (uNb >= _ColoringActiveCount || uNb == i || uNb <= i)
+            continue;
+
+            if (_ColoringColor[uNb] != myC)
+            continue;
+
+            bool duplicate = false;
+            for (uint s = 0; s < seenCount; s++)
+            {
+                if (seen[s] == uNb)
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate)
+            {
+                if (seenCount < MaxPairCandidates)
+                seen[seenCount++] = uNb;
+                pairCount++;
+            }
+        }
+    }
+
+    return pairCount;
+}
+
 //------------------------------------------------------------------------------
 // Kernel: Initialize colors and priorities using triangular grid.
 [numthreads(256, 1, 1)]
@@ -271,6 +369,12 @@ void ColoringBuildWorkArgs(uint3 id : SV_DispatchThreadID)
     _ColoringWorkArgs[2] = 1u;
 }
 
+[numthreads(1, 1, 1)]
+void ColoringRecordConflictCount(uint3 id : SV_DispatchThreadID)
+{
+    _ColoringConflictHistory[_ColoringConflictHistoryIndex] = _ColoringDebug[0];
+}
+
 //------------------------------------------------------------------------------
 // Kernel: Detect conflicts for vertices in the work list.
 // Vertices that have a higher‑priority neighbor (1‑hop or 2‑hop) with the same color
@@ -300,7 +404,7 @@ void ColoringDetectConflictsWork(uint3 id : SV_DispatchThreadID)
 }
 
 //------------------------------------------------------------------------------
-// Kernel: Count final conflicts (for debugging / convergence check).
+// Kernel: Count final conflicting pairs (for debugging / convergence check).
 [numthreads(256, 1, 1)]
 void ColoringCountFinalConflicts(uint3 id : SV_DispatchThreadID)
 {
@@ -312,11 +416,9 @@ void ColoringCountFinalConflicts(uint3 id : SV_DispatchThreadID)
     if (myC < 0)
     return;
 
-    uint myP = _ColoringPrio[i];
-    if (HasHigherPrioSameColor2Hop(i, myC, myP))
-    {
-        InterlockedAdd(_ColoringDebug[0], 1u);
-    }
+    uint pairCount = CountUniqueConflictPairsForVertex2Hop(i, myC);
+    if (pairCount > 0u)
+    InterlockedAdd(_ColoringDebug[0], pairCount);
 }
 
 //------------------------------------------------------------------------------
@@ -466,11 +568,16 @@ void ColoringBuildStarts(uint3 id : SV_DispatchThreadID)
     gScan[t] = cnt;
     GroupMemoryBarrierWithGroupSync();
 
-    // Parallel prefix sum (single barrier per iteration, optimized from original two barriers).
+    // Parallel prefix sum (Hillis-Steele). Needs two barriers per step:
+    // one after reads are staged and one after writes are committed.
     [unroll] for (uint offset = 1; offset < 16; offset <<= 1)
     {
+        uint add = 0u;
         if (t >= offset)
-        gScan[t] += gScan[t - offset];
+        add = gScan[t - offset];
+        GroupMemoryBarrierWithGroupSync();
+        if (t >= offset)
+        gScan[t] += add;
         GroupMemoryBarrierWithGroupSync();
     }
 

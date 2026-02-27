@@ -155,7 +155,7 @@ MonoBehaviour:
   targetTPS: 500
   targetFPS: 30
   simulationSpeed: 10
-  manual: 1
+  manual: 0
   showTpsOverlay: 1
   ConvergenceDebugEnabled: 1
   useHierarchicalSolver: 1
@@ -165,7 +165,7 @@ MonoBehaviour:
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
   asyncQueue: 2
-  maxTicksPerBatch: 8
+  maxTicksPerBatch: 32
   enableContinuousCpuReadback: 0
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
@@ -362,11 +362,11 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 500
+  pointCount: 10000
   generateOnStart: 1
   defaultAnchorMode: 1
   seed: 1
-  layerRatio: 0.1
+  layerRatio: 0.12
   radiusScale: 0.85
   poissonK: 30
   layerNodeCounts: 
@@ -378,8 +378,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 961765555}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 6.13, y: -2.61, z: 0}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 6.13, y: -2.6100001, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -416,8 +416,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 2
   generateOnStart: 1
-  pointCount: 500
-  maxLayer: 3
+  pointCount: 10000
+  maxLayer: 2
   layerRatio: 0.12
   radiusScale: 0.85
   hangCenter: {x: 0, y: 0}

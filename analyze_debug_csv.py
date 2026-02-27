@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import csv
-import math
 import re
-from collections import Counter, defaultdict
-from dataclasses import dataclass
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
-RELAX_MARKER_RE = re.compile(r"XPBI\.RelaxColored\.L(?P<layer>\d+)\.C(?P<color>\d+)")
-
-
-@dataclass
-class RelaxEvent:
-    layer: int
-    color: int
-    gpu_ms: float
+COLOR_SUFFIX_RE = re.compile(r"\.C\d+$")
+KNOWN_WRAPPERS = {"XPBI Async Batch"}
 
 
 def parse_gpu_ms(raw: str) -> Optional[float]:
@@ -25,92 +17,15 @@ def parse_gpu_ms(raw: str) -> Optional[float]:
     text = raw.strip()
     if not text or text == "-":
         return None
-
-    if text.startswith("Δ"):
+    if text.startswith("Δ") or text.startswith("Σ"):
         text = text[1:].strip()
-    elif text.startswith("Σ"):
-        text = text[1:].strip()
-
     match = re.search(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", text)
     if not match:
         return None
-
     try:
         return float(match.group(0))
     except ValueError:
         return None
-
-
-def parse_relax_event(description: str, gpu_ms_raw: str) -> Optional[RelaxEvent]:
-    if not description:
-        return None
-
-    if description.startswith("// End of"):
-        return None
-
-    marker_match = RELAX_MARKER_RE.search(description)
-    if marker_match is None:
-        return None
-
-    gpu_ms = parse_gpu_ms(gpu_ms_raw)
-    if gpu_ms is None:
-        return None
-
-    return RelaxEvent(
-        layer=int(marker_match.group("layer")),
-        color=int(marker_match.group("color")),
-        gpu_ms=gpu_ms,
-    )
-
-
-def percentile(sorted_values: List[float], p: float) -> float:
-    if not sorted_values:
-        return float("nan")
-
-    if p <= 0:
-        return sorted_values[0]
-    if p >= 100:
-        return sorted_values[-1]
-
-    rank = (len(sorted_values) - 1) * (p / 100.0)
-    lo = math.floor(rank)
-    hi = math.ceil(rank)
-    if lo == hi:
-        return sorted_values[lo]
-    frac = rank - lo
-    return sorted_values[lo] * (1.0 - frac) + sorted_values[hi] * frac
-
-
-def fmt_ms(value: float) -> str:
-    return f"{value:.4f}"
-
-
-def print_stats(values: List[float], label: str) -> None:
-    if not values:
-        print(f"{label}: no samples")
-        return
-
-    sorted_values = sorted(values)
-    n = len(sorted_values)
-    total = sum(sorted_values)
-    mean = total / n
-    print(f"{label}: count={n}, total_ms={fmt_ms(total)}, mean_ms={fmt_ms(mean)}, min_ms={fmt_ms(sorted_values[0])}, max_ms={fmt_ms(sorted_values[-1])}")
-    print(
-        "  percentiles: "
-        f"p50={fmt_ms(percentile(sorted_values, 50))}, "
-        f"p90={fmt_ms(percentile(sorted_values, 90))}, "
-        f"p95={fmt_ms(percentile(sorted_values, 95))}, "
-        f"p99={fmt_ms(percentile(sorted_values, 99))}"
-    )
-
-
-def iter_relax_events(csv_path: Path, event_col: str, gpu_col: str) -> Iterable[RelaxEvent]:
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            event = parse_relax_event(row.get(event_col, ""), row.get(gpu_col, ""))
-            if event is not None:
-                yield event
 
 
 def find_columns(csv_path: Path) -> Tuple[str, str]:
@@ -122,125 +37,133 @@ def find_columns(csv_path: Path) -> Tuple[str, str]:
 
     lower_to_original = {name.lower(): name for name in fieldnames}
 
-    event_candidates = ["description", "event", "name"]
-    gpu_candidates = ["gpu ms", "gpu time", "gpu duration", "duration (ms)", "duration"]
-
-    event_col = None
-    for candidate in event_candidates:
+    desc_col = None
+    for candidate in ["description", "event", "name"]:
         if candidate in lower_to_original:
-            event_col = lower_to_original[candidate]
+            desc_col = lower_to_original[candidate]
             break
 
     gpu_col = None
-    for candidate in gpu_candidates:
+    for candidate in ["gpu ms", "gpu time", "gpu duration", "duration (ms)", "duration"]:
         if candidate in lower_to_original:
             gpu_col = lower_to_original[candidate]
             break
 
-    if event_col is None:
-        raise ValueError(f"Could not find event/description column. Headers: {fieldnames}")
+    if desc_col is None:
+        raise ValueError(f"Could not find description/event column. Headers: {fieldnames}")
     if gpu_col is None:
-        raise ValueError(f"Could not find GPU duration column. Headers: {fieldnames}")
+        raise ValueError(f"Could not find GPU timing column. Headers: {fieldnames}")
 
-    return event_col, gpu_col
+    return desc_col, gpu_col
 
 
-def summarize(events: List[RelaxEvent], fast_ms: float, slow_ms: float, top_n: int) -> None:
-    all_ms = [e.gpu_ms for e in events]
-    fast = [e for e in events if e.gpu_ms <= fast_ms]
-    slow = [e for e in events if e.gpu_ms >= slow_ms]
+def is_marker_event(description: str, marker_prefix: str) -> bool:
+    if not description:
+        return False
+    desc = description.strip()
+    if not desc:
+        return False
+    if desc.startswith("//"):
+        return False
+    if desc.startswith("void "):
+        return False
+    if marker_prefix and not desc.startswith(marker_prefix):
+        return False
+    return True
 
-    print("=== Relax Marker Timing Summary ===")
-    print_stats(all_ms, "all_relax")
-    print_stats([e.gpu_ms for e in fast], f"fast_relax (<= {fast_ms} ms)")
-    print_stats([e.gpu_ms for e in slow], f"slow_relax (>= {slow_ms} ms)")
+
+def normalize_marker_name(description: str) -> str:
+    return COLOR_SUFFIX_RE.sub("", description)
+
+
+def is_wrapper_marker(description: str) -> bool:
+    if description in KNOWN_WRAPPERS:
+        return True
+    return description.endswith(" Async Batch")
+
+
+def summarize(csv_path: Path, marker_prefix: str, top: int) -> int:
+    desc_col, gpu_col = find_columns(csv_path)
+
+    totals: Dict[str, float] = defaultdict(float)
+    counts: Dict[str, int] = defaultdict(int)
+    mins: Dict[str, float] = {}
+    maxs: Dict[str, float] = {}
+    skipped_wrappers = 0
+
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            desc = (row.get(desc_col) or "").strip()
+            if not is_marker_event(desc, marker_prefix):
+                continue
+
+            if is_wrapper_marker(desc):
+                skipped_wrappers += 1
+                continue
+
+            gpu_ms = parse_gpu_ms(row.get(gpu_col, ""))
+            if gpu_ms is None:
+                continue
+
+            key = normalize_marker_name(desc)
+
+            totals[key] += gpu_ms
+            counts[key] += 1
+            mins[key] = gpu_ms if key not in mins else min(mins[key], gpu_ms)
+            maxs[key] = gpu_ms if key not in maxs else max(maxs[key], gpu_ms)
+
+    if not totals:
+        print(f"No marker events found for prefix '{marker_prefix}'")
+        return 1
+
+    rows: List[Tuple[str, int, float, float, float]] = []
+    for desc, total_ms in totals.items():
+        count = counts[desc]
+        avg_ms = total_ms / count if count else 0.0
+        rows.append((desc, count, total_ms, avg_ms, maxs[desc]))
+
+    rows.sort(key=lambda r: r[2], reverse=True)
+    grand_total = sum(r[2] for r in rows)
+    total_markers = sum(r[1] for r in rows)
+
+    print("=== Nsight Marker Summary (GPU ms) ===")
+    print(f"Source file  : {csv_path}")
+    print(f"Marker prefix: {marker_prefix}")
+    print(f"Unique markers: {len(rows)}")
+    print(f"Total calls   : {total_markers}")
+    print(f"Grand total   : {grand_total:.4f} ms")
+    print(f"Wrappers skipped: {skipped_wrappers}")
+    print("Color grouping : trailing .C{N} merged into a single marker")
     print()
 
-    layer_counts: Counter[int] = Counter(e.layer for e in events)
-    fast_layer_counts: Counter[int] = Counter(e.layer for e in fast)
-    slow_layer_counts: Counter[int] = Counter(e.layer for e in slow)
+    print(f"Top {max(1, top)} markers by total GPU time")
+    print("-" * 132)
+    print(f"{'#':>3}  {'Total (ms)':>12}  {'Share':>7}  {'Calls':>7}  {'Avg (ms)':>10}  {'Max (ms)':>10}  Marker")
+    print("-" * 132)
+    for idx, (desc, count, total_ms, avg_ms, max_ms) in enumerate(rows[:max(1, top)], start=1):
+        share = (100.0 * total_ms / grand_total) if grand_total > 0 else 0.0
+        print(f"{idx:>3}  {total_ms:>12.4f}  {share:>6.2f}%  {count:>7}  {avg_ms:>10.4f}  {max_ms:>10.4f}  {desc}")
+    print("-" * 132)
 
-    print("=== Counts by Layer ===")
-    all_layers = sorted(layer_counts)
-    print("layer,total,fast,slow,fast_pct,slow_pct")
-    for layer in all_layers:
-        total_count = layer_counts[layer]
-        fast_count = fast_layer_counts[layer]
-        slow_count = slow_layer_counts[layer]
-        fast_pct = (100.0 * fast_count / total_count) if total_count else 0.0
-        slow_pct = (100.0 * slow_count / total_count) if total_count else 0.0
-        print(f"{layer},{total_count},{fast_count},{slow_count},{fast_pct:.2f},{slow_pct:.2f}")
-    print()
-
-    layer_values: Dict[int, List[float]] = defaultdict(list)
-    for e in events:
-        layer_values[e.layer].append(e.gpu_ms)
-
-    print("=== Timing Distribution by Layer ===")
-    for layer in sorted(layer_values):
-        print_stats(layer_values[layer], f"layer_{layer}")
-    print()
-
-    slow_by_layer_color: Counter[Tuple[int, int]] = Counter((e.layer, e.color) for e in slow)
-    print(f"=== Top {top_n} Slow Layer/Color Buckets (>= {slow_ms} ms) ===")
-    if not slow_by_layer_color:
-        print("(none)")
-    else:
-        print("layer,color,count")
-        for (layer, color), count in slow_by_layer_color.most_common(top_n):
-            print(f"{layer},{color},{count}")
-    print()
-
-    all_sorted = sorted(events, key=lambda e: e.gpu_ms, reverse=True)
-    print(f"=== Top {top_n} Slowest Relax Events (overall) ===")
-    print("rank,layer,color,gpu_ms")
-    for idx, event in enumerate(all_sorted[:top_n], start=1):
-        print(f"{idx},{event.layer},{event.color},{event.gpu_ms:.4f}")
-
-    slow_sorted = sorted(slow, key=lambda e: e.gpu_ms, reverse=True)
-    print()
-    print(f"=== Top {top_n} Slowest Relax Events (>= {slow_ms} ms) ===")
-    if not slow_sorted:
-        print("(none)")
-    else:
-        print("rank,layer,color,gpu_ms")
-        for idx, event in enumerate(slow_sorted[:top_n], start=1):
-            print(f"{idx},{event.layer},{event.color},{event.gpu_ms:.4f}")
+    return 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Analyze Nsight Graphics frame-event CSV for XPBI relax marker timing behavior."
-    )
+    parser = argparse.ArgumentParser(description="Summarize total GPU time by Nsight marker event from CSV")
     parser.add_argument("csv_path", nargs="?", default="debug.csv", help="Path to Nsight CSV (default: debug.csv)")
-    parser.add_argument("--fast-ms", type=float, default=0.07, help="Fast threshold in ms (inclusive)")
-    parser.add_argument("--slow-ms", type=float, default=30.0, help="Slow threshold in ms (inclusive)")
-    parser.add_argument("--top", type=int, default=20, help="Top-N lists for slow groups/events")
+    parser.add_argument("--prefix", default="XPBI", help="Only include markers that start with this prefix")
+    parser.add_argument("--top", type=int, default=50, help="Top N marker rows to print")
     return parser
 
 
 def main() -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args()
-
+    args = build_arg_parser().parse_args()
     csv_path = Path(args.csv_path)
     if not csv_path.exists():
         print(f"ERROR: file not found: {csv_path}")
         return 2
-
-    if args.fast_ms < 0 or args.slow_ms < 0:
-        print("ERROR: thresholds must be >= 0")
-        return 2
-
-    event_col, gpu_col = find_columns(csv_path)
-    events = list(iter_relax_events(csv_path, event_col=event_col, gpu_col=gpu_col))
-
-    if not events:
-        print("No XPBI relax marker rows found. Expected Description/Event values like XPBI.RelaxColored.Lx.Cy")
-        return 1
-
-    summarize(events, fast_ms=args.fast_ms, slow_ms=args.slow_ms, top_n=max(1, args.top))
-    return 0
+    return summarize(csv_path, marker_prefix=args.prefix, top=args.top)
 
 
 if __name__ == "__main__":

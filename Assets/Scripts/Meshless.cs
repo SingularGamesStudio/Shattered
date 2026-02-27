@@ -82,7 +82,6 @@ public class Meshless : MonoBehaviour {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
         BuildLayerEndIndex();
-        if (Const.DebugSupportRadius) LogGenerationSupportNeighborStats();
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
 
@@ -90,42 +89,6 @@ public class Meshless : MonoBehaviour {
 
         RecomputeMassFromDensity();
 
-    }
-
-    void LogGenerationSupportNeighborStats() {
-        if (nodes == null || nodes.Count == 0 || layerEndIndex == null || maxLayer < 0)
-            return;
-
-        for (int layer = 0; layer <= maxLayer; layer++) {
-            int activeCount = NodeCount(layer);
-            if (activeCount <= 1)
-                continue;
-
-            float supportRadius = Const.WendlandSupport * GetLayerKernelH(layer);
-            if (supportRadius <= 0f)
-                continue;
-
-            float supportRadiusSq = supportRadius * supportRadius;
-            double totalNeighbors = 0.0;
-
-            for (int i = 0; i < activeCount; i++) {
-                float2 pi = nodes[i].pos;
-                int localCount = 0;
-                for (int j = 0; j < activeCount; j++) {
-                    if (i == j)
-                        continue;
-
-                    float2 d = nodes[j].pos - pi;
-                    if (math.dot(d, d) <= supportRadiusSq)
-                        localCount++;
-                }
-
-                totalNeighbors += localCount;
-            }
-
-            float avgNeighbors = (float)(totalNeighbors / activeCount);
-            Debug.LogError($"Meshless '{name}' layer {layer}: avg neighbors within support ({supportRadius:0.####}) = {avgNeighbors:0.##} across {activeCount} vertices.", this);
-        }
     }
 
     public void RecomputeMassFromDensity() {

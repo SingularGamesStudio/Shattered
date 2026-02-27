@@ -1,3 +1,7 @@
+#ifndef XPBI_DEBUG_ITER
+    #define XPBI_DEBUG_ITER _ConvergenceDebugIter
+#endif
+
 // Expected locals in scope:
 //   uint li, gi, active
 //   float kernelH, support, supportSq, invDt, invDt2
@@ -33,8 +37,18 @@ Lm = Mat2FromFloat4(XPBI_L_FROM_I(li, gi));
 
 Mat2 gradV = (Mat2)0;
 gradV = Mat2Zero();
-[loop] for (uint nIdx0 = 0u; nIdx0 < nCount; nIdx0++)
+static const uint MAX_N = 16u;
+uint nb_gjLi[MAX_N];
+float2 nb_corrGrad[MAX_N];
+float nb_Vb[MAX_N];
+float nb_invMassJ[MAX_N];
+float2 nb_q[MAX_N];
+uint k = 0u;
+
+[loop] for (uint nIdx0 = 0u; nIdx0 < MAX_N; nIdx0++)
 {
+    if (nIdx0 >= nCount) break;
+
     uint gjLi = _DtNeighbors[baseIdx + nIdx0];
     if (gjLi == ~0u || gjLi >= active) continue;
     if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
@@ -44,7 +58,6 @@ gradV = Mat2Zero();
     if (gj == ~0u) continue;
 
     float2 xij = XPBI_POS(gjLi, gj) - xi;
-    if (dot(xij, xij) > supportSq) continue;
 
     float2 gradW = 0.0;
     gradW = GradWendlandC2(xij, kernelH, EPS);
@@ -59,7 +72,15 @@ gradV = Mat2Zero();
 
     gradV.c0 += dv * (Vb * correctedGrad.x);
     gradV.c1 += dv * (Vb * correctedGrad.y);
+
+    nb_gjLi[k] = gjLi;
+    nb_corrGrad[k] = correctedGrad;
+    nb_Vb[k] = Vb;
+    nb_invMassJ[k] = XPBI_NEIGHBOR_FIXED(gjLi, gj) ? 0.0 : XPBI_INV_MASS(gjLi, gj);
+    k++;
 }
+
+if (k < 3u) return;
 
 Mat2 F0 = (Mat2)0;
 F0 = Mat2FromFloat4(XPBI_F0_FROM_I(li, gi));
@@ -88,7 +109,7 @@ if (!isfinite(C)) return;
 
 if (_ConvergenceDebugEnable != 0)
 {
-    uint baseIter = _ConvergenceDebugOffset + _ConvergenceDebugIter;
+    uint baseIter = _ConvergenceDebugOffset + XPBI_DEBUG_ITER;
     uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
 
     uint uAbsC = (uint)min(abs(C) * _ConvergenceDebugScaleC, 4294967295.0);
@@ -104,6 +125,8 @@ Mat2 dCdF = (Mat2)0;
 dCdF = XPBI_ComputeGradient(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 Mat2 FT = (Mat2)0;
 FT = TransposeMat2(Fel);
+Mat2 Md = (Mat2)0;
+Md = MulMat2(dCdF, FT);
 
 float alphaTilde = 0.0;
 alphaTilde = (_Compliance / EffectiveVolumeForCompliance(gi)) * invDt2;
@@ -113,44 +136,21 @@ float denomNeighbors = 0.0;
 float maxInvMassLocal = 0.0;
 maxInvMassLocal = XPBI_INV_MASS(li, gi);
 float maxGradNorm2Local = 0.0;
-uint valid = 0u;
-
-[loop] for (uint nIdx1 = 0u; nIdx1 < nCount; nIdx1++)
+[loop] for (uint nIdx1 = 0u; nIdx1 < MAX_N; nIdx1++)
 {
-    uint gjLi = _DtNeighbors[baseIdx + nIdx1];
-    if (gjLi == ~0u || gjLi >= active) continue;
-    if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+    if (nIdx1 >= k) break;
 
-    uint gj = ~0u;
-    gj = XPBI_GET_GJ(gjLi);
-    if (gj == ~0u) continue;
-
-    float2 xij = XPBI_POS(gjLi, gj) - xi;
-    if (dot(xij, xij) > supportSq) continue;
-
-    float2 gradW = 0.0;
-    gradW = GradWendlandC2(xij, kernelH, EPS);
-    if (dot(gradW, gradW) <= EPS * EPS) continue;
-
-    float Vb = 0.0;
-    Vb = ReadCurrentVolume(gj);
-    if (Vb <= EPS) continue;
-
-    float2 correctedGrad = MulMat2Vec(Lm, gradW);
-    float2 t = MulMat2Vec(FT, correctedGrad);
-    float2 q = Vb * MulMat2Vec(dCdF, t);
+    float2 q = nb_Vb[nIdx1] * MulMat2Vec(Md, nb_corrGrad[nIdx1]);
+    nb_q[nIdx1] = q;
 
     gradC_vi -= q;
-    valid++;
 
-    float invMassJ = XPBI_NEIGHBOR_FIXED(gjLi, gj) ? 0.0 : XPBI_INV_MASS(gjLi, gj);
+    float invMassJ = nb_invMassJ[nIdx1];
     float q2 = dot(q, q);
     denomNeighbors += invMassJ * q2;
     maxInvMassLocal = max(maxInvMassLocal, invMassJ);
     maxGradNorm2Local = max(maxGradNorm2Local, q2);
 }
-
-if (valid < 3u) return;
 
 float invMassI = 0.0;
 invMassI = XPBI_INV_MASS(li, gi);
@@ -168,7 +168,7 @@ if (abs(dLambda) > 100.0) return;
 
 if (_ConvergenceDebugEnable != 0)
 {
-    uint baseIter = _ConvergenceDebugOffset + _ConvergenceDebugIter;
+    uint baseIter = _ConvergenceDebugOffset + XPBI_DEBUG_ITER;
     uint baseU = baseIter * CONV_DEBUG_UINTS_PER_ITER;
 
     uint uAbsDL = (uint)min(abs(dLambda) * _ConvergenceDebugScaleDLambda, 4294967295.0);
@@ -183,6 +183,7 @@ float maxSpeedLocal = (4.0 * support) * invDt;
 
 float pred2 = (velScale * velScale) * (maxInvMassLocal * maxInvMassLocal) * max(maxGradNorm2Local, 1e-12);
 float maxDv2 = maxDeltaVPerIter * maxDeltaVPerIter;
+float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
 float maxSpeedHalf2 = (0.5 * maxSpeedLocal) * (0.5 * maxSpeedLocal);
 if (pred2 > maxDv2) return;
 if (pred2 > maxSpeedHalf2) return;
@@ -194,33 +195,18 @@ if (pred2 > maxSpeedHalf2) return;
     XPBI_SCATTER_DV(gi, dVi);
     XPBI_SCATTER_DL(gi, dLambda);
 
-    [loop] for (uint nIdx2 = 0u; nIdx2 < nCount; nIdx2++)
+    [loop] for (uint nIdx2 = 0u; nIdx2 < MAX_N; nIdx2++)
     {
-        uint gjLi = _DtNeighbors[baseIdx + nIdx2];
-        if (gjLi == ~0u || gjLi >= active) continue;
-        if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+        if (nIdx2 >= k) break;
 
-        uint gj = ~0u;
-        gj = XPBI_GET_GJ(gjLi);
+        float invMassJ = nb_invMassJ[nIdx2];
+        if (invMassJ <= 0.0) continue;
+
+        uint gjLi = nb_gjLi[nIdx2];
+        uint gj = XPBI_GET_GJ(gjLi);
         if (gj == ~0u) continue;
-        if (XPBI_NEIGHBOR_FIXED(gjLi, gj)) continue;
 
-        float2 xij = XPBI_POS(gjLi, gj) - xi;
-        if (dot(xij, xij) > supportSq) continue;
-
-        float2 gradW = 0.0;
-        gradW = GradWendlandC2(xij, kernelH, EPS);
-        if (dot(gradW, gradW) <= EPS * EPS) continue;
-
-        float Vb = 0.0;
-        Vb = ReadCurrentVolume(gj);
-        if (Vb <= EPS) continue;
-
-        float2 correctedGrad = MulMat2Vec(Lm, gradW);
-        float2 t = MulMat2Vec(FT, correctedGrad);
-        float2 q = Vb * MulMat2Vec(dCdF, t);
-
-        float invMassJ = XPBI_INV_MASS(gjLi, gj);
+        float2 q = nb_q[nIdx2];
         float2 dVj = invMassJ * velScale * q;
 
         float dVj2 = dot(dVj, dVj);
@@ -238,7 +224,6 @@ if (pred2 > maxSpeedHalf2) return;
 
     float2 vI = XPBI_VEL(li, gi) + dVi;
     float vI2 = dot(vI, vI);
-    float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
     if (vI2 > maxSpeed2)
     {
         float invLen = rsqrt(max(vI2, EPS * EPS));
@@ -246,33 +231,18 @@ if (pred2 > maxSpeedHalf2) return;
     }
     XPBI_SET_VEL(li, gi, vI);
 
-    [loop] for (uint nIdx3 = 0u; nIdx3 < nCount; nIdx3++)
+    [loop] for (uint nIdx3 = 0u; nIdx3 < MAX_N; nIdx3++)
     {
-        uint gjLi = _DtNeighbors[baseIdx + nIdx3];
-        if (gjLi == ~0u || gjLi >= active) continue;
-        if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+        if (nIdx3 >= k) break;
 
-        uint gj = ~0u;
-        gj = XPBI_GET_GJ(gjLi);
+        float invMassJ = nb_invMassJ[nIdx3];
+        if (invMassJ <= 0.0) continue;
+
+        uint gjLi = nb_gjLi[nIdx3];
+        uint gj = XPBI_GET_GJ(gjLi);
         if (gj == ~0u) continue;
-        if (XPBI_NEIGHBOR_FIXED(gjLi, gj)) continue;
 
-        float2 xij = XPBI_POS(gjLi, gj) - xi;
-        if (dot(xij, xij) > supportSq) continue;
-
-        float2 gradW = 0.0;
-        gradW = GradWendlandC2(xij, kernelH, EPS);
-        if (dot(gradW, gradW) <= EPS * EPS) continue;
-
-        float Vb = 0.0;
-        Vb = ReadCurrentVolume(gj);
-        if (Vb <= EPS) continue;
-
-        float2 correctedGrad = MulMat2Vec(Lm, gradW);
-        float2 t = MulMat2Vec(FT, correctedGrad);
-        float2 q = Vb * MulMat2Vec(dCdF, t);
-
-        float invMassJ = XPBI_INV_MASS(gjLi, gj);
+        float2 q = nb_q[nIdx3];
         float2 dVj = invMassJ * velScale * q;
 
         float dVj2 = dot(dVj, dVj);
@@ -284,7 +254,6 @@ if (pred2 > maxSpeedHalf2) return;
 
         float2 vJ = XPBI_VEL(gjLi, gj) + dVj;
         float vJ2 = dot(vJ, vJ);
-        float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
         if (vJ2 > maxSpeed2)
         {
             float invLen = rsqrt(max(vJ2, EPS * EPS));

@@ -3,11 +3,11 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace GPU.Neighbors
-{
+namespace GPU.Neighbors {
     // Paper-faithful: uniform grid (Δx = k = 2r), rebuild each timestep, query adjacent cells. [web:9]
-    public sealed class UniformGridNeighborSearch : INeighborSearch
-    {
+    public sealed class UniformGridNeighborSearch : INeighborSearch {
+        private const string MarkerPrefix = "XPBI.UniformGrid.";
+
         private readonly ComputeShader _shader;
         private readonly bool _ownsShaderInstance;
 
@@ -30,8 +30,7 @@ namespace GPU.Neighbors
         public ComputeBuffer NeighborCountsBuffer => _counts;
         public ComputeBuffer DirtyVertexFlagsBuffer => null;
 
-        public UniformGridNeighborSearch(ComputeShader shader, int maxNeighbors)
-        {
+        public UniformGridNeighborSearch(ComputeShader shader, int maxNeighbors) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
             if (maxNeighbors <= 0) throw new ArgumentOutOfRangeException(nameof(maxNeighbors));
 
@@ -46,8 +45,7 @@ namespace GPU.Neighbors
             _kBuildNeighbors = _shader.FindKernel("BuildNeighbors");
         }
 
-        public void EnsureCapacity(int n, int gridW, int gridH)
-        {
+        public void EnsureCapacity(int n, int gridW, int gridH) {
             if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
             if (gridW <= 0 || gridH <= 0) throw new ArgumentOutOfRangeException("grid dims");
             int cellCount = gridW * gridH;
@@ -66,8 +64,13 @@ namespace GPU.Neighbors
             _counts = new ComputeBuffer(_capacityN, sizeof(int), ComputeBufferType.Structured);
         }
 
-        public void MarkAllDirty(CommandBuffer cb)
-        {
+        public void MarkAllDirty(CommandBuffer cb) {
+        }
+
+        private static void Dispatch(CommandBuffer cb, ComputeShader shader, int kernel, int x, int y, int z, string marker) {
+            cb.BeginSample(marker);
+            cb.DispatchCompute(shader, kernel, x, y, z);
+            cb.EndSample(marker);
         }
 
         public void EnqueueBuild(
@@ -82,8 +85,7 @@ namespace GPU.Neighbors
             int writeSlot,
             int fixIterations,
             int legalizeIterations,
-            bool rebuildAdjacencyAndTriMap = true)
-        {
+            bool rebuildAdjacencyAndTriMap = true) {
 
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
@@ -122,20 +124,18 @@ namespace GPU.Neighbors
             cb.SetComputeBufferParam(_shader, _kBuildNeighbors, "_Neighbors", _neighbors);
             cb.SetComputeBufferParam(_shader, _kBuildNeighbors, "_Counts", _counts);
 
-            cb.DispatchCompute(_shader, _kClearHeads, (_cellCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kClearCounts, (realVertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kBuildLists, (realVertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1);
+            Dispatch(cb, _shader, _kClearHeads, (_cellCount + 255) / 256, 1, 1, MarkerPrefix + "ClearHeads");
+            Dispatch(cb, _shader, _kClearCounts, (realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "ClearCounts");
+            Dispatch(cb, _shader, _kBuildLists, (realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildLists");
+            Dispatch(cb, _shader, _kBuildNeighbors, (realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildNeighbors");
         }
 
-        public void Dispose()
-        {
+        public void Dispose() {
             DisposeBuffers();
             if (_ownsShaderInstance && _shader) UnityEngine.Object.Destroy(_shader);
         }
 
-        private void DisposeBuffers()
-        {
+        private void DisposeBuffers() {
             _cellHeads?.Dispose(); _cellHeads = null;
             _next?.Dispose(); _next = null;
             _neighbors?.Dispose(); _neighbors = null;

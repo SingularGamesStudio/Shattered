@@ -20,7 +20,8 @@
     float support,
     float supportSq,
     float invDt,
-    float invDt2)
+    float invDt2,
+    uint debugIter)
     {
         uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
         uint rawCount = _DtNeighborCounts[dtLi];
@@ -47,11 +48,13 @@
         #define XPBI_APPLY_MODE_JR 0
         #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
         #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+        #define XPBI_DEBUG_ITER debugIter
 
         #include "Solver.Relax.Core.hlsl"
 
         #undef XPBI_SCATTER_DL
         #undef XPBI_SCATTER_DV
+        #undef XPBI_DEBUG_ITER
         #undef XPBI_APPLY_MODE_JR
         #undef XPBI_ACTIVE_I
         #undef XPBI_INV_MASS
@@ -165,7 +168,7 @@
                     uint gi = _SCoarseGi[li];
                     if (gi != ~0u)
                     {
-                        RelaxPersistentCoarseRow(li, gi, active, kernelH, support, supportSq, invDt, invDt2);
+                        RelaxPersistentCoarseRow(li, gi, active, kernelH, support, supportSq, invDt, invDt2, _PersistentBaseDebugIter + iter);
                     }
                 }
 

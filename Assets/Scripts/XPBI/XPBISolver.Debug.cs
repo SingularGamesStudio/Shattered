@@ -1,10 +1,12 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace GPU.Solver {
     public sealed partial class XPBISolver {
         private const int ConvergenceDebugIterBufSize = 8;
         private const float ConvergenceDebugScaleC = 1_000_000f;
         private const float ConvergenceDebugScaleDLambda = 1_000_000f;
+        private bool[] coloringUpdatedByLayerForDebugLog;
         private void LogConvergenceStatsFromData(uint[] data, int maxSolveLayer, int maxIter) {
             if (data == null || data.Length == 0)
                 return;
@@ -13,21 +15,17 @@ namespace GPU.Solver {
             float invScaleDL = 1f / ConvergenceDebugScaleDLambda;
 
             for (int layer = maxSolveLayer; layer >= 0; layer--) {
-                int iterations = GetIterationsForLayer(layer, maxSolveLayer);
+                int JRiterations = GetJRIterationsForLayer(layer, maxSolveLayer);
                 int baseIter = layer * maxIter;
-                int gsSplitIter = (layer == 0 && Const.EnableTwoStageGS2)
-                    ? Mathf.Min(Const.TwoStagePreGsItersL0, iterations)
-                    : -1;
+                int GSiterations = (layer == 0) ? Const.GSIterationsL0 : 1;
 
                 var table = new System.Text.StringBuilder();
                 table.AppendLine($"Layer {layer} convergence stats:");
                 table.AppendLine("Iter | Marker | Count | Avg|C|       | Max|C|       | Avg|dLambda| | Max|dLambda|");
                 table.AppendLine("-----|--------|-------|--------------|--------------|---------------|---------------");
 
-                bool hasData = false;
-
-                for (int iter = 0; iter < iterations; iter++) {
-                    if (iter == gsSplitIter) {
+                for (int iter = 0; iter < JRiterations + GSiterations; iter++) {
+                    if (iter == GSiterations) {
                         table.AppendLine("-----|--------|-------|--------------|--------------|---------------|---------------");
                     }
 
@@ -42,11 +40,6 @@ namespace GPU.Solver {
                     uint cnt = data[baseU + 4];
                     uint marker = data[baseU + 7];
 
-                    if (marker == 0 && cnt == 0 && sumAbsC == 0 && maxAbsC == 0 && sumAbsDL == 0 && maxAbsDL == 0)
-                        continue;
-
-                    hasData = true;
-
                     float avgAbsC = cnt > 0 ? (sumAbsC * invScaleC) / cnt : 0f;
                     float mxAbsC = maxAbsC * invScaleC;
                     float avgAbsDL = cnt > 0 ? (sumAbsDL * invScaleDL) / cnt : 0f;
@@ -56,9 +49,7 @@ namespace GPU.Solver {
                         $"{iter,4} | {marker,6} | {cnt,5} | {avgAbsC,12:G6} | {mxAbsC,12:G6} | {avgAbsDL,13:G6} | {mxAbsDL,13:G6}");
                 }
 
-                if (hasData) {
-                    Debug.LogError(table.ToString());
-                }
+                Debug.LogError(table.ToString());
             }
         }
 
@@ -75,6 +66,43 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kClearConvergenceDebugStats, "_ConvergenceDebug", convergenceDebug);
 
             Dispatch("XPBI.ClearConvergenceDebugStats", shader, kClearConvergenceDebugStats, (iterations + 255) / 256, 1, 1);
+        }
+
+        private void RequestColoringConflictHistoryDebugLog(int maxSolveLayer) {
+            for (int layer = maxSolveLayer; layer >= 0; layer--) {
+                bool[] coloringUpdatedByLayer = coloringUpdatedByLayerForDebugLog;
+                if (coloringUpdatedByLayer == null || layer < 0 || layer >= coloringUpdatedByLayer.Length || !coloringUpdatedByLayer[layer])
+                    continue;
+
+                ulong key = 0xFFFFFFFF00000000UL | (uint)layer;
+                if (!coloringByMeshLayer.TryGetValue(key, out var coloring) || coloring == null)
+                    continue;
+
+                int recordedIterations = coloring.GetRecordedConflictIterationCount();
+                if (recordedIterations <= 0)
+                    continue;
+
+                int capturedLayer = layer;
+                coloring.ReadConflictHistoryAsync(conflicts => {
+                    if (conflicts == null || conflicts.Length == 0) {
+                        Debug.LogError($"Coloring conflicts per iteration L{capturedLayer}: unavailable");
+                        return;
+                    }
+
+                    var line = new System.Text.StringBuilder();
+                    line.Append("Coloring conflicts per iteration L")
+                        .Append(capturedLayer)
+                        .Append(": ");
+
+                    for (int i = 0; i < conflicts.Length; i++) {
+                        if (i > 0)
+                            line.Append(", ");
+                        line.Append("i").Append(i).Append("=").Append(conflicts[i]);
+                    }
+
+                    Debug.LogError(line.ToString());
+                });
+            }
         }
     }
 }

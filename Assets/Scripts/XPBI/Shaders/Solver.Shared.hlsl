@@ -350,19 +350,6 @@
             return;
         }
 
-        float h = max(_LayerKernelH, 1e-4);
-        float support = 0.0;
-        support = WendlandSupportRadius(h);
-        if (support <= EPS)
-        {
-            nCount = 0u;
-            [unroll] for (uint clearIdx2 = 0u; clearIdx2 < targetNeighborCount; clearIdx2++) ns[clearIdx2] = ~0u;
-            return;
-        }
-
-        float supportSq = support * support;
-        float2 xi = _Pos[gi];
-
         uint li = ~0u;
         li = LocalIndexFromGlobal(gi);
         bool useOwnerFilter = (_UseDtOwnerFilter != 0u) && (li != ~0u) && (li < _ActiveCount);
@@ -383,9 +370,6 @@
                 if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
                 if (_DtOwnerByLocal[gjLi] != owner) continue;
             }
-
-            float2 d = _Pos[gj] - xi;
-            if (dot(d, d) > supportSq) continue;
 
             ns[outCount++] = gj;
         }

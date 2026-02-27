@@ -9,6 +9,8 @@ namespace GPU.Delaunay {
     /// Uses a parallel greedy coloring algorithm with 16 colors and 2-hop conflict detection.
     /// </summary>
     public sealed class DTColoring : IDisposable {
+        private const string MarkerPrefix = "XPBI.DTColoring.";
+
         // Compute shader and kernel indices
         readonly ComputeShader shader;
         readonly bool ownsShaderInstance;
@@ -27,6 +29,7 @@ namespace GPU.Delaunay {
         readonly int kScatterOrder;
         readonly int kBuildRelaxArgs;
         readonly int kCountFinalConflicts;
+        readonly int kRecordConflictCount;
 
         // Core buffers
         ComputeBuffer color;          // Current color per vertex (-1 or 0..15)
@@ -38,6 +41,7 @@ namespace GPU.Delaunay {
         ComputeBuffer workCount;       // [0] = number of items in work list
         ComputeBuffer workList;        // Vertex indices (size = activeCount)
         ComputeBuffer workArgs;        // Indirect dispatch arguments (uint3)
+        ComputeBuffer conflictHistory; // Per-iteration conflict history
 
         // Per‑color metadata for scattering / ordering
         ComputeBuffer counts;          // Number of vertices per color (size 16)
@@ -56,6 +60,7 @@ namespace GPU.Delaunay {
         int dtNeighborCount;
         uint epoch;
         uint seed;
+        int recordedConflictIterations;
 
         // Cached dispatch group sizes
         const int ThreadGroupSize = 256;
@@ -91,6 +96,7 @@ namespace GPU.Delaunay {
             kScatterOrder = this.shader.FindKernel("ColoringScatterOrder");
             kBuildRelaxArgs = this.shader.FindKernel("ColoringBuildRelaxArgs");
             kCountFinalConflicts = this.shader.FindKernel("ColoringCountFinalConflicts");
+            kRecordConflictCount = this.shader.FindKernel("ColoringRecordConflictCount");
         }
 
         /// <summary>
@@ -132,6 +138,18 @@ namespace GPU.Delaunay {
             orderOut = new ComputeBuffer(activeCount, sizeof(uint), ComputeBufferType.Structured);
 
             relaxArgs = new ComputeBuffer(16 * 3, sizeof(uint), ComputeBufferType.IndirectArguments);
+            recordedConflictIterations = 0;
+        }
+
+        private void EnsureConflictHistoryCapacity(int iterations) {
+            if (iterations <= 0)
+                return;
+
+            if (conflictHistory != null && conflictHistory.IsValid() && conflictHistory.count == iterations)
+                return;
+
+            conflictHistory?.Dispose();
+            conflictHistory = new ComputeBuffer(iterations, sizeof(uint), ComputeBufferType.Structured);
         }
 
         /// <summary>
@@ -153,7 +171,7 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_ColoringProposed", proposed);
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_ColoringPrio", prio);
 
-            cb.DispatchCompute(shader, kInitTriGrid, activeGroups, 1, 1);
+            Dispatch(cb, shader, kInitTriGrid, activeGroups, 1, 1, MarkerPrefix + "InitTriGrid");
 
             EnqueueRebuildOrderAndArgs(cb);
         }
@@ -179,6 +197,9 @@ namespace GPU.Delaunay {
             if (neighborSearch == null) throw new ArgumentNullException(nameof(neighborSearch));
             if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
             if (iterations <= 0) throw new ArgumentOutOfRangeException(nameof(iterations));
+
+            EnsureConflictHistoryCapacity(iterations);
+            recordedConflictIterations = iterations;
 
             SetCommonParams(cb, positions, layerCellSize);
 
@@ -207,14 +228,25 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kClearWork, "_ColoringDebug", debug);
             cb.SetComputeBufferParam(shader, kBuildWorkArgs, "_ColoringWorkCount", workCount);
             cb.SetComputeBufferParam(shader, kBuildWorkArgs, "_ColoringWorkArgs", workArgs);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringColor", color);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringPrio", prio);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
+            cb.SetComputeIntParam(shader, "_ColoringDtNeighborCount", dtNeighborCount);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDebug", debug);
+            if (conflictHistory != null) {
+                cb.SetComputeBufferParam(shader, kRecordConflictCount, "_ColoringDebug", debug);
+                cb.SetComputeBufferParam(shader, kRecordConflictCount, "_ColoringConflictHistory", conflictHistory);
+            }
 
             if (neighborSearch.DirtyVertexFlagsBuffer != null) {
                 // First pass: build work list from dirty vertices (wake‑up region)
                 epoch++;
                 cb.SetComputeIntParam(shader, "_ColoringEpoch", unchecked((int)epoch));
-                cb.DispatchCompute(shader, kClearWork, 1, 1, 1);
-                cb.DispatchCompute(shader, kBuildWorkListFromDirty, activeGroups, 1, 1);
-                cb.DispatchCompute(shader, kBuildWorkArgs, 1, 1, 1);
+                Dispatch(cb, shader, kClearWork, 1, 1, 1, MarkerPrefix + "ClearWork");
+                Dispatch(cb, shader, kBuildWorkListFromDirty, activeGroups, 1, 1, MarkerPrefix + "BuildWorkListFromDirty");
+                Dispatch(cb, shader, kBuildWorkArgs, 1, 1, 1, MarkerPrefix + "BuildWorkArgs");
             }
 
             for (int i = 0; i < iterations; i++) {
@@ -222,17 +254,24 @@ namespace GPU.Delaunay {
                 epoch++;
                 cb.SetComputeIntParam(shader, "_ColoringEpoch", unchecked((int)epoch));
 
-                cb.DispatchCompute(shader, kClearWork, 1, 1, 1);
-                cb.DispatchCompute(shader, kBuildWorkListFromConflicts, activeGroups, 1, 1);
-                cb.DispatchCompute(shader, kBuildWorkArgs, 1, 1, 1);
+                Dispatch(cb, shader, kClearWork, 1, 1, 1, MarkerPrefix + "ClearWork");
+                Dispatch(cb, shader, kBuildWorkListFromConflicts, activeGroups, 1, 1, MarkerPrefix + "BuildWorkListFromConflicts");
+                Dispatch(cb, shader, kBuildWorkArgs, 1, 1, 1, MarkerPrefix + "BuildWorkArgs");
 
                 // Choose new colours and apply them (indirect dispatch)
-                cb.DispatchCompute(shader, kChooseWork, workArgs, 0);
-                cb.DispatchCompute(shader, kApplyWork, workArgs, 0);
+                Dispatch(cb, shader, kChooseWork, workArgs, 0, MarkerPrefix + "ChooseWork");
+                Dispatch(cb, shader, kApplyWork, workArgs, 0, MarkerPrefix + "ApplyWork");
+
+                if (conflictHistory != null) {
+                    Dispatch(cb, shader, kClearWork, 1, 1, 1, MarkerPrefix + "ClearWork");
+                    Dispatch(cb, shader, kCountFinalConflicts, activeGroups, 1, 1, MarkerPrefix + "CountConflictsIter");
+                    cb.SetComputeIntParam(shader, "_ColoringConflictHistoryIndex", i);
+                    Dispatch(cb, shader, kRecordConflictCount, 1, 1, 1, MarkerPrefix + "RecordConflictCount");
+                }
             }
 
             // Count remaining conflicts for debugging / convergence check
-            cb.DispatchCompute(shader, kClearWork, 1, 1, 1);
+            Dispatch(cb, shader, kClearWork, 1, 1, 1, MarkerPrefix + "ClearWork");
 
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringPrio", prio);
@@ -241,7 +280,14 @@ namespace GPU.Delaunay {
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringDtNeighborCount", dtNeighborCount);
             cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringDebug", debug);
-            cb.DispatchCompute(shader, kCountFinalConflicts, activeGroups, 1, 1);
+            if (conflictHistory != null)
+                cb.SetComputeBufferParam(shader, kRecordConflictCount, "_ColoringConflictHistory", conflictHistory);
+            Dispatch(cb, shader, kCountFinalConflicts, activeGroups, 1, 1, MarkerPrefix + "CountFinalConflicts");
+
+            if (conflictHistory != null && iterations > 0) {
+                cb.SetComputeIntParam(shader, "_ColoringConflictHistoryIndex", iterations - 1);
+                Dispatch(cb, shader, kRecordConflictCount, 1, 1, 1, MarkerPrefix + "RecordConflictCountFinal");
+            }
 
             // Rebuild the ordered vertex list and indirect arguments for relaxation
             EnqueueRebuildOrderAndArgs(cb);
@@ -259,21 +305,21 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kClearMeta, "_ColoringCounts", counts);
             cb.SetComputeBufferParam(shader, kClearMeta, "_ColoringStarts", starts);
             cb.SetComputeBufferParam(shader, kClearMeta, "_ColoringWrite", write);
-            cb.DispatchCompute(shader, kClearMeta, 1, 1, 1);
+            Dispatch(cb, shader, kClearMeta, 1, 1, 1, MarkerPrefix + "ClearMeta");
 
             // Count vertices per colour
             cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringCounts", counts);
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
-            cb.DispatchCompute(shader, kBuildCounts, activeGroups, 1, 1);
+            Dispatch(cb, shader, kBuildCounts, activeGroups, 1, 1, MarkerPrefix + "BuildCounts");
 
             // Prefix sum to compute start indices
             cb.SetComputeBufferParam(shader, kBuildStarts, "_ColoringCounts", counts);
             cb.SetComputeBufferParam(shader, kBuildStarts, "_ColoringStarts", starts);
             cb.SetComputeBufferParam(shader, kBuildStarts, "_ColoringWrite", write);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
-            cb.DispatchCompute(shader, kBuildStarts, 1, 1, 1);
+            Dispatch(cb, shader, kBuildStarts, 1, 1, 1, MarkerPrefix + "BuildStarts");
 
             // Scatter vertices into orderOut
             cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringColor", color);
@@ -281,13 +327,25 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringOrderOut", orderOut);
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
-            cb.DispatchCompute(shader, kScatterOrder, activeGroups, 1, 1);
+            Dispatch(cb, shader, kScatterOrder, activeGroups, 1, 1, MarkerPrefix + "ScatterOrder");
 
             // Build indirect arguments for relaxation (one set per colour)
             cb.SetComputeBufferParam(shader, kBuildRelaxArgs, "_ColoringCounts", counts);
             cb.SetComputeBufferParam(shader, kBuildRelaxArgs, "_RelaxArgs", relaxArgs);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
-            cb.DispatchCompute(shader, kBuildRelaxArgs, 1, 1, 1);
+            Dispatch(cb, shader, kBuildRelaxArgs, 1, 1, 1, MarkerPrefix + "BuildRelaxArgs");
+        }
+
+        private static void Dispatch(CommandBuffer cb, ComputeShader shader, int kernel, int x, int y, int z, string marker) {
+            cb.BeginSample(marker);
+            cb.DispatchCompute(shader, kernel, x, y, z);
+            cb.EndSample(marker);
+        }
+
+        private static void Dispatch(CommandBuffer cb, ComputeShader shader, int kernel, ComputeBuffer args, uint argsOffset, string marker) {
+            cb.BeginSample(marker);
+            cb.DispatchCompute(shader, kernel, args, argsOffset);
+            cb.EndSample(marker);
         }
 
         // Sets parameters common to most kernels (positions, counts, seed, etc.)
@@ -344,6 +402,32 @@ namespace GPU.Delaunay {
             return result[0];
         }
 
+        public int GetRecordedConflictIterationCount() {
+            return recordedConflictIterations;
+        }
+
+        public void ReadConflictHistoryAsync(Action<uint[]> callback) {
+            if (conflictHistory == null || recordedConflictIterations <= 0) {
+                callback?.Invoke(Array.Empty<uint>());
+                return;
+            }
+
+            AsyncGPUReadback.Request(conflictHistory, request => {
+                if (request.hasError) {
+                    Debug.LogError("Async readback of conflict history failed.");
+                    callback?.Invoke(Array.Empty<uint>());
+                    return;
+                }
+
+                var data = request.GetData<uint>();
+                int len = Mathf.Min(recordedConflictIterations, data.Length);
+                uint[] copy = new uint[len];
+                for (int i = 0; i < len; i++)
+                    copy[i] = data[i];
+                callback?.Invoke(copy);
+            });
+        }
+
         public void Dispose() {
             DisposeBuffers();
             if (ownsShaderInstance && shader)
@@ -359,6 +443,7 @@ namespace GPU.Delaunay {
             workCount?.Dispose(); workCount = null;
             workList?.Dispose(); workList = null;
             workArgs?.Dispose(); workArgs = null;
+            conflictHistory?.Dispose(); conflictHistory = null;
 
             counts?.Dispose(); counts = null;
             starts?.Dispose(); starts = null;
@@ -372,6 +457,7 @@ namespace GPU.Delaunay {
             dtNeighborCount = 0;
             epoch = 0u;
             seed = 0u;
+            recordedConflictIterations = 0;
         }
     }
 }

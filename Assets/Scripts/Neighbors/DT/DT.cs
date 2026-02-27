@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using GPU.Neighbors;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 
 namespace GPU.Delaunay {
@@ -11,6 +12,8 @@ namespace GPU.Delaunay {
     /// Provides triple‑buffered geometry data for rendering and a set of shared working buffers.
     /// </summary>
     public sealed class DT : INeighborSearch {
+        private const string MarkerPrefix = "XPBI.DT.";
+
         //---------------------------------------------------------------------------
         // Shader and kernel IDs
         //---------------------------------------------------------------------------
@@ -57,6 +60,8 @@ namespace GPU.Delaunay {
         private int _halfEdgeCount;          // number of allocated half‑edges
         private int _triCount;               // number of triangles
         private int _neighborCount;           // max neighbours per vertex (size of neighbour arrays)
+        private bool _useSupportRadiusFilter;
+        private float _supportRadius2;
 
         private int _renderSlot;              // current slot used for rendering (0,1,2)
 
@@ -155,6 +160,8 @@ namespace GPU.Delaunay {
 
             _triCount = triangleCount;
             _neighborCount = neighborCount;
+            _useSupportRadiusFilter = false;
+            _supportRadius2 = 0f;
 
             // Scratch copy of positions for CPU upload.
             _positionScratch = new float2[_vertexCount];
@@ -203,16 +210,30 @@ namespace GPU.Delaunay {
             cb.SetComputeIntParam(_shader, "_HalfEdgeCount", _halfEdgeCount);
             cb.SetComputeIntParam(_shader, "_TriCount", _triCount);
             cb.SetComputeIntParam(_shader, "_NeighborCount", _neighborCount);
+            cb.SetComputeIntParam(_shader, "_UseSupportRadiusFilter", _useSupportRadiusFilter ? 1 : 0);
+            cb.SetComputeFloatParam(_shader, "_SupportRadius2", _supportRadius2);
         }
 
         private void DispatchClearTriLocks(CommandBuffer cb) {
             cb.SetComputeBufferParam(_shader, _kernelClearTriLocks, "_TriLocks", _triLocks);
-            cb.DispatchCompute(_shader, _kernelClearTriLocks, (_triCount + 255) / 256, 1, 1);
+            Dispatch(cb, _shader, _kernelClearTriLocks, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "ClearTriLocks");
         }
 
         private void DispatchClearDirtyVertexFlags(CommandBuffer cb) {
             cb.SetComputeBufferParam(_shader, _kernelClearDirtyVertexFlags, "_DirtyVertexFlags", _dirtyVertexFlags);
-            cb.DispatchCompute(_shader, _kernelClearDirtyVertexFlags, (_realVertexCount + 255) / 256, 1, 1);
+            Dispatch(cb, _shader, _kernelClearDirtyVertexFlags, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "ClearDirtyVertexFlags");
+        }
+
+        private static void Dispatch(CommandBuffer cb, ComputeShader shader, int kernel, int x, int y, int z, string marker) {
+            cb.BeginSample(marker);
+            cb.DispatchCompute(shader, kernel, x, y, z);
+            cb.EndSample(marker);
+        }
+
+        private static void Dispatch(ComputeShader shader, int kernel, int x, int y, int z, string marker) {
+            Profiler.BeginSample(marker);
+            shader.Dispatch(kernel, x, y, z);
+            Profiler.EndSample();
         }
 
         //---------------------------------------------------------------------------
@@ -246,7 +267,7 @@ namespace GPU.Delaunay {
             if (readSlot != writeSlot) {
                 cb.SetComputeBufferParam(_shader, _kernelCopyHalfEdges, "_HalfEdgesSrc", _halfEdges[readSlot]);
                 cb.SetComputeBufferParam(_shader, _kernelCopyHalfEdges, "_HalfEdgesDst", _halfEdges[writeSlot]);
-                cb.DispatchCompute(_shader, _kernelCopyHalfEdges, (_halfEdgeCount + 255) / 256, 1, 1);
+                Dispatch(cb, _shader, _kernelCopyHalfEdges, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "CopyHalfEdges");
             }
 
             // Clear dirty flags once for this maintenance batch.
@@ -274,6 +295,7 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(_shader, _kernelLegalizeHalfEdges, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_HalfEdges", _halfEdges[writeSlot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_Positions", positionsForMaintain);
             cb.SetComputeBufferParam(_shader, _kernelClearTriToHE, "_TriToHE", _triToHE[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[writeSlot]);
@@ -288,14 +310,14 @@ namespace GPU.Delaunay {
             for (int i = 0; i < fixIterations; i++) {
                 DispatchClearTriLocks(cb);
                 cb.SetBufferData(_flipCount, _flipScratch);          // reset flip counter before each pass
-                cb.DispatchCompute(_shader, _kernelFixHalfEdges, groups, 1, 1);
+                Dispatch(cb, _shader, _kernelFixHalfEdges, groups, 1, 1, MarkerPrefix + "FixHalfEdges");
             }
 
             // Legalisation passes (Delaunay).
             for (int i = 0; i < legalizeIterations; i++) {
                 DispatchClearTriLocks(cb);
                 cb.SetBufferData(_flipCount, _flipScratch);
-                cb.DispatchCompute(_shader, _kernelLegalizeHalfEdges, groups, 1, 1);
+                Dispatch(cb, _shader, _kernelLegalizeHalfEdges, groups, 1, 1, MarkerPrefix + "LegalizeHalfEdges");
             }
 
             if (rebuildAdjacencyAndTriMap) {
@@ -316,6 +338,8 @@ namespace GPU.Delaunay {
             int fixIterations,
             int legalizeIterations,
             bool rebuildAdjacencyAndTriMap = true) {
+            _useSupportRadiusFilter = supportRadius > 0f;
+            _supportRadius2 = _useSupportRadiusFilter ? supportRadius * supportRadius : 0f;
             EnqueueBuild(cb, positions, readSlot, writeSlot, fixIterations, legalizeIterations, rebuildAdjacencyAndTriMap);
         }
 
@@ -340,15 +364,16 @@ namespace GPU.Delaunay {
             // Slot‑specific half‑edge and triangle map.
             cb.SetComputeBufferParam(_shader, _kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[slot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_HalfEdges", _halfEdges[slot]);
+            cb.SetComputeBufferParam(_shader, _kernelBuildNeighbors, "_Positions", _positions[slot]);
             cb.SetComputeBufferParam(_shader, _kernelClearTriToHE, "_TriToHE", _triToHE[slot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[slot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[slot]);
 
-            cb.DispatchCompute(_shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kernelClearTriToHE, (_triCount + 255) / 256, 1, 1);
-            cb.DispatchCompute(_shader, _kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1);
+            Dispatch(cb, _shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "ClearVertexToEdge");
+            Dispatch(cb, _shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildVertexToEdge");
+            Dispatch(cb, _shader, _kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildNeighbors");
+            Dispatch(cb, _shader, _kernelClearTriToHE, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "ClearTriToHE");
+            Dispatch(cb, _shader, _kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildRenderableTriToHE");
         }
 
         /// <summary>
@@ -361,6 +386,8 @@ namespace GPU.Delaunay {
             _shader.SetInt("_HalfEdgeCount", _halfEdgeCount);
             _shader.SetInt("_TriCount", _triCount);
             _shader.SetInt("_NeighborCount", _neighborCount);
+            _shader.SetInt("_UseSupportRadiusFilter", _useSupportRadiusFilter ? 1 : 0);
+            _shader.SetFloat("_SupportRadius2", _supportRadius2);
 
             // Bind buffers.
             _shader.SetBuffer(_kernelClearVertexToEdge, "_VToE", _vToE);
@@ -371,15 +398,16 @@ namespace GPU.Delaunay {
 
             _shader.SetBuffer(_kernelBuildVertexToEdge, "_HalfEdges", _halfEdges[slot]);
             _shader.SetBuffer(_kernelBuildNeighbors, "_HalfEdges", _halfEdges[slot]);
+            _shader.SetBuffer(_kernelBuildNeighbors, "_Positions", _positions[slot]);
             _shader.SetBuffer(_kernelClearTriToHE, "_TriToHE", _triToHE[slot]);
             _shader.SetBuffer(_kernelBuildRenderableTriToHE, "_HalfEdges", _halfEdges[slot]);
             _shader.SetBuffer(_kernelBuildRenderableTriToHE, "_TriToHE", _triToHE[slot]);
 
-            _shader.Dispatch(_kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1);
-            _shader.Dispatch(_kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1);
-            _shader.Dispatch(_kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1);
-            _shader.Dispatch(_kernelClearTriToHE, (_triCount + 255) / 256, 1, 1);
-            _shader.Dispatch(_kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1);
+            Dispatch(_shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "ClearVertexToEdgeSync");
+            Dispatch(_shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildVertexToEdgeSync");
+            Dispatch(_shader, _kernelBuildNeighbors, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildNeighborsSync");
+            Dispatch(_shader, _kernelClearTriToHE, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "ClearTriToHESync");
+            Dispatch(_shader, _kernelBuildRenderableTriToHE, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildRenderableTriToHESync");
         }
 
         //---------------------------------------------------------------------------
@@ -403,7 +431,7 @@ namespace GPU.Delaunay {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             SetCommonParams(cb);
             cb.SetComputeBufferParam(_shader, _kernelMarkAllDirty, "_DirtyVertexFlags", _dirtyVertexFlags);
-            cb.DispatchCompute(_shader, _kernelMarkAllDirty, (_realVertexCount + 255) / 256, 1, 1);
+            Dispatch(cb, _shader, _kernelMarkAllDirty, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "MarkAllDirty");
         }
 
         //---------------------------------------------------------------------------

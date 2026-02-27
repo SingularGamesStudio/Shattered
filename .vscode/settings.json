@@ -56,5 +56,6 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "Shattered.sln"
+    "dotnet.defaultSolution": "Shattered.sln",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

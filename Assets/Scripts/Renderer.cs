@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using GPU.Delaunay;
 
@@ -347,24 +348,17 @@ public sealed class Renderer : MonoBehaviour {
         }
     }
 
-    [SerializeField] int sdfEveryNFrames = 3;
-    RenderTexture cachedSdf;
-
     void OnRenderImage(RenderTexture src, RenderTexture dest) {
         if (!drawLayer0Fill || compositeShader == null || sdfCompute == null || cr?.accum == null) {
             Graphics.Blit(src, dest);
             return;
         }
 
-        if (cachedSdf == null) cachedSdf = cr.sdf;
-
-        if (Time.frameCount % sdfEveryNFrames == 0) {
-            cachedSdf = RunSdfAndSmooth(); // updates cr.sdf/tmp
-        }
+        RenderTexture sdfTex = RunSdfAndSmooth();
 
         compositeMaterial ??= new Material(compositeShader);
         compositeMaterial.SetTexture(ID_AccumTex, cr.accum);
-        compositeMaterial.SetTexture(ID_SdfTex, cachedSdf);
+        compositeMaterial.SetTexture(ID_SdfTex, sdfTex);
         compositeMaterial.SetFloat(ID_RoundPixels, roundPixels);
         Graphics.Blit(src, dest, compositeMaterial, 0);
     }
@@ -402,6 +396,12 @@ public sealed class Renderer : MonoBehaviour {
         return rt;
     }
 
+    static void Dispatch(ComputeShader shader, int kernel, int x, int y, int z, string marker) {
+        Profiler.BeginSample(marker);
+        shader.Dispatch(kernel, x, y, z);
+        Profiler.EndSample();
+    }
+
     RenderTexture RunSdfAndSmooth() {
         int tgx = (cr.w + 7) >> 3;
         int tgy = (cr.h + 7) >> 3;
@@ -410,7 +410,7 @@ public sealed class Renderer : MonoBehaviour {
 
         sdfCompute.SetTexture(kInitKernel, ID_CSTexAccum, cr.accum);
         sdfCompute.SetTexture(kInitKernel, ID_CSTexSeedOut, cr.seedA);
-        sdfCompute.Dispatch(kInitKernel, tgx, tgy, 1);
+        Dispatch(sdfCompute, kInitKernel, tgx, tgy, 1, "XPBI.Renderer.SdfInit");
 
         int maxDim = Mathf.Max(cr.w, cr.h);
         int jump = 1;
@@ -424,7 +424,7 @@ public sealed class Renderer : MonoBehaviour {
             sdfCompute.SetInt(ID_CSJump, jump);
             sdfCompute.SetTexture(kJfaKernel, ID_CSTexSeedIn, seedIn);
             sdfCompute.SetTexture(kJfaKernel, ID_CSTexSeedOut, seedOut);
-            sdfCompute.Dispatch(kJfaKernel, tgx, tgy, 1);
+            Dispatch(sdfCompute, kJfaKernel, tgx, tgy, 1, "XPBI.Renderer.SdfJfa");
 
             var tmp = seedIn;
             seedIn = seedOut;
@@ -436,7 +436,7 @@ public sealed class Renderer : MonoBehaviour {
         sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexAccum, cr.accum);
         sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexSeedIn, seedIn);
         sdfCompute.SetTexture(kFinalizeKernel, ID_CSTexSdfOut, cr.sdf);
-        sdfCompute.Dispatch(kFinalizeKernel, tgx, tgy, 1);
+        Dispatch(sdfCompute, kFinalizeKernel, tgx, tgy, 1, "XPBI.Renderer.SdfFinalize");
 
         if (smoothMode == SdfSmoothMode.None)
             return cr.sdf;
@@ -454,11 +454,11 @@ public sealed class Renderer : MonoBehaviour {
             for (int i = 0; i < it; i++) {
                 sdfCompute.SetTexture(kBlurHKernel, ID_CSTexSdfIn, a);
                 sdfCompute.SetTexture(kBlurHKernel, ID_CSTexSdfOut, b);
-                sdfCompute.Dispatch(kBlurHKernel, tgx, tgy, 1);
+                Dispatch(sdfCompute, kBlurHKernel, tgx, tgy, 1, "XPBI.Renderer.SdfBlurH");
 
                 sdfCompute.SetTexture(kBlurVKernel, ID_CSTexSdfIn, b);
                 sdfCompute.SetTexture(kBlurVKernel, ID_CSTexSdfOut, a);
-                sdfCompute.Dispatch(kBlurVKernel, tgx, tgy, 1);
+                Dispatch(sdfCompute, kBlurVKernel, tgx, tgy, 1, "XPBI.Renderer.SdfBlurV");
             }
 
             return a;
@@ -477,7 +477,7 @@ public sealed class Renderer : MonoBehaviour {
             for (int i = 0; i < it; i++) {
                 sdfCompute.SetTexture(kCurvatureKernel, ID_CSTexSdfIn, a);
                 sdfCompute.SetTexture(kCurvatureKernel, ID_CSTexSdfOut, b);
-                sdfCompute.Dispatch(kCurvatureKernel, tgx, tgy, 1);
+                Dispatch(sdfCompute, kCurvatureKernel, tgx, tgy, 1, "XPBI.Renderer.SdfCurvature");
 
                 var tmp = a;
                 a = b;
@@ -702,37 +702,5 @@ public sealed class Renderer : MonoBehaviour {
 
         mpb.SetVector(ID_NormCenter, new Vector4(normCenter.x, normCenter.y, 0f, 0f));
         mpb.SetFloat(ID_NormInvHalfExtent, normInvHalfExtent);
-    }
-
-    static Bounds ComputeBoundsFromNorm(Meshless m) {
-        float inv = m.DtNormInvHalfExtent;
-        if (!(inv > 0f) || float.IsNaN(inv) || float.IsInfinity(inv))
-            return ComputeBoundsFromNodes(m.nodes);
-
-        float halfExtent = 1f / inv;
-
-        float pad = 50f;
-        Vector3 center = new Vector3(m.DtNormCenter.x, m.DtNormCenter.y, 0f);
-        Vector3 size = new Vector3(halfExtent * 2f + pad, halfExtent * 2f + pad, 10f);
-        return new Bounds(center, size);
-    }
-
-    static Bounds ComputeBoundsFromNodes(List<Node> nodes) {
-        float2 min = nodes[0].pos;
-        float2 max = nodes[0].pos;
-
-        for (int i = 1; i < nodes.Count; i++) {
-            float2 p = nodes[i].pos;
-            min = math.min(min, p);
-            max = math.max(max, p);
-        }
-
-        float2 c2 = 0.5f * (min + max);
-        float2 e2 = 0.5f * (max - min);
-
-        float pad = 50f;
-        Vector3 center = new Vector3(c2.x, c2.y, 0f);
-        Vector3 size = new Vector3(e2.x * 2f + pad, e2.y * 2f + pad, 10f);
-        return new Bounds(center, size);
     }
 }

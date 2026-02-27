@@ -158,7 +158,8 @@ namespace GPU.Solver {
                 InitializeFromMeshless((System.Collections.Generic.List<MeshRange>)solveRanges, totalCount);
 
             EnsureAsyncCommandBufferForRecording();
-            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, GetMaxIterationsForSolve(maxSolveLayer));
+            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, Const.JRIterationsL0 + Const.GSIterationsL0);
+            bool[] coloringUpdatedByLayer = ConvergenceDebugEnabled ? new bool[maxSolveLayer + 1] : null;
 
             for (int tick = 0; tick < tickCount; tick++) {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, totalCount, 0);
@@ -207,54 +208,52 @@ namespace GPU.Solver {
                     }
                 }
 
-                int vCycles = useHierarchical ? Mathf.Max(1, Const.HierarchyVCyclesPerTick) : 1;
-                for (int cycle = 0; cycle < vCycles; cycle++) {
-                    for (int layer = maxSolveLayer; layer >= 0; layer--) {
-                        if (!globalDTHierarchy.TryGetLayerDt(layer, out DT globalLayerDt) || globalLayerDt == null)
-                            continue;
+                for (int layer = maxSolveLayer; layer >= 0; layer--) {
+                    if (!globalDTHierarchy.TryGetLayerDt(layer, out DT globalLayerDt) || globalLayerDt == null)
+                        continue;
 
-                        INeighborSearch layerNeighborSearch = useOverrideLayer0NeighborSearch && layer == 0
-                            ? layer0NeighborSearch
-                            : globalLayerDt;
-                        if (layerNeighborSearch == null)
-                            continue;
+                    INeighborSearch layerNeighborSearch = useOverrideLayer0NeighborSearch && layer == 0
+                        ? layer0NeighborSearch
+                        : globalLayerDt;
+                    if (layerNeighborSearch == null)
+                        continue;
 
-                        if (!globalDTHierarchy.TryGetLayerMappings(layer, out int[] ownerBodyByLocal, out _, out int[] globalFineNodeByLocal, out int globalActiveCount, out int globalFineCount))
-                            continue;
-                        if (globalActiveCount < 3)
-                            continue;
+                    if (!globalDTHierarchy.TryGetLayerMappings(layer, out int[] ownerBodyByLocal, out _, out int[] globalFineNodeByLocal, out int globalActiveCount, out int globalFineCount))
+                        continue;
+                    if (globalActiveCount < 3)
+                        continue;
 
-                        if (!globalDTHierarchy.TryGetLayerExecutionContext(layer, out int execActiveCount, out int execFineCount, out float layerKernelH))
-                            continue;
+                    if (!globalDTHierarchy.TryGetLayerExecutionContext(layer, out int execActiveCount, out int execFineCount, out float layerKernelH))
+                        continue;
 
-                        bool useMappedIndices = !IsIdentityMapping(globalFineNodeByLocal, globalFineCount);
-                        ComputeBuffer globalNodeMap = null;
-                        ComputeBuffer globalToLocalMap = null;
-                        if (useMappedIndices) {
-                            globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, globalFineCount);
-                            globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, globalFineCount, totalCount);
-                        }
-
-                        ComputeBuffer ownerByLocalBuffer = null;
-                        if (ownerBodyByLocal != null && ownerBodyByLocal.Length >= globalActiveCount)
-                            ownerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(layer, ownerBodyByLocal, globalActiveCount);
-
-                        ProcessGlobalLayer(
-                            layer,
-                            layerNeighborSearch,
-                            execActiveCount,
-                            execFineCount,
-                            layerKernelH,
-                            tick,
-                            forceEventsCount,
-                            convergenceDebug,
-                            maxSolveLayer,
-                            useMappedIndices,
-                            globalNodeMap,
-                            globalToLocalMap,
-                            ownerByLocalBuffer
-                        );
+                    bool useMappedIndices = !IsIdentityMapping(globalFineNodeByLocal, globalFineCount);
+                    ComputeBuffer globalNodeMap = null;
+                    ComputeBuffer globalToLocalMap = null;
+                    if (useMappedIndices) {
+                        globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, globalFineCount);
+                        globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, globalFineCount, totalCount);
                     }
+
+                    ComputeBuffer ownerByLocalBuffer = null;
+                    if (ownerBodyByLocal != null && ownerBodyByLocal.Length >= globalActiveCount)
+                        ownerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(layer, ownerBodyByLocal, globalActiveCount);
+
+                    ProcessGlobalLayer(
+                        layer,
+                        layerNeighborSearch,
+                        execActiveCount,
+                        execFineCount,
+                        layerKernelH,
+                        tick,
+                        forceEventsCount,
+                        convergenceDebug,
+                        maxSolveLayer,
+                        useMappedIndices,
+                        globalNodeMap,
+                        globalToLocalMap,
+                        ownerByLocalBuffer,
+                        coloringUpdatedByLayer
+                    );
                 }
 
                 asyncCb.SetComputeIntParam(shader, "_Base", 0);
@@ -284,7 +283,14 @@ namespace GPU.Solver {
                     }
 
                     if (!(useOverrideLayer0NeighborSearch && layer == 0)) {
+                        float layerSupportRadius = 1f;
+                        if (globalDTHierarchy.TryGetLayerExecutionContext(layer, out _, out _, out float dtLayerKernelH))
+                            layerSupportRadius = Mathf.Max(1e-5f, Const.WendlandSupport * dtLayerKernelH);
+
+                        float normalizedLayerSupportRadius = Mathf.Max(1e-8f, layerSupportRadius * globalDTHierarchy.NormInvHalfExtent);
+
                         dtLayer.EnqueueBuild(asyncCb, dtLayer.GetPositionsBuffer(writeSlot),
+                            activeCount, normalizedLayerSupportRadius, normalizedLayerSupportRadius, float2.zero, float2.zero,
                             readSlot, writeSlot, Const.DTFixIterations, Const.DTLegalizeIterations);
                     }
                 }
@@ -296,15 +302,21 @@ namespace GPU.Solver {
             Graphics.ExecuteCommandBufferAsync(asyncCb, queueType);
 
             if (ConvergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
+                Graphics.WaitOnAsyncGraphicsFence(fence);
+
                 int dbgMaxLayer = maxSolveLayer;
                 int dbgMaxIter = convergenceDebugMaxIter;
+                coloringUpdatedByLayerForDebugLog = coloringUpdatedByLayer;
 
                 AsyncGPUReadback.Request(convergenceDebug, req => {
                     if (req.hasError) return;
                     var data = req.GetData<uint>();
                     LogConvergenceStatsFromData(data.ToArray(), dbgMaxLayer, dbgMaxIter);
                 });
+
+                RequestColoringConflictHistoryDebugLog(dbgMaxLayer);
             }
+            coloringUpdatedByLayerForDebugLog = null;
 
             return fence;
         }
@@ -411,7 +423,8 @@ namespace GPU.Solver {
             bool useDtGlobalNodeMap,
             ComputeBuffer dtGlobalNodeMap,
             ComputeBuffer dtGlobalToLayerLocalMap,
-            ComputeBuffer dtOwnerByLocal
+            ComputeBuffer dtOwnerByLocal,
+            bool[] coloringUpdatedByLayer
         ) {
             PrepareRelaxBuffers(neighborSearch, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
 
@@ -429,7 +442,6 @@ namespace GPU.Solver {
                 Const.RestrictedDeltaVScale > 0f;
             bool injectRestrictedResidual =
                 useHierarchyTransfer &&
-                Const.UseResidualVCycle &&
                 Const.RestrictResidualDeltaVScale > 0f;
 
             if (injectRestrictedResidual) {
@@ -455,17 +467,16 @@ namespace GPU.Solver {
             Dispatch("XPBI.CacheF0AndResetLambda", shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
             Dispatch("XPBI.ResetCollisionLambda", shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
 
-            int totalIterations = GetIterationsForLayer(layer, maxSolveLayer);
-            bool useGs2Layer0 = Const.EnableTwoStageGS2 && layer == 0;
-            int preGsIterations = layer == 0
-                ? (useGs2Layer0 ? Mathf.Min(Const.TwoStagePreGsItersL0, totalIterations) : totalIterations)
-                : Mathf.Min(1, totalIterations);
-            int jrIterations = Mathf.Max(0, totalIterations - preGsIterations);
+            int JRIterations = GetJRIterationsForLayer(layer, maxSolveLayer);
+            int GSIterations = layer == 0 ? Const.GSIterationsL0 : 1;
 
             DTColoring coloring = null;
-            if (preGsIterations > 0) {
+            if (GSIterations > 0) {
                 coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, activeCount, layerKernelH);
                 if (coloring != null) {
+                    if (coloringUpdatedByLayer != null && layer >= 0 && layer < coloringUpdatedByLayer.Length)
+                        coloringUpdatedByLayer[layer] = true;
+
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", coloring.OrderBuffer);
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", coloring.StartsBuffer);
                     asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", coloring.CountsBuffer);
@@ -476,12 +487,11 @@ namespace GPU.Solver {
             }
 
             bool usePersistentCoarseGs =
-                preGsIterations > 0 &&
+                GSIterations > 0 &&
                 coloring != null &&
-                Const.EnablePersistentCoarseGS &&
                 activeCount <= Const.PersistentCoarseMaxNodes;
 
-            int debugIterations = preGsIterations + jrIterations;
+            int debugIterations = GSIterations + JRIterations;
             bool dbg = debugBuffer != null && tickIndex == 0;
             if (dbg && debugIterations > 0) {
                 ClearDebugBuffer(layer, debugIterations);
@@ -489,16 +499,16 @@ namespace GPU.Solver {
                 asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
             }
 
-            // ----- Stage 1: GS solve (full solve unless GS2 is active for layer 0) -----
-            if (preGsIterations > 0 && coloring != null) {
+            // ----- Stage 1: GS solve -----
+            if (GSIterations > 0 && coloring != null) {
                 asyncCb.SetComputeIntParam(shader, "_CollisionEnable", 1);
 
                 if (usePersistentCoarseGs) {
-                    asyncCb.SetComputeIntParam(shader, "_PersistentIters", preGsIterations);
+                    asyncCb.SetComputeIntParam(shader, "_PersistentIters", GSIterations);
                     asyncCb.SetComputeIntParam(shader, "_PersistentBaseDebugIter", 0);
                     Dispatch("XPBI.RelaxColoredPersistentCoarse", shader, kRelaxColoredPersistentCoarse, 1, 1, 1);
                 } else {
-                    for (int iter = 0; iter < preGsIterations; iter++) {
+                    for (int iter = 0; iter < GSIterations; iter++) {
                         if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", iter);
 
                         for (int c = 0; c < 16; c++) {
@@ -511,15 +521,15 @@ namespace GPU.Solver {
                 }
             }
 
-            // ----- Stage 2: JR bulk solve (uncolored) -----
-            if (jrIterations > 0) {
+            // ----- Stage 2: JR solve (uncolored) -----
+            if (JRIterations > 0) {
                 asyncCb.SetComputeIntParam(shader, "_CollisionEnable", 0);
 
-                asyncCb.SetComputeFloatParam(shader, "_JROmegaV", Const.TwoStageJROmegaV);
-                asyncCb.SetComputeFloatParam(shader, "_JROmegaL", Const.TwoStageJROmegaL);
+                asyncCb.SetComputeFloatParam(shader, "_JROmegaV", Const.JROmegaV);
+                asyncCb.SetComputeFloatParam(shader, "_JROmegaL", Const.JROmegaL);
 
-                for (int iter = 0; iter < jrIterations; iter++) {
-                    if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", preGsIterations + iter);
+                for (int iter = 0; iter < JRIterations; iter++) {
+                    if (dbg) asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugIter", GSIterations + iter);
 
                     Dispatch("XPBI.JR.SavePrevAndClear", shader, kJRSavePrevAndClear, Groups256(activeCount), 1, 1);
 
@@ -542,21 +552,14 @@ namespace GPU.Solver {
                 Dispatch("XPBI.CommitDeformation", shader, kCommitDeformation, Groups256(activeCount), 1, 1);
         }
 
-        private int GetIterationsForLayer(int layer, int maxSolveLayer) {
-            int iterations = Const.IterationsLMid;
+        private int GetJRIterationsForLayer(int layer, int maxSolveLayer) {
+            int iterations = Const.JRIterationsLMid;
             if (layer == maxSolveLayer)
-                iterations = Const.IterationsLMax;
+                iterations = Const.JRIterationsLMax;
             if (layer == 0)
-                iterations = Const.IterationsL0;
+                iterations = Const.JRIterationsL0;
 
             return Mathf.Max(1, iterations);
-        }
-
-        private int GetMaxIterationsForSolve(int maxSolveLayer) {
-            int maxIterations = 1;
-            for (int layer = 0; layer <= maxSolveLayer; layer++)
-                maxIterations = Mathf.Max(maxIterations, GetIterationsForLayer(layer, maxSolveLayer));
-            return maxIterations;
         }
 
 
@@ -577,9 +580,10 @@ namespace GPU.Solver {
                 coloring.Init(activeCount, neighborSearch.NeighborCount, seed);
                 coloring.EnqueueInitTriGrid(asyncCb, pos, layerCellSize);
                 neighborSearch.MarkAllDirty(asyncCb);
+                coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.InitColoringConflictRounds);
+            } else {
+                coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.ColoringConflictRounds);
             }
-
-            coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.ColoringConflictRounds);
             coloring.EnqueueRebuildOrderAndArgs(asyncCb);
             return coloring;
         }
