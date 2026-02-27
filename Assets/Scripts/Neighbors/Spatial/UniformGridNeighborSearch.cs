@@ -24,6 +24,8 @@ namespace GPU.Neighbors {
         private int _maxNeighbors;
         private int _capacityN;
         private int _cellCount;
+        private bool _useSupportRadiusFilter;
+        private float _supportRadius2;
 
         public int NeighborCount => _maxNeighbors;
         public ComputeBuffer NeighborsBuffer => _neighbors;
@@ -91,7 +93,7 @@ namespace GPU.Neighbors {
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (realVertexCount <= 0) throw new ArgumentOutOfRangeException(nameof(realVertexCount));
             if (cellSize <= 0f) throw new ArgumentOutOfRangeException(nameof(cellSize));
-            if (supportRadius <= 0) throw new ArgumentOutOfRangeException(nameof(supportRadius));
+            if (supportRadius < 0) throw new ArgumentOutOfRangeException(nameof(supportRadius));
 
             float2 bmin = boundsMin;
             float2 bmax = boundsMax;
@@ -101,6 +103,9 @@ namespace GPU.Neighbors {
             int gridW = math.max(1, (int)math.ceil((bmax.x - bmin.x) / cellSize));
             int gridH = math.max(1, (int)math.ceil((bmax.y - bmin.y) / cellSize));
 
+            _useSupportRadiusFilter = supportRadius > 0f;
+            _supportRadius2 = _useSupportRadiusFilter ? supportRadius * supportRadius : 0f;
+
             EnsureCapacity(realVertexCount, gridW, gridH);
 
             cb.SetComputeIntParam(_shader, "_N", realVertexCount);
@@ -109,7 +114,8 @@ namespace GPU.Neighbors {
             cb.SetComputeIntParam(_shader, "_GridH", gridH);
             cb.SetComputeVectorParam(_shader, "_BoundsMin", new Vector4(bmin.x, bmin.y, 0, 0));
             cb.SetComputeFloatParam(_shader, "_InvCellSize", 1.0f / cellSize);
-            cb.SetComputeFloatParam(_shader, "_SupportRadius2", supportRadius * supportRadius);
+            cb.SetComputeIntParam(_shader, "_UseSupportRadiusFilter", _useSupportRadiusFilter ? 1 : 0);
+            cb.SetComputeFloatParam(_shader, "_SupportRadius2", _supportRadius2);
 
             cb.SetComputeBufferParam(_shader, _kClearHeads, "_CellHeads", _cellHeads);
             cb.SetComputeBufferParam(_shader, _kBuildLists, "_CellHeads", _cellHeads);

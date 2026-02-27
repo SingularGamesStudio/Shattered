@@ -10,8 +10,8 @@ public static class Const {
     // XPBI Solver
     public const int JRIterationsLMax = 2;
     public const int JRIterationsLMid = 4;
-    public const int GSIterationsL0 = 4;
-    public const int JRIterationsL0 = 8;
+    public const int GSIterationsL0 = 20;
+    public const int JRIterationsL0 = 0;
     public const float JROmegaV = 0.3f;
     public const float JROmegaL = 0.3f;
     public const int PersistentCoarseMaxNodes = 256;
@@ -43,5 +43,8 @@ public static class Const {
     // Durability tether (unilateral max-distance inequality)
     public const float DurabilityCompliance = 0.8f;
     public const float DurabilityMaxDistanceRatio = 0.8f;
+
+    // Optional deep-debug probe; when enabled it forces per-batch fence waits + readback.
+    public const bool ProlongationConstraintDebugEnabled = false;
 
 }

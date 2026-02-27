@@ -16,6 +16,7 @@ int _MaxNeighbors;
 int _GridW, _GridH;
 float4 _BoundsMin;        // xy used
 float _InvCellSize;
+int _UseSupportRadiusFilter;
 float _SupportRadius2;
 
 int ClampCellX(int x) { return clamp(x, 0, _GridW - 1); }
@@ -70,23 +71,51 @@ void BuildNeighbors(uint3 id : SV_DispatchThreadID) {
 
     int outBase = (int)i * _MaxNeighbors;
     int count = 0;
+    float farthestD2 = -1.0;
+    int farthestSlot = -1;
 
     // Adjacent grid cells in 2D (3x3), distance test uses k=2r. [web:9]
     [unroll]
     for (int oy = -1; oy <= 1; oy++) {
         [unroll]
         for (int ox = -1; ox <= 1; ox++) {
-            int2 c = int2(ClampCellX(ci.x + ox), ClampCellY(ci.y + oy));
+            int cx = ci.x + ox;
+            int cy = ci.y + oy;
+            if (cx < 0 || cx >= _GridW || cy < 0 || cy >= _GridH) continue;
+            int2 c = int2(cx, cy);
             int head = _CellHeads[CellToIndex(c)];
 
             int j = head;
             while (j != -1) {
                 if (j != (int)i) {
                     float2 d = _Positions[j] - pi;
-                    if (dot(d, d) <= _SupportRadius2) {
+                    float d2 = dot(d, d);
+                    if (_UseSupportRadiusFilter != 0 && d2 > _SupportRadius2) { j = _Next[j]; continue; }
+
+                    bool dup = false;
+                    [loop]
+                    for (int k = 0; k < count; k++) {
+                        if (_Neighbors[outBase + k] == j) { dup = true; break; }
+                    }
+                    if (dup) { j = _Next[j]; continue; }
+
+                    if (count < _MaxNeighbors) {
                         _Neighbors[outBase + count] = j;
+                        if (d2 > farthestD2) { farthestD2 = d2; farthestSlot = count; }
                         count++;
-                        if (count >= _MaxNeighbors) { _Counts[i] = count; return; }
+                        } else if (farthestSlot >= 0 && d2 < farthestD2) {
+                        _Neighbors[outBase + farthestSlot] = j;
+
+                        farthestD2 = -1.0;
+                        farthestSlot = -1;
+                        [loop]
+                        for (int k = 0; k < _MaxNeighbors; k++) {
+                            int nk = _Neighbors[outBase + k];
+                            if (nk < 0) continue;
+                            float2 dk = _Positions[nk] - pi;
+                            float dk2 = dot(dk, dk);
+                            if (dk2 > farthestD2) { farthestD2 = dk2; farthestSlot = k; }
+                        }
                     }
                 }
                 j = _Next[j];

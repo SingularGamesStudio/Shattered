@@ -354,8 +354,15 @@ public sealed class SimulationController : MonoBehaviour {
 
         float2 neighborBoundsMin = default;
         float2 neighborBoundsMax = default;
-        if (useUniformGridSearch && !TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax))
-            return false;
+        if (useUniformGridSearch) {
+            float boundsPadding = 0f;
+            if (globalDTHierarchy != null &&
+                globalDTHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH))
+                boundsPadding = Mathf.Max(1e-5f, Const.WendlandSupport * layerKernelH);
+
+            if (!TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax, boundsPadding))
+                return false;
+        }
 
         bool useHierarchicalThisBatch = useHierarchicalSolver && !useUniformGridSearch;
 
@@ -448,7 +455,7 @@ public sealed class SimulationController : MonoBehaviour {
         globalHierarchyDirty = false;
     }
 
-    bool TryComputeBatchBounds(List<Meshless> activeMeshes, out float2 boundsMin, out float2 boundsMax) {
+    bool TryComputeBatchBounds(List<Meshless> activeMeshes, out float2 boundsMin, out float2 boundsMax, float padding = 0f) {
         boundsMin = new float2(float.PositiveInfinity, float.PositiveInfinity);
         boundsMax = new float2(float.NegativeInfinity, float.NegativeInfinity);
 
@@ -477,6 +484,11 @@ public sealed class SimulationController : MonoBehaviour {
         if (ext.y <= 1e-5f) {
             boundsMin.y -= 0.5f;
             boundsMax.y += 0.5f;
+        }
+
+        if (padding > 0f) {
+            boundsMin -= new float2(padding, padding);
+            boundsMax += new float2(padding, padding);
         }
 
         return true;

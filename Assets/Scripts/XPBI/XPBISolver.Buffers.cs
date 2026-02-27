@@ -45,6 +45,8 @@ namespace GPU.Solver {
         private ComputeBuffer restrictedDeltaVCount;
         private ComputeBuffer restrictedDeltaVAvg;
         private ComputeBuffer convergenceDebug;
+        private ComputeBuffer convergenceDebugFallback;
+        private ComputeBuffer prolongationConstraintDebug;
         private readonly Dictionary<int, ComputeBuffer> globalLayerNodeMapBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, ComputeBuffer> globalLayerGlobalToLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, ComputeBuffer> globalLayerOwnerByLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
@@ -75,6 +77,7 @@ namespace GPU.Solver {
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
         private uint[] convergenceDebugCpu;
+        private uint[] prolongationConstraintDebugCpu;
 
         // Capacity and event counts.
         private int capacity;
@@ -83,6 +86,8 @@ namespace GPU.Solver {
         private int convergenceDebugRequiredUInts;
         private int convergenceDebugMaxIter;
         private int convergenceDebugLayers;
+        private int convergenceDebugTicks;
+        private int prolongationConstraintDebugEntries;
 
         private void InitializeFromMeshless(System.Collections.Generic.List<MeshRange> ranges, int totalCount) {
             EnsureCapacity(totalCount);
@@ -187,17 +192,22 @@ namespace GPU.Solver {
             defaultDtOwnerByLocal = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
             defaultDtOwnerByLocal.SetData(new[] { -1 });
 
+            convergenceDebugFallback = new ComputeBuffer(ConvergenceDebugIterBufSize, sizeof(uint), ComputeBufferType.Structured);
+            convergenceDebugFallback.SetData(new uint[ConvergenceDebugIterBufSize]);
+
             initializedCount = -1;
         }
 
-        private void EnsureConvergenceDebugCapacity(int layers, int maxIter) {
-            int requiredUInts = layers * maxIter * ConvergenceDebugIterBufSize;
+        private void EnsureConvergenceDebugCapacity(int layers, int maxIter, int ticks) {
+            int safeTicks = math.max(1, ticks);
+            int requiredUInts = safeTicks * layers * maxIter * ConvergenceDebugIterBufSize;
 
             if (convergenceDebug != null &&
                 convergenceDebug.IsValid() &&
                 convergenceDebug.count == requiredUInts &&
                 convergenceDebugMaxIter == maxIter &&
                 convergenceDebugLayers == layers &&
+                convergenceDebugTicks == safeTicks &&
                 convergenceDebugCpu != null &&
                 convergenceDebugCpu.Length == requiredUInts)
                 return;
@@ -209,7 +219,27 @@ namespace GPU.Solver {
             convergenceDebugRequiredUInts = requiredUInts;
             convergenceDebugMaxIter = maxIter;
             convergenceDebugLayers = layers;
+            convergenceDebugTicks = safeTicks;
             return;
+        }
+
+        private void EnsureProlongationConstraintDebugCapacity(int entryCount) {
+            int safeEntries = math.max(1, entryCount);
+            int requiredUInts = safeEntries * ConvergenceDebugIterBufSize;
+
+            if (prolongationConstraintDebug != null &&
+                prolongationConstraintDebug.IsValid() &&
+                prolongationConstraintDebugEntries == safeEntries &&
+                prolongationConstraintDebug.count == requiredUInts &&
+                prolongationConstraintDebugCpu != null &&
+                prolongationConstraintDebugCpu.Length == requiredUInts)
+                return;
+
+            prolongationConstraintDebug?.Dispose();
+
+            prolongationConstraintDebug = new ComputeBuffer(requiredUInts, sizeof(uint), ComputeBufferType.Structured);
+            prolongationConstraintDebugCpu = new uint[requiredUInts];
+            prolongationConstraintDebugEntries = safeEntries;
         }
 
         void EnsureForceEventCapacity(int n) {
@@ -470,6 +500,12 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
             asyncCb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
             asyncCb.SetComputeIntParam(shader, "_CollisionEventCapacity", collisionEvents != null ? collisionEvents.count : 0);
+
+            ComputeBuffer convergenceDebugBinding = convergenceDebug ?? prolongationConstraintDebug ?? convergenceDebugFallback;
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebugBinding);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ConvergenceDebug", convergenceDebugBinding);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ConvergenceDebug", convergenceDebugBinding);
+            asyncCb.SetComputeBufferParam(shader, kClearConvergenceDebugStats, "_ConvergenceDebug", convergenceDebugBinding);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
@@ -755,6 +791,8 @@ namespace GPU.Solver {
             restrictedDeltaVCount?.Dispose(); restrictedDeltaVCount = null;
             restrictedDeltaVAvg?.Dispose(); restrictedDeltaVAvg = null;
             convergenceDebug?.Dispose(); convergenceDebug = null;
+            convergenceDebugFallback?.Dispose(); convergenceDebugFallback = null;
+            prolongationConstraintDebug?.Dispose(); prolongationConstraintDebug = null;
 
             foreach (var kv in globalLayerNodeMapBuffers)
                 kv.Value?.Dispose();

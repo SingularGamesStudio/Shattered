@@ -157,8 +157,10 @@ namespace GPU.Solver {
             bool useOverrideLayer0NeighborSearch = layer0NeighborSearch != null;
             if (useOverrideLayer0NeighborSearch) {
                 useHierarchical = false;
-                maxSolveLayer = 0;
             }
+
+            if (!useHierarchical)
+                maxSolveLayer = 0;
 
             EnsureCapacity(totalCount);
 
@@ -166,8 +168,20 @@ namespace GPU.Solver {
                 InitializeFromMeshless((System.Collections.Generic.List<MeshRange>)solveRanges, totalCount);
 
             EnsureAsyncCommandBufferForRecording();
-            EnsureConvergenceDebugCapacity(maxSolveLayer + 1, Const.JRIterationsL0 + Const.GSIterationsL0);
-            bool[] coloringUpdatedByLayer = ConvergenceDebugEnabled ? new bool[maxSolveLayer + 1] : null;
+            int convergenceDebugMaxLayer = useHierarchical ? maxSolveLayer : 0;
+            int convergenceDebugLayerCount = convergenceDebugMaxLayer + 1;
+            EnsureConvergenceDebugCapacity(convergenceDebugLayerCount, Const.JRIterationsL0 + Const.GSIterationsL0, tickCount);
+            bool enableProlongationConstraintProbeDebug = Const.ProlongationConstraintDebugEnabled;
+            int maxProlongationProbeSamples = enableProlongationConstraintProbeDebug && useHierarchical
+                ? Mathf.Max(0, tickCount * Mathf.Max(0, maxSolveLayer) * 2)
+                : 0;
+            if (enableProlongationConstraintProbeDebug && maxProlongationProbeSamples > 0)
+                EnsureProlongationConstraintDebugCapacity(maxProlongationProbeSamples);
+            bool[] coloringUpdatedByLayer = ConvergenceDebugEnabled ? new bool[convergenceDebugLayerCount] : null;
+            List<ProlongationConstraintProbe> prolongationConstraintProbes = maxProlongationProbeSamples > 0
+                ? new List<ProlongationConstraintProbe>(Mathf.Max(1, maxProlongationProbeSamples / 2))
+                : null;
+            int prolongationProbeCursor = 0;
             int fixedObjectSignature = ComputeFixedObjectSignature();
 
             for (int tick = 0; tick < tickCount; tick++) {
@@ -304,6 +318,49 @@ namespace GPU.Solver {
                     if (ownerBodyByLocal != null && ownerBodyByLocal.Length >= globalActiveCount)
                         ownerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(layer, ownerBodyByLocal, globalActiveCount);
 
+                    int prolongationPreProbeEntry = -1;
+                    bool hasProlongationTargetProbe = false;
+                    INeighborSearch targetNeighborSearch = null;
+                    int targetExecActiveCount = 0;
+                    int targetExecFineCount = 0;
+                    float targetLayerKernelH = 0f;
+                    bool targetUseMappedIndices = false;
+                    ComputeBuffer targetGlobalNodeMap = null;
+                    ComputeBuffer targetGlobalToLocalMap = null;
+                    ComputeBuffer targetOwnerByLocalBuffer = null;
+
+                    if (enableProlongationConstraintProbeDebug &&
+                        layer > 0 &&
+                        prolongationConstraintProbes != null &&
+                        prolongationConstraintDebug != null &&
+                        prolongationProbeCursor + 1 < prolongationConstraintDebugEntries) {
+                        int targetLayer = layer - 1;
+                        if (globalDTHierarchy.TryGetLayerDt(targetLayer, out DT targetDt) && targetDt != null) {
+                            targetNeighborSearch = useOverrideLayer0NeighborSearch && targetLayer == 0
+                                ? layer0NeighborSearch
+                                : targetDt;
+
+                            if (targetNeighborSearch != null &&
+                                globalDTHierarchy.TryGetLayerMappings(targetLayer, out int[] targetOwnerBodyByLocal, out _, out int[] targetGlobalFineNodeByLocal, out int targetGlobalActiveCount, out int targetGlobalFineCount) &&
+                                globalDTHierarchy.TryGetLayerExecutionContext(targetLayer, out targetExecActiveCount, out targetExecFineCount, out targetLayerKernelH) &&
+                                targetExecActiveCount >= 3) {
+                                targetUseMappedIndices = !IsIdentityMapping(targetGlobalFineNodeByLocal, targetGlobalFineCount);
+                                if (targetUseMappedIndices) {
+                                    targetGlobalNodeMap = EnsureGlobalLayerNodeMapBuffer(targetLayer, targetGlobalFineNodeByLocal, targetGlobalFineCount);
+                                    targetGlobalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(targetLayer, targetGlobalFineNodeByLocal, targetGlobalFineCount, totalCount);
+                                }
+
+                                if (targetOwnerBodyByLocal != null && targetOwnerBodyByLocal.Length >= targetGlobalActiveCount)
+                                    targetOwnerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(targetLayer, targetOwnerBodyByLocal, targetGlobalActiveCount);
+
+                                prolongationPreProbeEntry = prolongationProbeCursor++;
+                                PrepareRelaxBuffers(targetNeighborSearch, 0, targetExecActiveCount, targetExecFineCount, tick, targetLayerKernelH, targetUseMappedIndices, 0, targetGlobalNodeMap, targetGlobalToLocalMap, targetOwnerByLocalBuffer);
+                                CaptureCurrentConstraintErrorSample(prolongationPreProbeEntry, targetExecActiveCount, targetExecActiveCount, targetOwnerByLocalBuffer != null);
+                                hasProlongationTargetProbe = true;
+                            }
+                        }
+                    }
+
                     ProcessGlobalLayer(
                         layer,
                         layerNeighborSearch,
@@ -320,8 +377,17 @@ namespace GPU.Solver {
                         globalNodeMap,
                         globalToLocalMap,
                         ownerByLocalBuffer,
+                        prolongationConstraintProbes,
+                        ref prolongationProbeCursor,
                         coloringUpdatedByLayer
                     );
+
+                    if (hasProlongationTargetProbe) {
+                        int prolongationPostProbeEntry = prolongationProbeCursor++;
+                        PrepareRelaxBuffers(targetNeighborSearch, 0, targetExecActiveCount, targetExecFineCount, tick, targetLayerKernelH, targetUseMappedIndices, 0, targetGlobalNodeMap, targetGlobalToLocalMap, targetOwnerByLocalBuffer);
+                        CaptureCurrentConstraintErrorSample(prolongationPostProbeEntry, targetExecActiveCount, targetExecActiveCount, targetOwnerByLocalBuffer != null);
+                        prolongationConstraintProbes.Add(new ProlongationConstraintProbe(tick, layer, prolongationPreProbeEntry, prolongationPostProbeEntry));
+                    }
                 }
 
                 asyncCb.SetComputeIntParam(shader, "_Base", 0);
@@ -356,9 +422,11 @@ namespace GPU.Solver {
                             layerSupportRadius = Mathf.Max(1e-5f, Const.WendlandSupport * dtLayerKernelH);
 
                         float normalizedLayerSupportRadius = Mathf.Max(1e-8f, layerSupportRadius * globalDTHierarchy.NormInvHalfExtent);
+                        float normalizedLayerCellSize = normalizedLayerSupportRadius;
+                        float normalizedLayerNeighborSupportRadius = normalizedLayerSupportRadius;
 
                         dtLayer.EnqueueBuild(asyncCb, dtLayer.GetPositionsBuffer(writeSlot),
-                            activeCount, normalizedLayerSupportRadius, normalizedLayerSupportRadius, float2.zero, float2.zero,
+                            activeCount, normalizedLayerCellSize, normalizedLayerNeighborSupportRadius, float2.zero, float2.zero,
                             readSlot, writeSlot, Const.DTFixIterations, Const.DTLegalizeIterations);
                     }
                 }
@@ -369,17 +437,33 @@ namespace GPU.Solver {
 
             Graphics.ExecuteCommandBufferAsync(asyncCb, queueType);
 
+            bool hasProlongationProbeData = enableProlongationConstraintProbeDebug && prolongationConstraintProbes != null && prolongationConstraintProbes.Count > 0;
+            if (hasProlongationProbeData)
+                Graphics.WaitOnAsyncGraphicsFence(fence);
+
+            if (hasProlongationProbeData && prolongationConstraintDebug != null) {
+                var capturedProbes = new List<ProlongationConstraintProbe>(prolongationConstraintProbes);
+                AsyncGPUReadback.Request(prolongationConstraintDebug, req => {
+                    if (req.hasError) return;
+                    var data = req.GetData<uint>();
+                    LogProlongationConstraintStatsFromData(data.ToArray(), capturedProbes);
+                });
+            }
+
             if (ConvergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
                 Graphics.WaitOnAsyncGraphicsFence(fence);
 
-                int dbgMaxLayer = maxSolveLayer;
+                int dbgMaxLayer = convergenceDebugMaxLayer;
                 int dbgMaxIter = convergenceDebugMaxIter;
+                int dbgTickCount = tickCount;
+                int dbgBaseStep = convergenceDebugStepCursor;
                 coloringUpdatedByLayerForDebugLog = coloringUpdatedByLayer;
+                convergenceDebugStepCursor += tickCount;
 
                 AsyncGPUReadback.Request(convergenceDebug, req => {
                     if (req.hasError) return;
                     var data = req.GetData<uint>();
-                    LogConvergenceStatsFromData(data.ToArray(), dbgMaxLayer, dbgMaxIter);
+                    LogConvergenceStatsFromData(data.ToArray(), dbgMaxLayer, dbgMaxIter, dbgTickCount, dbgBaseStep);
                 });
 
                 RequestColoringConflictHistoryDebugLog(dbgMaxLayer);
@@ -514,6 +598,8 @@ namespace GPU.Solver {
             ComputeBuffer dtGlobalNodeMap,
             ComputeBuffer dtGlobalToLayerLocalMap,
             ComputeBuffer dtOwnerByLocal,
+            List<ProlongationConstraintProbe> prolongationConstraintProbes,
+            ref int prolongationProbeCursor,
             bool[] coloringUpdatedByLayer
         ) {
             PrepareRelaxBuffers(neighborSearch, 0, activeCount, fineCount, tickIndex, layerKernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
@@ -589,9 +675,9 @@ namespace GPU.Solver {
                 activeCount <= Const.PersistentCoarseMaxNodes;
 
             int debugIterations = GSIterations + JRIterations;
-            bool dbg = debugBuffer != null && tickIndex == 0;
+            bool dbg = debugBuffer != null && layer == 0;
             if (dbg && debugIterations > 0) {
-                ClearDebugBuffer(layer, debugIterations);
+                ClearDebugBuffer(layer, debugIterations, tickIndex);
             } else {
                 asyncCb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
             }

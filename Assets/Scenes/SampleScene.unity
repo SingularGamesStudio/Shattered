@@ -158,14 +158,14 @@ MonoBehaviour:
   manual: 0
   showTpsOverlay: 1
   ConvergenceDebugEnabled: 1
-  useHierarchicalSolver: 1
+  useHierarchicalSolver: 0
   neighborSearchMode: 0
   gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
   asyncQueue: 2
-  maxTicksPerBatch: 8
+  maxTicksPerBatch: 4
   enableContinuousCpuReadback: 0
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
@@ -357,14 +357,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 1
+  scenario: 5
   generateOnStart: 1
-  pointCount: 10000
+  pointCount: 5000
   maxLayer: 2
   layerRatio: 0.12
   radiusScale: 0.85
   hangCenter: {x: 0, y: 0}
   hangSize: {x: 3.4, y: 2.2}
+  hangFixedCornerWidthFraction: 0.12
+  hangFixedCornerHeightFraction: 0.18
   addBigForcePulse: 0
   windCenter: {x: 0, y: 0}
   windSize: {x: 2.8, y: 2}
@@ -379,12 +381,12 @@ MonoBehaviour:
   obstaclePointCount: 1000
   obstaclePointJitterFraction: 0.2
   obstacleClusterCenter: {x: 0, y: 0.3}
-  obstacleClusterHalfSpread: {x: 1.1, y: 0.55}
+  obstacleClusterHalfSpread: {x: 1.5, y: 1}
   obstacleBaseSize: {x: 0.45, y: 0.45}
   obstacleSizeJitter: {x: 0.2, y: 0.12}
   obstacleMaxRotationDeg: 35
   obstacleSeed: 7
-  addFloorPlane: 1
+  addFloorPlane: 0
   floorCenter: {x: 0, y: -2.2}
   floorSize: {x: 8, y: 1.2}
   floorPointCount: 10000
