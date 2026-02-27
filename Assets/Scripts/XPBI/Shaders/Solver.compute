@@ -8,6 +8,10 @@
 #pragma kernel SaveVelPrefix
 #pragma kernel ClearVelDelta
 #pragma kernel ResetCollisionLambda
+#pragma kernel ClearCollisionEventCount
+#pragma kernel BuildCollisionEventsL0
+#pragma kernel ClearTransferredCollision
+#pragma kernel RestrictCollisionEventsToActivePairs
 #pragma kernel Prolongate
 #pragma kernel CommitDeformation
 #pragma kernel ExternalForces

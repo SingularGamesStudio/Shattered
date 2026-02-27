@@ -32,6 +32,23 @@
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
     RWStructuredBuffer<float> _CollisionLambda;
 
+    struct XPBI_CollisionEvent
+    {
+        uint aGi;
+        uint bGi;
+        float4 nPen;
+    };
+
+    RWStructuredBuffer<XPBI_CollisionEvent> _CollisionEvents;
+    RWStructuredBuffer<uint> _CollisionEventCount;
+    uint _CollisionEventCapacity;
+
+    RWStructuredBuffer<uint> _XferColCount;
+    RWStructuredBuffer<uint> _XferColNXBits;
+    RWStructuredBuffer<uint> _XferColNYBits;
+    RWStructuredBuffer<uint> _XferColPenBits;
+    uint _UseTransferredCollisions;
+
     // Velocity delta accumulation
     RWStructuredBuffer<float2> _SavedVelPrefix;
     RWStructuredBuffer<uint> _VelDeltaBits;

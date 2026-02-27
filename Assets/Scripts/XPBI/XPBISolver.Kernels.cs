@@ -11,6 +11,10 @@ namespace GPU.Solver {
         private int kSaveVelPrefix;
         private int kClearVelDelta;
         private int kResetCollisionLambda;
+        private int kClearCollisionEventCount;
+        private int kBuildCollisionEventsL0;
+        private int kClearTransferredCollision;
+        private int kRestrictCollisionEventsToActivePairs;
         private int kRelaxColored;
         private int kRelaxColoredPersistentCoarse;
         private int kJRSavePrevAndClear;
@@ -47,6 +51,10 @@ namespace GPU.Solver {
             kSaveVelPrefix = shader.FindKernel("SaveVelPrefix");
             kClearVelDelta = shader.FindKernel("ClearVelDelta");
             kResetCollisionLambda = shader.FindKernel("ResetCollisionLambda");
+            kClearCollisionEventCount = shader.FindKernel("ClearCollisionEventCount");
+            kBuildCollisionEventsL0 = shader.FindKernel("BuildCollisionEventsL0");
+            kClearTransferredCollision = shader.FindKernel("ClearTransferredCollision");
+            kRestrictCollisionEventsToActivePairs = shader.FindKernel("RestrictCollisionEventsToActivePairs");
             kRelaxColored = shader.FindKernel("RelaxColored");
             kRelaxColoredPersistentCoarse = shader.FindKernel("RelaxColoredPersistentCoarse");
             kJRSavePrevAndClear = shader.FindKernel("JR_SavePrevAndClear");

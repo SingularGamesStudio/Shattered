@@ -208,6 +208,47 @@ namespace GPU.Solver {
                     }
                 }
 
+                INeighborSearch layer0NeighborForCollision = null;
+                int layer0ActiveForCollision = 0;
+                int layer0FineForCollision = 0;
+                float layer0KernelForCollision = 0f;
+                bool layer0UseMappedForCollision = false;
+                ComputeBuffer layer0NodeMapForCollision = null;
+                ComputeBuffer layer0GlobalToLocalForCollision = null;
+                ComputeBuffer layer0OwnerByLocalForCollision = null;
+
+                if (globalDTHierarchy.TryGetLayerDt(0, out DT layer0DtForCollision) && layer0DtForCollision != null) {
+                    layer0NeighborForCollision = useOverrideLayer0NeighborSearch ? layer0NeighborSearch : layer0DtForCollision;
+                    if (layer0NeighborForCollision != null &&
+                        globalDTHierarchy.TryGetLayerMappings(0, out int[] ownerBodyByLocalLayer0, out _, out int[] globalFineNodeByLocalLayer0, out int globalActiveCountLayer0, out int globalFineCountLayer0) &&
+                        globalDTHierarchy.TryGetLayerExecutionContext(0, out int execActiveCountLayer0, out int execFineCountLayer0, out float layerKernelHLayer0)) {
+                        layer0ActiveForCollision = execActiveCountLayer0;
+                        layer0FineForCollision = execFineCountLayer0;
+                        layer0KernelForCollision = layerKernelHLayer0;
+
+                        layer0UseMappedForCollision = !IsIdentityMapping(globalFineNodeByLocalLayer0, globalFineCountLayer0);
+                        if (layer0UseMappedForCollision) {
+                            layer0NodeMapForCollision = EnsureGlobalLayerNodeMapBuffer(0, globalFineNodeByLocalLayer0, globalFineCountLayer0);
+                            layer0GlobalToLocalForCollision = EnsureGlobalLayerGlobalToLocalBufferCached(0, globalFineNodeByLocalLayer0, globalFineCountLayer0, totalCount);
+                        }
+
+                        if (ownerBodyByLocalLayer0 != null && ownerBodyByLocalLayer0.Length >= globalActiveCountLayer0)
+                            layer0OwnerByLocalForCollision = EnsureGlobalLayerOwnerByLocalBuffer(0, ownerBodyByLocalLayer0, globalActiveCountLayer0);
+                    }
+                }
+
+                BuildLayer0CollisionEventsPerTick(
+                    layer0NeighborForCollision,
+                    layer0ActiveForCollision,
+                    layer0FineForCollision,
+                    layer0KernelForCollision,
+                    tick,
+                    layer0UseMappedForCollision,
+                    layer0NodeMapForCollision,
+                    layer0GlobalToLocalForCollision,
+                    layer0OwnerByLocalForCollision
+                );
+
                 for (int layer = maxSolveLayer; layer >= 0; layer--) {
                     if (!globalDTHierarchy.TryGetLayerDt(layer, out DT globalLayerDt) || globalLayerDt == null)
                         continue;
@@ -409,6 +450,26 @@ namespace GPU.Solver {
             Dispatch("XPBI.ExternalForces", shader, kExternalForces, Groups256(total), 1, 1);
         }
 
+        private void BuildLayer0CollisionEventsPerTick(
+            INeighborSearch layer0NeighborSearch,
+            int layer0ActiveCount,
+            int layer0FineCount,
+            float layer0KernelH,
+            int tickIndex,
+            bool useDtGlobalNodeMap,
+            ComputeBuffer dtGlobalNodeMap,
+            ComputeBuffer dtGlobalToLayerLocalMap,
+            ComputeBuffer dtOwnerByLocal
+        ) {
+            if (layer0NeighborSearch == null || layer0ActiveCount < 3)
+                return;
+
+            PrepareRelaxBuffers(layer0NeighborSearch, 0, layer0ActiveCount, layer0FineCount, tickIndex, layer0KernelH, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap, dtOwnerByLocal);
+            asyncCb.SetComputeIntParam(shader, "_UseTransferredCollisions", 0);
+            Dispatch("XPBI.ClearCollisionEventCount", shader, kClearCollisionEventCount, 1, 1, 1);
+            Dispatch("XPBI.BuildCollisionEventsL0", shader, kBuildCollisionEventsL0, Groups256(layer0ActiveCount), 1, 1);
+        }
+
 
         private void ProcessGlobalLayer(
             int layer,
@@ -466,6 +527,13 @@ namespace GPU.Solver {
             Dispatch("XPBI.ComputeCorrectionL", shader, kComputeCorrectionL, Groups256(activeCount), 1, 1);
             Dispatch("XPBI.CacheF0AndResetLambda", shader, kCacheF0AndResetLambda, Groups256(activeCount), 1, 1);
             Dispatch("XPBI.ResetCollisionLambda", shader, kResetCollisionLambda, Groups256(activeCount), 1, 1);
+
+            bool useTransferredCollisions = layer > 0;
+            asyncCb.SetComputeIntParam(shader, "_UseTransferredCollisions", useTransferredCollisions ? 1 : 0);
+            if (useTransferredCollisions) {
+                Dispatch("XPBI.ClearTransferredCollision", shader, kClearTransferredCollision, Groups256(activeCount), 1, 1);
+                Dispatch("XPBI.RestrictCollisionEventsToActivePairs", shader, kRestrictCollisionEventsToActivePairs, Groups256(collisionEvents != null ? collisionEvents.count : 0), 1, 1);
+            }
 
             int JRIterations = GetJRIterationsForLayer(layer, maxSolveLayer);
             int GSIterations = layer == 0 ? Const.GSIterationsL0 : 1;

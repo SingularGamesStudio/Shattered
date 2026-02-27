@@ -165,7 +165,7 @@ MonoBehaviour:
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
   asyncQueue: 2
-  maxTicksPerBatch: 32
+  maxTicksPerBatch: 8
   enableContinuousCpuReadback: 0
   cpuReadbackInterval: 0.02
 --- !u!4 &86236646
@@ -324,7 +324,6 @@ MonoBehaviour:
   wireframeCycleKey: 119
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
-  sdfEveryNFrames: 3
 --- !u!1 &961765555
 GameObject:
   m_ObjectHideFlags: 0
@@ -362,7 +361,7 @@ MonoBehaviour:
   size:
     x: 3
     y: 3
-  pointCount: 10000
+  pointCount: 1000
   generateOnStart: 1
   defaultAnchorMode: 1
   seed: 1
@@ -416,7 +415,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 2
   generateOnStart: 1
-  pointCount: 10000
+  pointCount: 1000
   maxLayer: 2
   layerRatio: 0.12
   radiusScale: 0.85

@@ -23,6 +23,12 @@ namespace GPU.Solver {
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
         private ComputeBuffer collisionLambda;
+        private ComputeBuffer collisionEvents;
+        private ComputeBuffer collisionEventCount;
+        private ComputeBuffer xferColCount;
+        private ComputeBuffer xferColNXBits;
+        private ComputeBuffer xferColNYBits;
+        private ComputeBuffer xferColPenBits;
         private ComputeBuffer savedVelPrefix;
         private ComputeBuffer velDeltaBits;
         private ComputeBuffer velPrev;
@@ -138,6 +144,12 @@ namespace GPU.Solver {
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             collisionLambda = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
+            collisionEvents = new ComputeBuffer(math.max(1024, capacity * Const.NeighborCount), sizeof(uint) * 2 + sizeof(float) * 4, ComputeBufferType.Structured);
+            collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            xferColCount = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
+            xferColNXBits = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
+            xferColNYBits = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
+            xferColPenBits = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
 
             savedVelPrefix = new ComputeBuffer(capacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(capacity * 2, sizeof(uint), ComputeBufferType.Structured);
@@ -227,7 +239,6 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_CollisionFriction", Const.CollisionFriction);
             asyncCb.SetComputeFloatParam(shader, "_CollisionRestitution", Const.CollisionRestitution);
             asyncCb.SetComputeFloatParam(shader, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
-            asyncCb.SetComputeIntParam(shader, "_CollisionEnable", Const.EnableCollisionConstraints ? 1 : 0);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
@@ -454,6 +465,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeIntParam(shader, "_PhysicalParamCount", physicalParamCount);
             asyncCb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
             asyncCb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
+            asyncCb.SetComputeIntParam(shader, "_CollisionEventCapacity", collisionEvents != null ? collisionEvents.count : 0);
 
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kClearHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
@@ -480,6 +492,26 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kResetCollisionLambda, "_CollisionLambda", collisionLambda);
+            asyncCb.SetComputeBufferParam(shader, kClearCollisionEventCount, "_CollisionEventCount", collisionEventCount);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_Pos", pos);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEvents", collisionEvents);
+            asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEventCount", collisionEventCount);
+            asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColCount", xferColCount);
+            asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNXBits", xferColNXBits);
+            asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
+            asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_CollisionEvents", collisionEvents);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_CollisionEventCount", collisionEventCount);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColCount", xferColCount);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNXBits", xferColNXBits);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNYBits", xferColNYBits);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColPenBits", xferColPenBits);
             asyncCb.SetComputeBufferParam(shader, kSaveVelPrefix, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kSaveVelPrefix, "_SavedVelPrefix", savedVelPrefix);
             asyncCb.SetComputeBufferParam(shader, kClearVelDelta, "_VelDeltaBits", velDeltaBits);
@@ -496,6 +528,10 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColCount", xferColCount);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNXBits", xferColNXBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNYBits", xferColNYBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColPenBits", xferColPenBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_MaterialIds", materialIds);
@@ -509,6 +545,10 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColCount", xferColCount);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNXBits", xferColNXBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNYBits", xferColNYBits);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColPenBits", xferColPenBits);
 
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
@@ -546,6 +586,9 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(kSaveVelPrefix, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kClearVelDelta, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kResetCollisionLambda, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kBuildCollisionEventsL0, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kClearTransferredCollision, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(kRestrictCollisionEventsToActivePairs, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kClearRestrictedDeltaV, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kRestrictGameplayDeltaVFromEvents, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(kRestrictFineVelocityResidualToActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
@@ -674,6 +717,12 @@ namespace GPU.Solver {
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
             collisionLambda?.Dispose(); collisionLambda = null;
+            collisionEvents?.Dispose(); collisionEvents = null;
+            collisionEventCount?.Dispose(); collisionEventCount = null;
+            xferColCount?.Dispose(); xferColCount = null;
+            xferColNXBits?.Dispose(); xferColNXBits = null;
+            xferColNYBits?.Dispose(); xferColNYBits = null;
+            xferColPenBits?.Dispose(); xferColPenBits = null;
 
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;

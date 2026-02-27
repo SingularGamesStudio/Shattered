@@ -365,6 +365,189 @@
         }
     }
 
+    [numthreads(1, 1, 1)] void ClearCollisionEventCount(uint3 id : SV_DispatchThreadID)
+    {
+        _CollisionEventCount[0] = 0u;
+    }
+
+    [numthreads(256, 1, 1)] void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint gi = ~0u;
+        gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
+        return;
+
+        int ownerI = _DtOwnerByLocal[li];
+        if (ownerI < 0)
+        return;
+
+        float support = 0.0;
+        support = WendlandSupportRadius(max(_LayerKernelH, 1e-4));
+        if (support <= EPS)
+        return;
+
+        float targetSep = max(EPS, _CollisionSupportScale * support);
+        float targetSepSq = targetSep * targetSep;
+
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+        uint baseIdx = dtLi * _DtNeighborCount;
+
+        uint rawCount = _DtNeighborCounts[dtLi];
+        uint nCount = min(rawCount, _DtNeighborCount);
+        nCount = min(nCount, targetNeighborCount);
+
+        float2 xi = _Pos[gi];
+
+        [loop] for (uint k = 0u; k < nCount; k++)
+        {
+            uint gjLi = _DtNeighbors[baseIdx + k];
+            if (gjLi == ~0u || gjLi >= _ActiveCount)
+            continue;
+
+            int ownerJ = _DtOwnerByLocal[gjLi];
+            if (ownerJ < 0 || ownerJ == ownerI)
+            continue;
+
+            uint gj = ~0u;
+            gj = GlobalIndexFromLocal(gjLi);
+            if (gj == ~0u || gj <= gi)
+            continue;
+
+            float2 xj = _Pos[gj];
+            float2 dx = xj - xi;
+            float distSq = dot(dx, dx);
+            if (distSq <= EPS * EPS || distSq > targetSepSq)
+            continue;
+
+            float dist = sqrt(distSq);
+            float Cn = dist - targetSep;
+            if (Cn >= 0.0)
+            continue;
+
+            float2 nrm = dx / max(dist, EPS);
+            float pen = -Cn;
+
+            uint idx = 0u;
+            InterlockedAdd(_CollisionEventCount[0], 1u, idx);
+            if (idx >= _CollisionEventCapacity)
+            return;
+
+            XPBI_CollisionEvent e;
+            e.aGi = gi;
+            e.bGi = gj;
+            e.nPen = float4(nrm.x, nrm.y, pen, 0.0);
+            _CollisionEvents[idx] = e;
+        }
+    }
+
+    [numthreads(256, 1, 1)] void ClearTransferredCollision(uint3 id : SV_DispatchThreadID)
+    {
+        uint li = id.x;
+        if (li >= _ActiveCount)
+        return;
+
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+        uint baseIdx = dtLi * _DtNeighborCount;
+
+        [unroll] for (uint k = 0u; k < targetNeighborCount; k++)
+        {
+            if (k >= _DtNeighborCount) break;
+            uint slot = baseIdx + k;
+            _XferColCount[slot] = 0u;
+            _XferColNXBits[slot] = 0u;
+            _XferColNYBits[slot] = 0u;
+            _XferColPenBits[slot] = 0u;
+        }
+    }
+
+    static uint FindActiveOwnerLocalFromGlobal(uint leafGi)
+    {
+        uint curGi = leafGi;
+        [loop] for (uint it = 0u; it < 64u; it++)
+        {
+            uint curLi = ~0u;
+            curLi = LocalIndexFromGlobal(curGi);
+            if (curLi != ~0u && curLi < _ActiveCount)
+            return curLi;
+
+            int p = _ParentIndex[curGi];
+            if (p < 0)
+            return ~0u;
+            curGi = (uint)p;
+        }
+        return ~0u;
+    }
+
+    [numthreads(256, 1, 1)] void RestrictCollisionEventsToActivePairs(uint3 id : SV_DispatchThreadID)
+    {
+        uint ei = id.x;
+        uint count = _CollisionEventCount[0];
+        if (ei >= count)
+        return;
+
+        XPBI_CollisionEvent e = _CollisionEvents[ei];
+
+        uint ownerLiA = FindActiveOwnerLocalFromGlobal(e.aGi);
+        uint ownerLiB = FindActiveOwnerLocalFromGlobal(e.bGi);
+        if (ownerLiA == ~0u || ownerLiB == ~0u)
+        return;
+        if (ownerLiA == ownerLiB)
+        return;
+
+        uint ownerGiA = ~0u;
+        ownerGiA = GlobalIndexFromLocal(ownerLiA);
+        uint ownerGiB = ~0u;
+        ownerGiB = GlobalIndexFromLocal(ownerLiB);
+        if (ownerGiA == ~0u || ownerGiB == ~0u)
+        return;
+
+        float2 nrm = e.nPen.xy;
+        float pen = e.nPen.z;
+        if (!(pen > EPS))
+        return;
+
+        uint ownerLiI = ownerLiA;
+        uint ownerLiJ = ownerLiB;
+        uint ownerGiI = ownerGiA;
+        uint ownerGiJ = ownerGiB;
+        if (ownerGiI > ownerGiJ)
+        {
+            ownerLiI = ownerLiB; ownerLiJ = ownerLiA;
+            ownerGiI = ownerGiB; ownerGiJ = ownerGiA;
+            nrm = -nrm;
+        }
+
+        uint dtLiI = (_UseDtGlobalNodeMap != 0u) ? ownerLiI : (_DtLocalBase + ownerLiI);
+        uint baseIdx = dtLiI * _DtNeighborCount;
+
+        uint rawN = _DtNeighborCounts[dtLiI];
+        uint nCount = min(rawN, _DtNeighborCount);
+        nCount = min(nCount, targetNeighborCount);
+
+        uint kFound = ~0u;
+        [loop] for (uint k = 0u; k < nCount; k++)
+        {
+            if (_DtNeighbors[baseIdx + k] == ownerLiJ)
+            {
+                kFound = k;
+                break;
+            }
+        }
+        if (kFound == ~0u)
+        return;
+
+        uint slot = baseIdx + kFound;
+
+        AtomicAddFloatBits(_XferColNXBits, slot, nrm.x * pen);
+        AtomicAddFloatBits(_XferColNYBits, slot, nrm.y * pen);
+        AtomicAddFloatBits(_XferColPenBits, slot, pen);
+        InterlockedAdd(_XferColCount[slot], 1u);
+    }
+
     // ----------------------------------------------------------------------------
     // Clear restricted dV
     // ----------------------------------------------------------------------------
