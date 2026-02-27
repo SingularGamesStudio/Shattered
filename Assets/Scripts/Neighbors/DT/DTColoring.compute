@@ -19,6 +19,7 @@ StructuredBuffer<float2> _Positions;               // Vertex positions in 2D
 StructuredBuffer<int> _ColoringDtNeighbors;        // Flat neighbor lists (max _ColoringDtNeighborCount per vertex)
 StructuredBuffer<int> _ColoringDtNeighborCounts;   // Actual neighbor count per vertex
 StructuredBuffer<uint> _ColoringDtDirtyFlags;      // Dirty flags per vertex (non-zero = needs recoloring)
+StructuredBuffer<uint> _ColoringActiveMask;
 
 // Output/working buffers (read-write)
 RWStructuredBuffer<int> _ColoringColor;            // Current color (-1 = uncolored, 0-15 = valid)
@@ -81,6 +82,11 @@ uint ClampNeighborCount(uint n)
     return min(n, _ColoringDtNeighborCount);
 }
 
+bool IsColoringActive(uint i)
+{
+    return i < _ColoringActiveCount && _ColoringActiveMask[i] != 0u;
+}
+
 //------------------------------------------------------------------------------
 // Initial color assignment based on a triangular grid pattern.
 // Returns a color in 0..15.
@@ -108,6 +114,8 @@ uint TriGridInitColor(float2 p)
 static void TryAppendUnique(uint v)
 {
     if (v >= _ColoringActiveCount)
+    return;
+    if (!IsColoringActive(v))
     return;
 
     uint old = _ColoringMarkEpoch[v];
@@ -144,6 +152,8 @@ static bool HasHigherPrioSameColor2Hop(uint i, int myC, uint myP)
         uint uNa = (uint)na;
         if (uNa >= _ColoringActiveCount)
         continue;
+        if (!IsColoringActive(uNa))
+        continue;
 
         if (_ColoringColor[uNa] == myC)
         {
@@ -175,6 +185,8 @@ static bool HasHigherPrioSameColor2Hop(uint i, int myC, uint myP)
 
             uint uNb = (uint)nb;
             if (uNb >= _ColoringActiveCount || uNb == i)
+            continue;
+            if (!IsColoringActive(uNb))
             continue;
 
             if (_ColoringColor[uNb] == myC)
@@ -212,6 +224,8 @@ static uint CountUniqueConflictPairsForVertex2Hop(uint i, int myC)
 
         uint uNa = (uint)na;
         if (uNa >= _ColoringActiveCount || uNa <= i)
+        continue;
+        if (!IsColoringActive(uNa))
         continue;
 
         if (_ColoringColor[uNa] != myC)
@@ -258,6 +272,8 @@ static uint CountUniqueConflictPairsForVertex2Hop(uint i, int myC)
             uint uNb = (uint)nb;
             if (uNb >= _ColoringActiveCount || uNb == i || uNb <= i)
             continue;
+            if (!IsColoringActive(uNb))
+            continue;
 
             if (_ColoringColor[uNb] != myC)
             continue;
@@ -293,6 +309,14 @@ void ColoringInitTriGrid(uint3 id : SV_DispatchThreadID)
     if (i >= _ColoringActiveCount)
     return;
 
+    if (!IsColoringActive(i))
+    {
+        _ColoringPrio[i] = 0u;
+        _ColoringColor[i] = -1;
+        _ColoringProposed[i] = -1;
+        return;
+    }
+
     _ColoringPrio[i] = GetPrio(i);
     int c = (int)TriGridInitColor(_Positions[i]);
     _ColoringColor[i] = c;
@@ -316,6 +340,8 @@ void ColoringBuildWorkListFromDirty(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    return;
 
     if (_ColoringDtDirtyFlags[i] == 0u)
     return;
@@ -335,6 +361,8 @@ void ColoringBuildWorkListFromDirty(uint3 id : SV_DispatchThreadID)
         uint uNa = (uint)na;
         if (uNa >= _ColoringActiveCount)
         continue;
+        if (!IsColoringActive(uNa))
+        continue;
 
         TryAppendUnique(uNa);
 
@@ -349,6 +377,8 @@ void ColoringBuildWorkListFromDirty(uint3 id : SV_DispatchThreadID)
 
             uint uNb = (uint)nb;
             if (uNb >= _ColoringActiveCount)
+            continue;
+            if (!IsColoringActive(uNb))
             continue;
 
             TryAppendUnique(uNb);
@@ -411,6 +441,8 @@ void ColoringCountFinalConflicts(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    return;
 
     int myC = _ColoringColor[i];
     if (myC < 0)
@@ -436,6 +468,11 @@ void ColoringChooseWork(uint3 id : SV_DispatchThreadID)
     uint i = _ColoringWorkList[listIdx];
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    {
+        _ColoringProposed[i] = -1;
+        return;
+    }
 
     if (_ColoringProposed[i] != -1)
     return;
@@ -454,6 +491,8 @@ void ColoringChooseWork(uint3 id : SV_DispatchThreadID)
 
         uint uNa = (uint)na;
         if (uNa >= _ColoringActiveCount)
+        continue;
+        if (!IsColoringActive(uNa))
         continue;
 
         int c = _ColoringColor[uNa];
@@ -482,6 +521,8 @@ void ColoringChooseWork(uint3 id : SV_DispatchThreadID)
 
             uint uNb = (uint)nb;
             if (uNb >= _ColoringActiveCount)
+            continue;
+            if (!IsColoringActive(uNb))
             continue;
 
             int c = _ColoringColor[uNb];
@@ -522,6 +563,12 @@ void ColoringApplyWork(uint3 id : SV_DispatchThreadID)
     uint i = _ColoringWorkList[listIdx];
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    {
+        _ColoringColor[i] = -1;
+        _ColoringProposed[i] = -1;
+        return;
+    }
 
     _ColoringColor[i] = _ColoringProposed[i];
 }
@@ -547,6 +594,8 @@ void ColoringBuildCounts(uint3 id : SV_DispatchThreadID)
 {
     uint i = id.x;
     if (i >= _ColoringActiveCount)
+    return;
+    if (!IsColoringActive(i))
     return;
 
     int color = _ColoringColor[i];
@@ -595,6 +644,8 @@ void ColoringScatterOrder(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    return;
 
     int color = _ColoringColor[i];
     if ((uint)color >= 16u)
@@ -628,6 +679,11 @@ void ColoringBuildWorkListFromConflicts(uint3 id : SV_DispatchThreadID)
     uint i = id.x;
     if (i >= _ColoringActiveCount)
     return;
+    if (!IsColoringActive(i))
+    {
+        _ColoringProposed[i] = -1;
+        return;
+    }
 
     int myC = _ColoringColor[i];
     if ((uint)myC >= 16u)
@@ -660,6 +716,8 @@ void ColoringBuildWorkListFromConflicts(uint3 id : SV_DispatchThreadID)
         uint uNa = (uint)na;
         if (uNa >= _ColoringActiveCount)
         continue;
+        if (!IsColoringActive(uNa))
+        continue;
 
         TryAppendUnique(uNa);
 
@@ -673,6 +731,8 @@ void ColoringBuildWorkListFromConflicts(uint3 id : SV_DispatchThreadID)
 
             uint uNb = (uint)nb;
             if (uNb >= _ColoringActiveCount)
+            continue;
+            if (!IsColoringActive(uNb))
             continue;
 
             TryAppendUnique(uNb);

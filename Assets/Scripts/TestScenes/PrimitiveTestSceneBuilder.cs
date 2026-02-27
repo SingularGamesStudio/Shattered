@@ -7,6 +7,7 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
         SlimeWind = 2,
         CantileverSeries = 3,
         MultiForceReadbackStress = 4,
+        SlimeDropClusteredBoxes = 5,
     }
 
     [Header("Setup")]
@@ -35,6 +36,23 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
     public Vector2 cantileverSize = new Vector2(4.4f, 0.7f);
     [Range(0.01f, 0.6f)] public float fixedSideWidthFraction = 0.10f;
 
+    [Header("Scenario 5")]
+    public Vector2 dropSlimeCenter = new Vector2(0f, 2.8f);
+    public Vector2 dropSlimeSize = new Vector2(2.4f, 2f);
+    [Min(1)] public int obstacleCount = 5;
+    [Min(16)] public int obstaclePointCount = 96;
+    [Min(0f)] public float obstaclePointJitterFraction = 0.2f;
+    public Vector2 obstacleClusterCenter = new Vector2(0f, 0.3f);
+    public Vector2 obstacleClusterHalfSpread = new Vector2(1.1f, 0.55f);
+    public Vector2 obstacleBaseSize = new Vector2(0.7f, 0.45f);
+    public Vector2 obstacleSizeJitter = new Vector2(0.2f, 0.12f);
+    [Range(0f, 80f)] public float obstacleMaxRotationDeg = 35f;
+    [Min(1)] public uint obstacleSeed = 7;
+    public bool addFloorPlane = true;
+    public Vector2 floorCenter = new Vector2(0f, -2.2f);
+    public Vector2 floorSize = new Vector2(8f, 1.2f);
+    [Min(16)] public int floorPointCount = 180;
+
     void Start() {
         if (!generateOnStart)
             return;
@@ -62,6 +80,9 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
                 break;
             case Scenario.MultiForceReadbackStress:
                 BuildMultiForceReadbackStress(library);
+                break;
+            case Scenario.SlimeDropClusteredBoxes:
+                BuildSlimeDropClusteredBoxes(library);
                 break;
         }
     }
@@ -104,9 +125,9 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
             stress = gameObject.AddComponent<ReadbackMultiForceController>();
 
         stress.targetMeshless = box;
-        stress.pullStrength = 0.5f;
+        stress.pullStrength = 0.1f;
         stress.cornerBoost = 0.02f;
-        stress.oscillationAmplitude = 0.5f;
+        stress.oscillationAmplitude = 0.1f;
         stress.oscillationFrequency = 1.1f;
     }
 
@@ -145,6 +166,37 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
         }
     }
 
+    void BuildSlimeDropClusteredBoxes(MaterialLibrary library) {
+        var baseMat = GetMaterialSafe(library, 0);
+        var obstacleMat = GetMaterialSafe(library, 1);
+
+        var slime = CreateBox("SlimeDropBlob", dropSlimeCenter, dropSlimeSize, pointCount, baseMat);
+        slime.RecomputeMassFromDensity();
+
+        var rnd = new Unity.Mathematics.Random(obstacleSeed == 0 ? 1u : obstacleSeed);
+        for (int i = 0; i < obstacleCount; i++) {
+            float2 centerJitter = new float2(
+                rnd.NextFloat(-obstacleClusterHalfSpread.x, obstacleClusterHalfSpread.x),
+                rnd.NextFloat(-obstacleClusterHalfSpread.y, obstacleClusterHalfSpread.y)
+            );
+
+            Vector2 center = obstacleClusterCenter + new Vector2(centerJitter.x, centerJitter.y);
+            Vector2 size = new Vector2(
+                Mathf.Max(0.12f, obstacleBaseSize.x + rnd.NextFloat(-obstacleSizeJitter.x, obstacleSizeJitter.x)),
+                Mathf.Max(0.12f, obstacleBaseSize.y + rnd.NextFloat(-obstacleSizeJitter.y, obstacleSizeJitter.y))
+            );
+
+            int pointJitter = Mathf.RoundToInt(obstaclePointCount * obstaclePointJitterFraction);
+            int points = Mathf.Max(16, obstaclePointCount + rnd.NextInt(-pointJitter, pointJitter + 1));
+            float rotationDeg = rnd.NextFloat(-obstacleMaxRotationDeg, obstacleMaxRotationDeg);
+
+            CreateBox($"DropObstacle_{i}", center, size, points, obstacleMat, true, rotationDeg);
+        }
+
+        if (addFloorPlane)
+            CreateBox("DropFloor", floorCenter, floorSize, floorPointCount, obstacleMat, true);
+    }
+
     MaterialDef CreateRuntimeVariant(MaterialDef seed, float t, int index) {
         var def = ScriptableObject.CreateInstance<MaterialDef>();
         def.name = $"RuntimeCantileverMaterial_{index}";
@@ -169,7 +221,7 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
         return def;
     }
 
-    Box CreateBox(string objectName, Vector2 center, Vector2 size, int points, MaterialDef baseMaterial) {
+    Box CreateBox(string objectName, Vector2 center, Vector2 size, int points, MaterialDef baseMaterial, bool fixedObject = false, float rotationDeg = 0f) {
         var go = new GameObject(objectName);
         go.transform.SetParent(transform, false);
         go.transform.position = new Vector3(center.x, center.y, 0f);
@@ -182,10 +234,35 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
         box.radiusScale = radiusScale;
         box.defaultAnchorMode = Box.AnchorMode.None;
         box.baseMaterialDef = baseMaterial;
+        box.fixedObject = fixedObject;
         box.generateOnStart = false;
         box.Generate(points, 0);
 
+        if (Mathf.Abs(rotationDeg) > 0.001f) {
+            RotateNodes(box, center, rotationDeg);
+            box.Build();
+        }
+
         return box;
+    }
+
+    static void RotateNodes(Box box, Vector2 center, float rotationDeg) {
+        if (box == null || box.nodes == null || box.nodes.Count == 0)
+            return;
+
+        float radians = rotationDeg * Mathf.Deg2Rad;
+        float s = Mathf.Sin(radians);
+        float c = Mathf.Cos(radians);
+        float2 pivot = new float2(center.x, center.y);
+
+        for (int i = 0; i < box.nodes.Count; i++) {
+            var node = box.nodes[i];
+            float2 d = node.pos - pivot;
+            float2 rotated = new float2(d.x * c - d.y * s, d.x * s + d.y * c) + pivot;
+            node.pos = rotated;
+            node.originalPos = rotated;
+            box.nodes[i] = node;
+        }
     }
 
     static void FixLeftSide(Box box, float fraction) {

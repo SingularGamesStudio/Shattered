@@ -21,6 +21,14 @@ namespace GPU.Solver {
         private readonly List<MeshRange> solveRanges = new List<MeshRange>(64);
         private readonly Dictionary<ulong, DTColoring> coloringByMeshLayer = new Dictionary<ulong, DTColoring>(128);
         private readonly Dictionary<int, string[]> relaxDispatchMarkersByLayer = new Dictionary<int, string[]>(8);
+        private readonly Dictionary<int, LayerColoringMaskCache> coloringMaskCacheByLayer = new Dictionary<int, LayerColoringMaskCache>(8);
+
+        private sealed class LayerColoringMaskCache {
+            public uint[] mask;
+            public int[] ownerRef;
+            public int activeCount;
+            public int fixedSignature;
+        }
 
         private readonly ComputeShader shader;
         private readonly ComputeShader coloringShader;
@@ -160,6 +168,7 @@ namespace GPU.Solver {
             EnsureAsyncCommandBufferForRecording();
             EnsureConvergenceDebugCapacity(maxSolveLayer + 1, Const.JRIterationsL0 + Const.GSIterationsL0);
             bool[] coloringUpdatedByLayer = ConvergenceDebugEnabled ? new bool[maxSolveLayer + 1] : null;
+            int fixedObjectSignature = ComputeFixedObjectSignature();
 
             for (int tick = 0; tick < tickCount; tick++) {
                 SetCommonShaderParams(dtPerTick, Const.Gravity, Const.Compliance, totalCount, 0);
@@ -178,9 +187,25 @@ namespace GPU.Solver {
                         if (useMappedIndices) {
                             ComputeBuffer globalNodeMap = EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, fineCount);
                             ComputeBuffer globalToLocalMap = EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, fineCount, totalCount);
-                            PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, true, 0, globalNodeMap, globalToLocalMap);
+                            PrepareParentRebuildBuffers(
+                                dtLayer,
+                                0,
+                                activeCount,
+                                fineCount,
+                                useDtGlobalNodeMap: true,
+                                dtLocalBase: 0,
+                                dtGlobalNodeMap: globalNodeMap,
+                                dtGlobalToLayerLocalMap: globalToLocalMap);
                         } else {
-                            PrepareParentRebuildBuffers(dtLayer, 0, activeCount, fineCount, false, 0, null, null);
+                            PrepareParentRebuildBuffers(
+                                dtLayer,
+                                0,
+                                activeCount,
+                                fineCount,
+                                useDtGlobalNodeMap: false,
+                                dtLocalBase: 0,
+                                dtGlobalNodeMap: null,
+                                dtGlobalToLayerLocalMap: null);
                         }
                         Dispatch("XPBI.RebuildParentsAtLayer", shader, kRebuildParentsAtLayer, Groups256(fineCount - activeCount), 1, 1);
                     }
@@ -282,6 +307,8 @@ namespace GPU.Solver {
                     ProcessGlobalLayer(
                         layer,
                         layerNeighborSearch,
+                        ownerBodyByLocal,
+                        fixedObjectSignature,
                         execActiveCount,
                         execFineCount,
                         layerKernelH,
@@ -474,6 +501,8 @@ namespace GPU.Solver {
         private void ProcessGlobalLayer(
             int layer,
             INeighborSearch neighborSearch,
+            int[] ownerBodyByLocal,
+            int fixedObjectSignature,
             int activeCount,
             int fineCount,
             float layerKernelH,
@@ -540,7 +569,7 @@ namespace GPU.Solver {
 
             DTColoring coloring = null;
             if (GSIterations > 0) {
-                coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, activeCount, layerKernelH);
+                coloring = RebuildGlobalColoringForLayer(layer, neighborSearch, ownerBodyByLocal, fixedObjectSignature, activeCount, layerKernelH);
                 if (coloring != null) {
                     if (coloringUpdatedByLayer != null && layer >= 0 && layer < coloringUpdatedByLayer.Length)
                         coloringUpdatedByLayer[layer] = true;
@@ -630,8 +659,56 @@ namespace GPU.Solver {
             return Mathf.Max(1, iterations);
         }
 
+        private int ComputeFixedObjectSignature() {
+            int signature = 17;
+            for (int i = 0; i < solveRanges.Count; i++) {
+                Meshless meshless = solveRanges[i].meshless;
+                signature = unchecked(signature * 31 + ((meshless != null && meshless.fixedObject) ? 1 : 0));
+            }
 
-        private DTColoring RebuildGlobalColoringForLayer(int layer, INeighborSearch neighborSearch, int activeCount, float layerCellSize) {
+            return signature;
+        }
+
+        private uint[] BuildLayerColoringActiveMask(int layer, int[] ownerBodyByLocal, int fixedObjectSignature, int activeCount) {
+            if (!coloringMaskCacheByLayer.TryGetValue(layer, out LayerColoringMaskCache cache) || cache == null) {
+                cache = new LayerColoringMaskCache();
+                coloringMaskCacheByLayer[layer] = cache;
+            }
+
+            if (cache.mask == null || cache.mask.Length < activeCount)
+                cache.mask = new uint[Mathf.Max(1, activeCount)];
+
+            bool needsRebuild =
+                cache.ownerRef != ownerBodyByLocal ||
+                cache.activeCount != activeCount ||
+                cache.fixedSignature != fixedObjectSignature;
+
+            if (needsRebuild) {
+                bool hasOwners = ownerBodyByLocal != null && ownerBodyByLocal.Length >= activeCount;
+                for (int i = 0; i < activeCount; i++) {
+                    bool include = true;
+
+                    if (hasOwners) {
+                        int owner = ownerBodyByLocal[i];
+                        if (owner >= 0 && owner < solveRanges.Count) {
+                            Meshless ownerMesh = solveRanges[owner].meshless;
+                            include = ownerMesh != null && !ownerMesh.fixedObject;
+                        }
+                    }
+
+                    cache.mask[i] = include ? 1u : 0u;
+                }
+
+                cache.ownerRef = ownerBodyByLocal;
+                cache.activeCount = activeCount;
+                cache.fixedSignature = fixedObjectSignature;
+            }
+
+            return cache.mask;
+        }
+
+
+        private DTColoring RebuildGlobalColoringForLayer(int layer, INeighborSearch neighborSearch, int[] ownerBodyByLocal, int fixedObjectSignature, int activeCount, float layerCellSize) {
             if (coloringShader == null) {
                 Debug.LogError("XPBISolver: No coloring shader provided. Cannot rebuild global coloring.");
                 return null;
@@ -643,13 +720,17 @@ namespace GPU.Solver {
                 coloringByMeshLayer[key] = coloring;
             }
 
+            uint[] activeMask = BuildLayerColoringActiveMask(layer, ownerBodyByLocal, fixedObjectSignature, activeCount);
+
             uint seed = 12345u + (uint)layer;
             if (coloring.ColorBuffer == null) {
                 coloring.Init(activeCount, neighborSearch.NeighborCount, seed);
+                coloring.UpdateActiveMask(activeMask, activeCount);
                 coloring.EnqueueInitTriGrid(asyncCb, pos, layerCellSize);
                 neighborSearch.MarkAllDirty(asyncCb);
                 coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.InitColoringConflictRounds);
             } else {
+                coloring.UpdateActiveMask(activeMask, activeCount);
                 coloring.EnqueueUpdateAfterMaintain(asyncCb, pos, neighborSearch, layerCellSize, Const.ColoringConflictRounds);
             }
             coloring.EnqueueRebuildOrderAndArgs(asyncCb);
@@ -687,6 +768,7 @@ namespace GPU.Solver {
             foreach (var kv in coloringByMeshLayer)
                 kv.Value?.Dispose();
             coloringByMeshLayer.Clear();
+            coloringMaskCacheByLayer.Clear();
             relaxDispatchMarkersByLayer.Clear();
 
             solveRanges.Clear();

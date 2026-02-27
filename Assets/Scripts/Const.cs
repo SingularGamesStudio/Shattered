@@ -34,9 +34,9 @@ public static class Const {
     public const float PostProlongSmoothing = 0.2f;
 
     // Collisions
-    public const float CollisionSupportScale = 0.6f;
-    public const float CollisionCompliance = 0.00005f;
-    public const float CollisionFriction = 0.35f;
+    public const float CollisionSupportScale = 0.3f;
+    public const float CollisionCompliance = 0.15f;
+    public const float CollisionFriction = 0.6f;
     public const float CollisionRestitution = 0.0f;
     public const float CollisionRestitutionThreshold = 0.005f;
 

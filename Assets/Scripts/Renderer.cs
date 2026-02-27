@@ -103,6 +103,10 @@ public sealed class Renderer : MonoBehaviour {
                 if (wireCmd != null) owner.RemoveCommandBuffer(CameraEvent.AfterImageEffects, wireCmd);
             }
 
+            var activeRt = RenderTexture.active;
+            if (activeRt == accum || activeRt == seedA || activeRt == seedB || activeRt == sdf || activeRt == tmp)
+                RenderTexture.active = null;
+
             fillCmd?.Release();
             wireCmd?.Release();
             fillCmd = null;

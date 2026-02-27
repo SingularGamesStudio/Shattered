@@ -606,6 +606,8 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(kRelaxColoredPersistentCoarse, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Vel", vel);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_InvMass", invMass);
+            asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_VelPrev", velPrev);
             asyncCb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaPrev", lambdaPrev);
@@ -635,10 +637,12 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_Lambda", lambda);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_MaterialIds", materialIds);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_RestVolume", restVolume);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_FixedChildCount", fixedChildCount);
+            asyncCb.SetComputeBufferParam(shader, kJRApply, "_CoarseFixed", coarseFixed);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_JRVelDeltaBits", jrVelDeltaBits);
             asyncCb.SetComputeBufferParam(shader, kJRApply, "_JRLambdaDelta", jrLambdaDelta);
 

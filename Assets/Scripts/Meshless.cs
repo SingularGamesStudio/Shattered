@@ -28,6 +28,9 @@ public class Meshless : MonoBehaviour {
     [Header("Material")]
     public MaterialDef baseMaterialDef;
 
+    [Header("Simulation")]
+    public bool fixedObject;
+
     public float2 DtNormCenter => dtNormCenter;
     public float DtNormInvHalfExtent => dtNormInvHalfExtent;
 
@@ -81,6 +84,8 @@ public class Meshless : MonoBehaviour {
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
 
+        ApplyFixedObjectState();
+
         BuildLayerEndIndex();
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
@@ -97,6 +102,13 @@ public class Meshless : MonoBehaviour {
         for (int i = 0; i < nodes.Count; i++) {
             var node = nodes[i];
 
+            if (fixedObject) {
+                node.isFixed = true;
+                node.invMass = -1f;
+                nodes[i] = node;
+                continue;
+            }
+
             if (node.isFixed || node.invMass <= 0f) {
                 node.isFixed = true;
                 node.invMass = -1f;
@@ -110,6 +122,18 @@ public class Meshless : MonoBehaviour {
 
             node.invMass = 1f / mass;
             node.isFixed = false;
+            nodes[i] = node;
+        }
+    }
+
+    void ApplyFixedObjectState() {
+        if (!fixedObject || nodes == null)
+            return;
+
+        for (int i = 0; i < nodes.Count; i++) {
+            var node = nodes[i];
+            node.isFixed = true;
+            node.invMass = -1f;
             nodes[i] = node;
         }
     }

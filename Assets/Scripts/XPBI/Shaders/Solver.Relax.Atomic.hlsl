@@ -87,6 +87,7 @@
         uint gi = ~0u;
         gi = GlobalIndexFromLocal(li);
         if (gi == ~0u) return;
+        if (IsLayerFixed(gi)) return;
 
         _VelPrev[gi] = _Vel[gi];
         _LambdaPrev[gi] = _Lambda[gi];
@@ -106,6 +107,7 @@
         uint gi = ~0u;
         gi = GlobalIndexFromLocal(li);
         if (gi == ~0u) return;
+        if (IsLayerFixed(gi)) return;
 
         uint jrBase = gi * 2u;
         float2 dV = float2(asfloat(_JRVelDeltaBits[jrBase + 0u]), asfloat(_JRVelDeltaBits[jrBase + 1u]));

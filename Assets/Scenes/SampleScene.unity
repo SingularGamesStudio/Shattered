@@ -324,66 +324,6 @@ MonoBehaviour:
   wireframeCycleKey: 119
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
---- !u!1 &961765555
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 961765557}
-  - component: {fileID: 961765556}
-  m_Layer: 0
-  m_Name: Box
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &961765556
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 961765555}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 9d14631452deebe4aabf97a144ad34fe, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  maxLayer: 2
-  layerEndIndex: 
-  layerRadii: []
-  layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
-  size:
-    x: 3
-    y: 3
-  pointCount: 1000
-  generateOnStart: 1
-  defaultAnchorMode: 1
-  seed: 1
-  layerRatio: 0.12
-  radiusScale: 0.85
-  poissonK: 30
-  layerNodeCounts: 
---- !u!4 &961765557
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 961765555}
-  serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 6.13, y: -2.6100001, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1458040635
 GameObject:
   m_ObjectHideFlags: 0
@@ -413,9 +353,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 2
+  scenario: 5
   generateOnStart: 1
-  pointCount: 1000
+  pointCount: 100
   maxLayer: 2
   layerRatio: 0.12
   radiusScale: 0.85
@@ -429,6 +369,21 @@ MonoBehaviour:
   cantileverStep: {x: 0, y: -1.5}
   cantileverSize: {x: 4.4, y: 0.7}
   fixedSideWidthFraction: 0.1
+  dropSlimeCenter: {x: 0, y: 2.8}
+  dropSlimeSize: {x: 2.4, y: 2}
+  obstacleCount: 5
+  obstaclePointCount: 50
+  obstaclePointJitterFraction: 0.2
+  obstacleClusterCenter: {x: 0, y: 0.3}
+  obstacleClusterHalfSpread: {x: 1.1, y: 0.55}
+  obstacleBaseSize: {x: 0.7, y: 0.45}
+  obstacleSizeJitter: {x: 0.2, y: 0.12}
+  obstacleMaxRotationDeg: 35
+  obstacleSeed: 7
+  addFloorPlane: 0
+  floorCenter: {x: 0, y: -2.2}
+  floorSize: {x: 8, y: 1.2}
+  floorPointCount: 180
 --- !u!4 &1458040637
 Transform:
   m_ObjectHideFlags: 0
@@ -449,6 +404,5 @@ SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 519420032}
-  - {fileID: 961765557}
   - {fileID: 86236646}
   - {fileID: 1458040637}

@@ -42,6 +42,7 @@ namespace GPU.Delaunay {
         ComputeBuffer workList;        // Vertex indices (size = activeCount)
         ComputeBuffer workArgs;        // Indirect dispatch arguments (uint3)
         ComputeBuffer conflictHistory; // Per-iteration conflict history
+        ComputeBuffer activeMask;      // 1 = participates in coloring, 0 = excluded
 
         // Per‑color metadata for scattering / ordering
         ComputeBuffer counts;          // Number of vertices per color (size 16)
@@ -61,6 +62,7 @@ namespace GPU.Delaunay {
         uint epoch;
         uint seed;
         int recordedConflictIterations;
+        int activeMaskHash;
 
         // Cached dispatch group sizes
         const int ThreadGroupSize = 256;
@@ -138,7 +140,13 @@ namespace GPU.Delaunay {
             orderOut = new ComputeBuffer(activeCount, sizeof(uint), ComputeBufferType.Structured);
 
             relaxArgs = new ComputeBuffer(16 * 3, sizeof(uint), ComputeBufferType.IndirectArguments);
+            activeMask = new ComputeBuffer(activeCount, sizeof(uint), ComputeBufferType.Structured);
+            var defaultMask = new uint[activeCount];
+            for (int i = 0; i < activeCount; i++)
+                defaultMask[i] = 1u;
+            activeMask.SetData(defaultMask);
             recordedConflictIterations = 0;
+            activeMaskHash = 0;
         }
 
         private void EnsureConflictHistoryCapacity(int iterations) {
@@ -150,6 +158,24 @@ namespace GPU.Delaunay {
 
             conflictHistory?.Dispose();
             conflictHistory = new ComputeBuffer(iterations, sizeof(uint), ComputeBufferType.Structured);
+        }
+
+        public void UpdateActiveMask(uint[] mask, int count) {
+            if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
+            if (mask == null) throw new ArgumentNullException(nameof(mask));
+            if (count < 0 || count > activeCount || count > mask.Length) throw new ArgumentOutOfRangeException(nameof(count));
+
+            int hash = 17;
+            for (int i = 0; i < count; i++)
+                hash = (hash * 31) ^ (mask[i] != 0u ? 1 : 0);
+
+            if (hash == activeMaskHash)
+                return;
+
+            if (count > 0)
+                activeMask.SetData(mask, 0, 0, count);
+
+            activeMaskHash = hash;
         }
 
         /// <summary>
@@ -310,6 +336,7 @@ namespace GPU.Delaunay {
             // Count vertices per colour
             cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringCounts", counts);
+            cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringActiveMask", activeMask);
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
             Dispatch(cb, shader, kBuildCounts, activeGroups, 1, 1, MarkerPrefix + "BuildCounts");
@@ -325,6 +352,7 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringColor", color);
             cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringWrite", write);
             cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringOrderOut", orderOut);
+            cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringActiveMask", activeMask);
             cb.SetComputeIntParam(shader, "_ColoringActiveCount", activeCount);
             cb.SetComputeIntParam(shader, "_ColoringMaxColors", 16);
             Dispatch(cb, shader, kScatterOrder, activeGroups, 1, 1, MarkerPrefix + "ScatterOrder");
@@ -360,6 +388,15 @@ namespace GPU.Delaunay {
             cb.SetComputeFloatParam(shader, "_ColoringLayerCellSize", layerCellSize);
 
             cb.SetComputeBufferParam(shader, kInitTriGrid, "_Positions", positions);
+            cb.SetComputeBufferParam(shader, kInitTriGrid, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromDirty, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kBuildWorkListFromConflicts, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kDetectConflictsWork, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kChooseWork, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kApplyWork, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kBuildCounts, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kScatterOrder, "_ColoringActiveMask", activeMask);
+            cb.SetComputeBufferParam(shader, kCountFinalConflicts, "_ColoringActiveMask", activeMask);
         }
 
         // Binds the core coloring buffers to a specific kernel.
@@ -444,6 +481,7 @@ namespace GPU.Delaunay {
             workList?.Dispose(); workList = null;
             workArgs?.Dispose(); workArgs = null;
             conflictHistory?.Dispose(); conflictHistory = null;
+            activeMask?.Dispose(); activeMask = null;
 
             counts?.Dispose(); counts = null;
             starts?.Dispose(); starts = null;
@@ -458,6 +496,7 @@ namespace GPU.Delaunay {
             epoch = 0u;
             seed = 0u;
             recordedConflictIterations = 0;
+            activeMaskHash = 0;
         }
     }
 }
