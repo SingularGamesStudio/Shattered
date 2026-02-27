@@ -190,3 +190,69 @@ void KCurvatureFlow(uint3 tid : SV_DispatchThreadID)
 
     _SdfOut[p] = float4(outv, 0.0, 0.0, 0.0);
 }
+
+// Global (outside kernels)
+groupshared uint gSharedSum64[64];
+
+#pragma kernel KCountAccumInside
+#pragma kernel KCountSdfInside
+
+RWStructuredBuffer<uint> _Counts; // [0]=target, [1]=current
+float _RoundPixels;
+
+[numthreads(8,8,1)]
+void KCountAccumInside(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    int2 p = int2(tid.xy);
+    uint idx = gtid.y * 8 + gtid.x;
+
+    // IMPORTANT: no early return before barriers (FXC/X3663). [web:167]
+    bool active = (p.x < _Dim.x) && (p.y < _Dim.y);
+
+    uint v = 0u;
+    if (active)
+    {
+        float a = _Accum.Load(int3(p, 0)).a;
+        v = (a > 0.0) ? 1u : 0u;
+    }
+
+    gSharedSum64[idx] = v;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = 32; stride > 0; stride >>= 1)
+    {
+        if (idx < stride) gSharedSum64[idx] += gSharedSum64[idx + stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (idx == 0)
+    InterlockedAdd(_Counts[0], gSharedSum64[0]);
+}
+
+[numthreads(8,8,1)]
+void KCountSdfInside(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    int2 p = int2(tid.xy);
+    uint idx = gtid.y * 8 + gtid.x;
+
+    bool active = (p.x < _Dim.x) && (p.y < _Dim.y);
+
+    uint v = 0u;
+    if (active)
+    {
+        float sdf = _SdfIn.Load(int3(p, 0)).r;
+        v = (sdf <= -_RoundPixels) ? 1u : 0u;
+    }
+
+    gSharedSum64[idx] = v;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = 32; stride > 0; stride >>= 1)
+    {
+        if (idx < stride) gSharedSum64[idx] += gSharedSum64[idx + stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (idx == 0)
+    InterlockedAdd(_Counts[1], gSharedSum64[0]);
+}

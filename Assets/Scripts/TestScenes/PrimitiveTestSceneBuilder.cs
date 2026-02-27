@@ -23,6 +23,8 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
     [Header("Scenario 1")]
     public Vector2 hangCenter = new Vector2(0f, 0f);
     public Vector2 hangSize = new Vector2(3.4f, 2.2f);
+    [Range(0.01f, 0.5f)] public float hangFixedCornerWidthFraction = 0.12f;
+    [Range(0.01f, 0.5f)] public float hangFixedCornerHeightFraction = 0.18f;
     public bool addBigForcePulse = true;
 
     [Header("Scenario 2")]
@@ -91,10 +93,7 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
         var baseMat = GetMaterialSafe(library, 0);
         var box = CreateBox("SlimeHang2", hangCenter, hangSize, pointCount, baseMat);
 
-        float2 topLeft = new float2(hangCenter.x - hangSize.x * 0.45f, hangCenter.y + hangSize.y * 0.45f);
-        float2 topRight = new float2(hangCenter.x + hangSize.x * 0.45f, hangCenter.y + hangSize.y * 0.45f);
-        box.FixClosestNode(topLeft);
-        box.FixClosestNode(topRight);
+        FixTopCornerRegions(box, hangFixedCornerWidthFraction, hangFixedCornerHeightFraction);
         box.RecomputeMassFromDensity();
 
         if (addBigForcePulse) {
@@ -283,6 +282,56 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
             if (box.nodes[i].pos.x <= threshold)
                 box.FixNode(i);
         }
+    }
+
+    static void FixTopCornerRegions(Box box, float widthFraction, float heightFraction) {
+        if (box == null || box.nodes == null || box.nodes.Count == 0)
+            return;
+
+        float minX = box.nodes[0].pos.x;
+        float maxX = minX;
+        float minY = box.nodes[0].pos.y;
+        float maxY = minY;
+
+        for (int i = 1; i < box.nodes.Count; i++) {
+            float2 p = box.nodes[i].pos;
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
+
+        float xBand = (maxX - minX) * Mathf.Clamp01(widthFraction);
+        float yBand = (maxY - minY) * Mathf.Clamp01(heightFraction);
+
+        float leftX = minX + xBand;
+        float rightX = maxX - xBand;
+        float topY = maxY - yBand;
+
+        int leftFixed = 0;
+        int rightFixed = 0;
+
+        for (int i = 0; i < box.nodes.Count; i++) {
+            float2 p = box.nodes[i].pos;
+            if (p.y < topY)
+                continue;
+
+            if (p.x <= leftX) {
+                box.FixNode(i);
+                leftFixed++;
+                continue;
+            }
+
+            if (p.x >= rightX) {
+                box.FixNode(i);
+                rightFixed++;
+            }
+        }
+
+        if (leftFixed == 0)
+            box.FixClosestNode(new float2(minX, maxY));
+        if (rightFixed == 0)
+            box.FixClosestNode(new float2(maxX, maxY));
     }
 
     static MaterialDef GetMaterialSafe(MaterialLibrary library, int index) {

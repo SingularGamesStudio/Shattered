@@ -310,7 +310,7 @@ MonoBehaviour:
   sdfCompute: {fileID: 7200000, guid: d13dd7c9c5da850439d41ef537bba44d, type: 3}
   uvScale: 5
   sdfDownsample: 1
-  roundPixels: 0.8
+  roundPixels: -0.2
   smoothMode: 1
   blurRadiusPixels: 6
   blurIterations: 2
@@ -324,6 +324,10 @@ MonoBehaviour:
   wireframeCycleKey: 119
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
+  preserveArea: 0
+  preserveAreaGain: 0.6
+  preserveAreaEveryNFrames: 1
+  preserveAreaUseInitialTarget: 1
 --- !u!1 &1458040635
 GameObject:
   m_ObjectHideFlags: 0
@@ -353,9 +357,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 5
+  scenario: 1
   generateOnStart: 1
-  pointCount: 100
+  pointCount: 10000
   maxLayer: 2
   layerRatio: 0.12
   radiusScale: 0.85
@@ -372,18 +376,18 @@ MonoBehaviour:
   dropSlimeCenter: {x: 0, y: 2.8}
   dropSlimeSize: {x: 2.4, y: 2}
   obstacleCount: 5
-  obstaclePointCount: 50
+  obstaclePointCount: 1000
   obstaclePointJitterFraction: 0.2
   obstacleClusterCenter: {x: 0, y: 0.3}
   obstacleClusterHalfSpread: {x: 1.1, y: 0.55}
-  obstacleBaseSize: {x: 0.7, y: 0.45}
+  obstacleBaseSize: {x: 0.45, y: 0.45}
   obstacleSizeJitter: {x: 0.2, y: 0.12}
   obstacleMaxRotationDeg: 35
   obstacleSeed: 7
-  addFloorPlane: 0
+  addFloorPlane: 1
   floorCenter: {x: 0, y: -2.2}
   floorSize: {x: 8, y: 1.2}
-  floorPointCount: 180
+  floorPointCount: 10000
 --- !u!4 &1458040637
 Transform:
   m_ObjectHideFlags: 0

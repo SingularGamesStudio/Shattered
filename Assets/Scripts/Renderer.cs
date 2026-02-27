@@ -60,6 +60,24 @@ public sealed class Renderer : MonoBehaviour {
     [Header("Layers")]
     public bool drawLayer0Fill = true;
 
+    [Header("Preserve area")]
+    public bool preserveArea = true;
+    [Range(0.0f, 5.0f)] public float preserveAreaGain = 0.6f; // how aggressively to adjust (pixels/frame-ish)
+    [Min(1)] public int preserveAreaEveryNFrames = 1;
+    public bool preserveAreaUseInitialTarget = true; // target coverage latched on first valid frame
+
+    int kCountAccumKernel = -1;
+    int kCountSdfKernel = -1;
+
+    ComputeBuffer countsBuffer; // 2 uints
+    bool targetLatched;
+    uint targetCount;
+    uint lastCurrentCount;
+
+    int frameId;
+    bool pendingReadback;
+
+
     Material accumMaterial;
     Material compositeMaterial;
     Material wireMaterial;
@@ -190,6 +208,9 @@ public sealed class Renderer : MonoBehaviour {
             kBlurHKernel = sdfCompute.FindKernel("KBlurH");
             kBlurVKernel = sdfCompute.FindKernel("KBlurV");
             kCurvatureKernel = sdfCompute.FindKernel("KCurvatureFlow");
+            kCountAccumKernel = sdfCompute.FindKernel("KCountAccumInside");
+            kCountSdfKernel = sdfCompute.FindKernel("KCountSdfInside");
+            countsBuffer = new ComputeBuffer(2, sizeof(uint), ComputeBufferType.Structured);
         }
     }
 
@@ -208,6 +229,11 @@ public sealed class Renderer : MonoBehaviour {
         if (accumMaterial != null) Destroy(accumMaterial);
         if (compositeMaterial != null) Destroy(compositeMaterial);
         if (wireMaterial != null) Destroy(wireMaterial);
+
+        countsBuffer?.Dispose();
+        countsBuffer = null;
+        targetLatched = false;
+        pendingReadback = false;
 
         accumMaterial = null;
         compositeMaterial = null;
@@ -360,12 +386,77 @@ public sealed class Renderer : MonoBehaviour {
 
         RenderTexture sdfTex = RunSdfAndSmooth();
 
+        if (preserveArea)
+            PreserveAreaStep(sdfTex);
+
         compositeMaterial ??= new Material(compositeShader);
         compositeMaterial.SetTexture(ID_AccumTex, cr.accum);
         compositeMaterial.SetTexture(ID_SdfTex, sdfTex);
         compositeMaterial.SetFloat(ID_RoundPixels, roundPixels);
         Graphics.Blit(src, dest, compositeMaterial, 0);
     }
+
+    void PreserveAreaStep(RenderTexture sdfFinal) {
+        if (countsBuffer == null || kCountAccumKernel < 0 || kCountSdfKernel < 0) return;
+        if (pendingReadback) return; // don’t queue more than one outstanding readback
+
+        frameId++;
+        if ((frameId % Mathf.Max(1, preserveAreaEveryNFrames)) != 0) return;
+
+        // Reset counts on GPU
+        uint[] zero = { 0u, 0u };
+        countsBuffer.SetData(zero); // tiny upload; ok
+
+        int tgx = (cr.w + 7) >> 3;
+        int tgy = (cr.h + 7) >> 3;
+
+        sdfCompute.SetInts(ID_CSDim, cr.w, cr.h);
+        sdfCompute.SetBuffer(kCountAccumKernel, "_Counts", countsBuffer);
+        sdfCompute.SetBuffer(kCountSdfKernel, "_Counts", countsBuffer);
+
+        // Count target (raw mask area from accum alpha)
+        sdfCompute.SetTexture(kCountAccumKernel, ID_CSTexAccum, cr.accum);
+        sdfCompute.Dispatch(kCountAccumKernel, tgx, tgy, 1);
+
+        // Count current (post-smooth coverage at current roundPixels)
+        sdfCompute.SetFloat("_RoundPixels", roundPixels);
+        sdfCompute.SetTexture(kCountSdfKernel, ID_CSTexSdfIn, sdfFinal);
+        sdfCompute.Dispatch(kCountSdfKernel, tgx, tgy, 1);
+
+        pendingReadback = true;
+
+        UnityEngine.Rendering.AsyncGPUReadback.Request(countsBuffer, (req) => {
+            pendingReadback = false;
+            if (req.hasError) return;
+
+            var data = req.GetData<uint>();
+            uint tgt = data[0];
+            uint cur = data[1];
+
+            lastCurrentCount = cur;
+
+            if (preserveAreaUseInitialTarget) {
+                if (!targetLatched && tgt > 0) {
+                    targetLatched = true;
+                    targetCount = tgt;
+                }
+                if (!targetLatched) return;
+                tgt = targetCount;
+            }
+
+            // Feedback: if current is smaller than target, we need to expand => reduce roundPixels
+            // roundPixels is in pixels; adjust gently.
+            float total = Mathf.Max(1.0f, (float)(cr.w * cr.h));
+            float err = ((float)tgt - (float)cur) / total;
+
+            // Positive err => too small => roundPixels -= ...
+            roundPixels -= preserveAreaGain * err * 100.0f; // 100 is a scale factor; tune in inspector
+
+            // Optional clamp so it can’t explode
+            roundPixels = Mathf.Clamp(roundPixels, -50f, 50f);
+        });
+    }
+
 
     void EnsureCameraResources(int w, int h) {
         if (cr != null && cr.w == w && cr.h == h && cr.accum != null && cr.fillCmd != null && cr.wireCmd != null)

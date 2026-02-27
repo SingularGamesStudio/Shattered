@@ -32,6 +32,78 @@ xi = XPBI_POS(li, gi);
 float2 vi = 0.0;
 vi = XPBI_VEL(li, gi);
 
+float durabilityCompliance = _DurabilityCompliance;
+if (durabilityCompliance >= 0.0)
+{
+    float durabilityRatio = saturate(_DurabilityMaxDistanceRatio);
+    float maxDistance = durabilityRatio * support;
+    if (maxDistance > EPS)
+    {
+        float maxDistanceSq = maxDistance * maxDistance;
+        float durabilityAlphaTilde = durabilityCompliance * invDt2;
+        float maxDeltaVPerIterTether = support * invDt;
+        float maxDeltaVPerIterTetherSq = maxDeltaVPerIterTether * maxDeltaVPerIterTether;
+
+        [loop] for (uint nIdxT = 0u; nIdxT < targetNeighborCount; nIdxT++)
+        {
+            if (nIdxT >= nCount) break;
+
+            uint gjLi = _DtNeighbors[baseIdx + nIdxT];
+            if (gjLi == ~0u || gjLi >= active) continue;
+            if (useOwnerFilter && _DtOwnerByLocal[gjLi] != ownerI) continue;
+
+            uint gj = ~0u;
+            gj = XPBI_GET_GJ(gjLi);
+            if (gj == ~0u) continue;
+
+            float2 xij = XPBI_POS(li, gi) - XPBI_POS(gjLi, gj);
+            float d2 = dot(xij, xij);
+            if (d2 <= maxDistanceSq) continue;
+
+            float d = sqrt(d2);
+            if (d <= EPS) continue;
+
+            float2 n = xij / d;
+            float Cdur = maxDistance - d;
+
+            float invMassI_dur = XPBI_INV_MASS(li, gi);
+            float invMassJ_dur = XPBI_NEIGHBOR_FIXED(gjLi, gj) ? 0.0 : XPBI_INV_MASS(gjLi, gj);
+            float denomDur = invMassI_dur + invMassJ_dur + durabilityAlphaTilde;
+            if (denomDur <= EPS) continue;
+
+            uint lambdaSlot = baseIdx + nIdxT;
+            float lambdaBeforeDur = _DurabilityLambda[lambdaSlot];
+            float dLambdaDur = (-Cdur - durabilityAlphaTilde * lambdaBeforeDur) / denomDur;
+            float lambdaAfterDur = max(0.0, lambdaBeforeDur + dLambdaDur);
+            float appliedDLambdaDur = lambdaAfterDur - lambdaBeforeDur;
+            _DurabilityLambda[lambdaSlot] = lambdaAfterDur;
+
+            if (appliedDLambdaDur <= 0.0) continue;
+
+            float velScaleDur = appliedDLambdaDur * invDt;
+            float2 dViDur = invMassI_dur * (-n) * velScaleDur;
+            float2 dVjDur = invMassJ_dur * (n) * velScaleDur;
+
+            float dViDur2 = dot(dViDur, dViDur);
+            if (dViDur2 > maxDeltaVPerIterTetherSq)
+            dViDur *= maxDeltaVPerIterTether * rsqrt(max(dViDur2, EPS * EPS));
+
+            float dVjDur2 = dot(dVjDur, dVjDur);
+            if (dVjDur2 > maxDeltaVPerIterTetherSq)
+            dVjDur *= maxDeltaVPerIterTether * rsqrt(max(dVjDur2, EPS * EPS));
+
+            #if XPBI_APPLY_MODE_JR
+                XPBI_SCATTER_DV(gi, dViDur);
+                if (invMassJ_dur > 0.0) XPBI_SCATTER_DV(gj, dVjDur);
+            #else
+                vi += dViDur;
+                XPBI_SET_VEL(li, gi, vi);
+                if (invMassJ_dur > 0.0) XPBI_SET_VEL(gjLi, gj, XPBI_VEL(gjLi, gj) + dVjDur);
+            #endif
+        }
+    }
+}
+
 Mat2 Lm = (Mat2)0;
 Lm = Mat2FromFloat4(XPBI_L_FROM_I(li, gi));
 

@@ -1,6 +1,6 @@
 public static class Const {
     public const float Gravity = -0.01f;
-    public const float Compliance = 0.1f;
+    public const float Compliance = 1f;
 
     // Neighbors
     public const int NeighborCount = 16;
@@ -23,8 +23,8 @@ public static class Const {
     public const int DTLegalizeIterations = 2;
 
     // Stability limits
-    public const float MaxVelocity = 0.0f;
-    public const float MaxDisplacementPerTick = 0.0f;
+    public const float MaxVelocity = 2.0f;
+    public const float MaxDisplacementPerTick = 0.012f;
 
     // Multigrid prolongation
     public const float ProlongationScale = 0.5f;
@@ -35,9 +35,13 @@ public static class Const {
 
     // Collisions
     public const float CollisionSupportScale = 0.3f;
-    public const float CollisionCompliance = 0.15f;
-    public const float CollisionFriction = 0.6f;
+    public const float CollisionCompliance = 0.1f;
+    public const float CollisionFriction = 0.2f;
     public const float CollisionRestitution = 0.0f;
     public const float CollisionRestitutionThreshold = 0.005f;
+
+    // Durability tether (unilateral max-distance inequality)
+    public const float DurabilityCompliance = 0.8f;
+    public const float DurabilityMaxDistanceRatio = 0.8f;
 
 }

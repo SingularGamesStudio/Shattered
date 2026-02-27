@@ -30,6 +30,7 @@
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
+    RWStructuredBuffer<float> _DurabilityLambda;
     RWStructuredBuffer<float> _CollisionLambda;
 
     struct XPBI_CollisionEvent
@@ -86,6 +87,8 @@
     float _CollisionFriction;
     float _CollisionRestitution;
     float _CollisionRestitutionThreshold;
+    float _DurabilityCompliance;
+    float _DurabilityMaxDistanceRatio;
     uint _CollisionEnable;
     uint _UseAffineProlongation; 
 

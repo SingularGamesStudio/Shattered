@@ -361,6 +361,7 @@
         [unroll] for (uint k = 0u; k < targetNeighborCount; k++)
         {
             if (k >= _DtNeighborCount) break;
+            _DurabilityLambda[baseIdx + k] = 0.0;
             _CollisionLambda[baseIdx + k] = 0.0;
         }
     }

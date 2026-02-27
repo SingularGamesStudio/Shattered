@@ -22,6 +22,7 @@ namespace GPU.Solver {
         private ComputeBuffer L;
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
+        private ComputeBuffer durabilityLambda;
         private ComputeBuffer collisionLambda;
         private ComputeBuffer collisionEvents;
         private ComputeBuffer collisionEventCount;
@@ -143,6 +144,7 @@ namespace GPU.Solver {
             L = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
+            durabilityLambda = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
             collisionLambda = new ComputeBuffer(capacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
             collisionEvents = new ComputeBuffer(math.max(1024, capacity * Const.NeighborCount), sizeof(uint) * 2 + sizeof(float) * 4, ComputeBufferType.Structured);
             collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
@@ -239,6 +241,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_CollisionFriction", Const.CollisionFriction);
             asyncCb.SetComputeFloatParam(shader, "_CollisionRestitution", Const.CollisionRestitution);
             asyncCb.SetComputeFloatParam(shader, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
+            asyncCb.SetComputeFloatParam(shader, "_DurabilityCompliance", Const.DurabilityCompliance);
+            asyncCb.SetComputeFloatParam(shader, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
         }
 
@@ -491,6 +495,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F0", F0);
             asyncCb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kResetCollisionLambda, "_DurabilityLambda", durabilityLambda);
             asyncCb.SetComputeBufferParam(shader, kResetCollisionLambda, "_CollisionLambda", collisionLambda);
             asyncCb.SetComputeBufferParam(shader, kClearCollisionEventCount, "_CollisionEventCount", collisionEventCount);
             asyncCb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_Pos", pos);
@@ -527,6 +532,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_DurabilityLambda", durabilityLambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColCount", xferColCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNXBits", xferColNXBits);
@@ -544,6 +550,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
+            asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DurabilityLambda", durabilityLambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColCount", xferColCount);
             asyncCb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNXBits", xferColNXBits);
@@ -626,6 +633,7 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_VelPrev", velPrev);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaPrev", lambdaPrev);
+            asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DurabilityLambda", durabilityLambda);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVelDeltaBits", jrVelDeltaBits);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRLambdaDelta", jrLambdaDelta);
             asyncCb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);
@@ -720,6 +728,7 @@ namespace GPU.Solver {
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
+            durabilityLambda?.Dispose(); durabilityLambda = null;
             collisionLambda?.Dispose(); collisionLambda = null;
             collisionEvents?.Dispose(); collisionEvents = null;
             collisionEventCount?.Dispose(); collisionEventCount = null;
