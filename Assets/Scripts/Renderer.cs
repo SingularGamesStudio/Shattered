@@ -148,7 +148,7 @@ public sealed class Renderer : MonoBehaviour {
     readonly Dictionary<int, GlobalLayerState> layerStates = new Dictionary<int, GlobalLayerState>(8);
     CameraResources cr;
 
-    const int WireframeNodeCap = 2000;
+    const int WireframeNodeCap = 3000;
 
     int kInitKernel = -1;
     int kJfaKernel = -1;

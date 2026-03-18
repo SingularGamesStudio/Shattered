@@ -13,6 +13,8 @@ namespace GPU.Solver {
         private ComputeBuffer invMass;
         private ComputeBuffer restVolume;
         private ComputeBuffer parentIndex;
+        private ComputeBuffer parentIndices;
+        private ComputeBuffer parentWeights;
         private ComputeBuffer F;
         private ComputeBuffer Fp;
         private ComputeBuffer currentVolumeBits;
@@ -73,6 +75,8 @@ namespace GPU.Solver {
         private float[] invMassCpu;
         private float[] restVolumeCpu;
         private int[] parentIndexCpu;
+        private int[] parentIndicesCpu;
+        private float[] parentWeightsCpu;
         private float4[] FCpu;
         private float4[] FpCpu;
         private ForceEvent[] forceEventsCpu;
@@ -106,6 +110,11 @@ namespace GPU.Solver {
                     invMassCpu[gi] = node.invMass;
                     restVolumeCpu[gi] = node.restVolume;
                     parentIndexCpu[gi] = -1;
+                    int parentBase = gi * Const.ParentKNearest;
+                    for (int k = 0; k < Const.ParentKNearest; k++) {
+                        parentIndicesCpu[parentBase + k] = -1;
+                        parentWeightsCpu[parentBase + k] = 0f;
+                    }
                     FCpu[gi] = new float4(1f, 0f, 0f, 1f);
                     FpCpu[gi] = new float4(1f, 0f, 0f, 1f);
                 }
@@ -117,6 +126,8 @@ namespace GPU.Solver {
             invMass.SetData(invMassCpu, 0, 0, totalCount);
             restVolume.SetData(restVolumeCpu, 0, 0, totalCount);
             parentIndex.SetData(parentIndexCpu, 0, 0, totalCount);
+            parentIndices.SetData(parentIndicesCpu, 0, 0, totalCount * Const.ParentKNearest);
+            parentWeights.SetData(parentWeightsCpu, 0, 0, totalCount * Const.ParentKNearest);
             F.SetData(FCpu, 0, 0, totalCount);
             Fp.SetData(FpCpu, 0, 0, totalCount);
 
@@ -139,6 +150,8 @@ namespace GPU.Solver {
             invMass = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             restVolume = new ComputeBuffer(capacity, sizeof(float), ComputeBufferType.Structured);
             parentIndex = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
+            parentIndices = new ComputeBuffer(capacity * Const.ParentKNearest, sizeof(int), ComputeBufferType.Structured);
+            parentWeights = new ComputeBuffer(capacity * Const.ParentKNearest, sizeof(float), ComputeBufferType.Structured);
             F = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             Fp = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
 
@@ -180,6 +193,8 @@ namespace GPU.Solver {
             invMassCpu = new float[capacity];
             restVolumeCpu = new float[capacity];
             parentIndexCpu = new int[capacity];
+            parentIndicesCpu = new int[capacity * Const.ParentKNearest];
+            parentWeightsCpu = new float[capacity * Const.ParentKNearest];
             FCpu = new float4[capacity];
             FpCpu = new float4[capacity];
 
@@ -274,6 +289,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeFloatParam(shader, "_DurabilityCompliance", Const.DurabilityCompliance);
             asyncCb.SetComputeFloatParam(shader, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
             asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
+            asyncCb.SetComputeIntParam(shader, "_ParentKNearest", math.clamp(Const.ParentKNearest, 1, 4));
+            asyncCb.SetComputeFloatParam(shader, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));
         }
 
         void PrepareParentRebuildBuffers(INeighborSearch neighborSearch, int baseIndex, int activeCount, int fineCount, bool useDtGlobalNodeMap = false, int dtLocalBase = 0, ComputeBuffer dtGlobalNodeMap = null, ComputeBuffer dtGlobalToLayerLocalMap = null) {
@@ -285,6 +302,8 @@ namespace GPU.Solver {
 
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             BindDtGlobalMappingParams(kRebuildParentsAtLayer, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
@@ -305,6 +324,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
@@ -518,6 +539,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_Pos", pos);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_F", F);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentVolumeBits", currentVolumeBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_CurrentTotalMassBits", currentTotalMassBits);
             asyncCb.SetComputeBufferParam(shader, kCacheHierarchicalStats, "_FixedChildPosBits", fixedChildPosBits);
@@ -545,6 +568,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
             asyncCb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
             asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             asyncCb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_CollisionEvents", collisionEvents);
@@ -602,6 +627,8 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildPosBits", fixedChildPosBits);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_FixedChildCount", fixedChildCount);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kProlongate, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
 
 
@@ -711,11 +738,15 @@ namespace GPU.Solver {
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_RestrictedDeltaVCount", restrictedDeltaVCount);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", forceEvents);
 
             asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_Vel", vel);
             asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_InvMass", invMass);
             asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_ParentIndex", parentIndex);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_ParentIndices", parentIndices);
+            asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_ParentWeights", parentWeights);
             asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_RestrictedDeltaVBits", restrictedDeltaVBits);
             asyncCb.SetComputeBufferParam(shader, kRestrictFineVelocityResidualToActive, "_RestrictedDeltaVCount", restrictedDeltaVCount);
 
@@ -754,6 +785,8 @@ namespace GPU.Solver {
             invMass?.Dispose(); invMass = null;
             restVolume?.Dispose(); restVolume = null;
             parentIndex?.Dispose(); parentIndex = null;
+            parentIndices?.Dispose(); parentIndices = null;
+            parentWeights?.Dispose(); parentWeights = null;
             F?.Dispose(); F = null;
             Fp?.Dispose(); Fp = null;
 

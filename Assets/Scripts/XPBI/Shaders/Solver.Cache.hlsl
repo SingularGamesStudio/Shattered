@@ -2,7 +2,7 @@
     #define XPBI_SOLVER_CACHE_KERNELS_INCLUDED
 
     // ----------------------------------------------------------------------------
-    // RebuildParentsAtLayer: find nearest coarse particle using local search
+    // RebuildParentsAtLayer: find nearest coarse particle, then assign k nearest weighted parents.
     // ----------------------------------------------------------------------------
     [numthreads(256, 1, 1)] void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
     {
@@ -16,6 +16,14 @@
         return;
 
         float2 q = _Pos[gi];
+        uint parentCount = ParentReadCount();
+        uint parentBase = ParentSlotBase(gi);
+
+        [unroll] for (uint clearIdx = 0u; clearIdx < targetParentCount; clearIdx++)
+        {
+            _ParentIndices[parentBase + clearIdx] = -1;
+            _ParentWeights[parentBase + clearIdx] = 0.0;
+        }
 
         int cur = _ParentIndex[gi];
         uint curLi = ~0u;
@@ -79,6 +87,141 @@
             best = bestNextDist;
         }
 
+        int candidateGi[targetNeighborCount + 1];
+        float candidateDistSq[targetNeighborCount + 1];
+        uint candidateCount = 0u;
+
+        candidateGi[candidateCount] = cur;
+        candidateDistSq[candidateCount] = best;
+        candidateCount++;
+
+        uint curLocal = ~0u;
+        curLocal = LocalIndexFromGlobal((uint)cur);
+        if (curLocal != ~0u && curLocal < _ParentCoarseCount)
+        {
+            uint dtLi = (_UseDtGlobalNodeMap != 0u) ? curLocal : (_DtLocalBase + curLocal);
+            uint rawCount = _DtNeighborCounts[dtLi];
+            uint nCount = min(rawCount, _DtNeighborCount);
+            nCount = min(nCount, targetNeighborCount);
+            uint nBase = dtLi * _DtNeighborCount;
+
+            [loop] for (uint k = 0u; k < nCount; k++)
+            {
+                uint njLocal = _DtNeighbors[nBase + k];
+                uint nj = ~0u;
+                nj = GlobalIndexFromLocal(njLocal);
+                if (nj == ~0u) continue;
+
+                uint njLi = ~0u;
+                njLi = LocalIndexFromGlobal(nj);
+                if (njLi == ~0u || njLi >= _ParentCoarseCount) continue;
+
+                bool duplicate = false;
+                [unroll] for (uint c = 0u; c < targetNeighborCount + 1; c++)
+                {
+                    if (c >= candidateCount) break;
+                    if (candidateGi[c] == int(nj)) { duplicate = true; break; }
+                }
+                if (duplicate || candidateCount >= (targetNeighborCount + 1)) continue;
+
+                float2 d = _Pos[nj] - q;
+                candidateGi[candidateCount] = int(nj);
+                candidateDistSq[candidateCount] = dot(d, d);
+                candidateCount++;
+            }
+        }
+
+        int selectedParent[targetParentCount];
+        float selectedDistSq[targetParentCount];
+        [unroll] for (uint i = 0u; i < targetParentCount; i++)
+        {
+            selectedParent[i] = -1;
+            selectedDistSq[i] = 1e30;
+        }
+
+        [loop] for (uint c = 0u; c < targetNeighborCount + 1; c++)
+        {
+            if (c >= candidateCount) break;
+            int cand = candidateGi[c];
+            float candDist = candidateDistSq[c];
+
+            uint insertAt = parentCount;
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
+            {
+                if (s >= parentCount) break;
+                if (candDist < selectedDistSq[s]) { insertAt = s; break; }
+            }
+            if (insertAt >= parentCount) continue;
+
+            [unroll] for (uint shift = 0u; shift < targetParentCount; shift++)
+            {
+                uint idx = parentCount - 1u - shift;
+                if (idx <= insertAt || idx >= parentCount) continue;
+                selectedParent[idx] = selectedParent[idx - 1u];
+                selectedDistSq[idx] = selectedDistSq[idx - 1u];
+            }
+
+            selectedParent[insertAt] = cand;
+            selectedDistSq[insertAt] = candDist;
+        }
+
+        uint usedCount = 0u;
+        float maxDist = 0.0;
+        [unroll] for (uint s = 0u; s < targetParentCount; s++)
+        {
+            if (s >= parentCount) break;
+            int p = selectedParent[s];
+            if (p < 0) continue;
+            usedCount++;
+            maxDist = max(maxDist, sqrt(max(selectedDistSq[s], 0.0)));
+        }
+
+        if (usedCount == 0u)
+        {
+            selectedParent[0] = cur;
+            selectedDistSq[0] = best;
+            usedCount = 1u;
+            maxDist = sqrt(max(best, 0.0));
+        }
+
+        float invMaxDist = (maxDist > EPS) ? (1.0 / maxDist) : 0.0;
+        float weightSum = 0.0;
+        float rawWeight[targetParentCount];
+        [unroll] for (uint s = 0u; s < targetParentCount; s++)
+        {
+            rawWeight[s] = 0.0;
+            if (s >= parentCount) continue;
+            int p = selectedParent[s];
+            if (p < 0) continue;
+
+            float d = sqrt(max(selectedDistSq[s], 0.0));
+            float normalizedD = (maxDist > EPS) ? (d * invMaxDist) : 0.0;
+            float w = 1.0 / (normalizedD + max(_ParentWeightEpsilon, 1e-6));
+            rawWeight[s] = w;
+            weightSum += w;
+        }
+
+        if (weightSum <= EPS)
+        {
+            float equalW = 1.0 / max((float)usedCount, 1.0);
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
+            {
+                if (s >= parentCount) break;
+                if (selectedParent[s] < 0) continue;
+                rawWeight[s] = equalW;
+            }
+            weightSum = 1.0;
+        }
+
+        [unroll] for (uint s = 0u; s < targetParentCount; s++)
+        {
+            if (s >= parentCount) break;
+            int p = selectedParent[s];
+            if (p < 0) continue;
+            _ParentIndices[parentBase + s] = p;
+            _ParentWeights[parentBase + s] = rawWeight[s] / weightSum;
+        }
+
         _ParentIndex[gi] = cur;
     }
 
@@ -131,51 +274,83 @@
         if (!isfinite(leafVol))
         return;
 
-        int owner = int(li);
-        [loop] for (uint it = 0; it < 64; it++)
+        uint ownerGiList[targetParentCount];
+        float ownerWeightList[targetParentCount];
+        uint ownerCount = 0u;
+        float ownerWeightSum = 0.0;
+        [unroll] for (uint initIdx = 0u; initIdx < targetParentCount; initIdx++)
         {
-            if (owner < 0)
-            return;
-            if (owner < int(_ActiveCount))
-            break;
-
-            uint ownerGi = ~0u;
-            ownerGi = GlobalIndexFromLocal((uint)owner);
-            if (ownerGi == ~0u)
-            return;
-
-            int p = _ParentIndex[ownerGi];
-            if (p < 0)
-            return;
-
-            uint ownerLi = ~0u;
-            ownerLi = LocalIndexFromGlobal((uint)p);
-            if (ownerLi == ~0u)
-            return;
-            owner = (int)ownerLi;
+            ownerGiList[initIdx] = ~0u;
+            ownerWeightList[initIdx] = 0.0;
         }
 
-        if (owner < 0 || owner >= int(_ActiveCount))
-        return;
-
-        uint ownerGi = ~0u;
-        ownerGi = GlobalIndexFromLocal((uint)owner);
-        if (ownerGi == ~0u)
-        return;
-
-        if (IsFixedVertex(gi))
+        if (li < _ActiveCount)
         {
-            AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 0u, _Pos[gi].x);
-            AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 1u, _Pos[gi].y);
-            InterlockedAdd(_FixedChildCount[ownerGi], 1u);
+            ownerGiList[0] = gi;
+            ownerWeightList[0] = 1.0;
+            ownerCount = 1u;
+            ownerWeightSum = 1.0;
         }
-        if (leafMass > EPS)
-        AtomicAddFloatBits(_CurrentTotalMassBits, ownerGi, leafMass);
+        else
+        {
+            uint parentCount = ParentReadCount();
+            [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+            {
+                if (slot >= parentCount) break;
+                int p = ReadParentBySlot(gi, slot);
+                if (p < 0) continue;
 
-        if (leafVol <= EPS)
-        return;
+                uint pLi = ~0u;
+                pLi = LocalIndexFromGlobal((uint)p);
+                if (pLi == ~0u || pLi >= _ActiveCount) continue;
 
-        AtomicAddFloatBits(_CurrentVolumeBits, ownerGi, leafVol);
+                float w = max(ReadParentWeightBySlot(gi, slot), 0.0);
+                if (w <= EPS) continue;
+
+                ownerGiList[ownerCount] = (uint)p;
+                ownerWeightList[ownerCount] = w;
+                ownerWeightSum += w;
+                ownerCount++;
+            }
+
+            if (ownerCount == 0u)
+            {
+                int pDom = ReadDominantParent(gi);
+                if (pDom >= 0)
+                {
+                    uint pLi = ~0u;
+                    pLi = LocalIndexFromGlobal((uint)pDom);
+                    if (pLi != ~0u && pLi < _ActiveCount)
+                    {
+                        ownerGiList[0] = (uint)pDom;
+                        ownerWeightList[0] = 1.0;
+                        ownerCount = 1u;
+                        ownerWeightSum = 1.0;
+                    }
+                }
+            }
+        }
+
+        if (ownerCount == 0u || ownerWeightSum <= EPS) return;
+
+        [unroll] for (uint oi = 0u; oi < targetParentCount; oi++)
+        {
+            if (oi >= ownerCount) break;
+            uint ownerGi = ownerGiList[oi];
+            if (ownerGi == ~0u) continue;
+
+            float wNorm = ownerWeightList[oi] / ownerWeightSum;
+            if (wNorm <= EPS) continue;
+
+            if (IsFixedVertex(gi))
+            {
+                AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 0u, _Pos[gi].x * wNorm);
+                AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 1u, _Pos[gi].y * wNorm);
+                AtomicAddFloatBits(_FixedChildCount, ownerGi, wNorm);
+            }
+            if (leafMass > EPS) AtomicAddFloatBits(_CurrentTotalMassBits, ownerGi, leafMass * wNorm);
+            if (leafVol > EPS) AtomicAddFloatBits(_CurrentVolumeBits, ownerGi, leafVol * wNorm);
+        }
     }
 
     // ----------------------------------------------------------------------------
@@ -192,7 +367,7 @@
         gi = GlobalIndexFromLocal(li);
         if (gi == ~0u)
         return;
-        _CoarseFixed[gi] = (_FixedChildCount[gi] > 1u) ? 1u : 0u;
+        _CoarseFixed[gi] = (asfloat(_FixedChildCount[gi]) > 1.0) ? 1u : 0u;
     }
 
     // ----------------------------------------------------------------------------
@@ -475,7 +650,7 @@
             if (curLi != ~0u && curLi < _ActiveCount)
             return curLi;
 
-            int p = _ParentIndex[curGi];
+            int p = ReadDominantParent(curGi);
             if (p < 0)
             return ~0u;
             curGi = (uint)p;
@@ -587,35 +762,51 @@
 
         float2 leafDeltaV = e.force * _Dt;
 
-        int owner = -1;
-        uint ownerGi = gi;
-        [loop] for (uint it = 0; it < 64; it++)
+        uint liOwner = ~0u;
+        liOwner = LocalIndexFromGlobal(gi);
+        if (liOwner != ~0u && liOwner < _ActiveCount)
         {
-            uint ownerLi = ~0u;
-            ownerLi = LocalIndexFromGlobal(ownerGi);
-            if (ownerLi != ~0u && ownerLi < _ActiveCount)
-            {
-                owner = (int)ownerLi;
-                break;
-            }
-
-            int p = _ParentIndex[ownerGi];
-            if (p < 0)
+            AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 0u, leafDeltaV.x);
+            AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 1u, leafDeltaV.y);
+            InterlockedAdd(_RestrictedDeltaVCount[gi], 1u);
             return;
-            ownerGi = (uint)p;
         }
 
-        if (owner < 0 || owner >= int(_ActiveCount))
-        return;
+        uint parentCount = ParentReadCount();
+        float weightSum = 0.0;
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= parentCount) break;
+            int p = ReadParentBySlot(gi, slot);
+            if (p < 0) continue;
 
-        ownerGi = ~0u;
-        ownerGi = GlobalIndexFromLocal((uint)owner);
-        if (ownerGi == ~0u)
-        return;
+            uint pLi = ~0u;
+            pLi = LocalIndexFromGlobal((uint)p);
+            if (pLi == ~0u || pLi >= _ActiveCount) continue;
 
-        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, leafDeltaV.x);
-        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, leafDeltaV.y);
-        InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+            float w = max(ReadParentWeightBySlot(gi, slot), 0.0);
+            weightSum += w;
+        }
+        if (weightSum <= EPS) return;
+
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= parentCount) break;
+            int p = ReadParentBySlot(gi, slot);
+            if (p < 0) continue;
+
+            uint pGi = (uint)p;
+            uint pLi = ~0u;
+            pLi = LocalIndexFromGlobal(pGi);
+            if (pLi == ~0u || pLi >= _ActiveCount) continue;
+
+            float w = max(ReadParentWeightBySlot(gi, slot), 0.0) / weightSum;
+            if (w <= EPS) continue;
+
+            AtomicAddFloatBits(_RestrictedDeltaVBits, pGi * 2u + 0u, leafDeltaV.x * w);
+            AtomicAddFloatBits(_RestrictedDeltaVBits, pGi * 2u + 1u, leafDeltaV.y * w);
+            InterlockedAdd(_RestrictedDeltaVCount[pGi], 1u);
+        }
     }
 
     // ----------------------------------------------------------------------------
@@ -634,17 +825,32 @@
         if (IsFixedVertex(gi))
         return;
 
-        int p = _ParentIndex[gi];
-        if (p < int(_Base) || p >= int(_Base + _ActiveCount))
-        return;
+        uint parentCount = ParentReadCount();
+        float weightSum = 0.0;
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= parentCount) break;
+            int p = ReadParentBySlot(gi, slot);
+            if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+            weightSum += max(ReadParentWeightBySlot(gi, slot), 0.0);
+        }
+        if (weightSum <= EPS) return;
 
-        uint ownerGi = uint(p);
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= parentCount) break;
+            int p = ReadParentBySlot(gi, slot);
+            if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
 
-        float2 residual = _Vel[gi] - _Vel[ownerGi];
+            uint ownerGi = (uint)p;
+            float w = max(ReadParentWeightBySlot(gi, slot), 0.0) / weightSum;
+            if (w <= EPS) continue;
 
-        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, residual.x);
-        AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, residual.y);
-        InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+            float2 residual = _Vel[gi] - _Vel[ownerGi];
+            AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, residual.x * w);
+            AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, residual.y * w);
+            InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+        }
     }
 
     // ----------------------------------------------------------------------------

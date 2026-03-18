@@ -32,6 +32,8 @@ public static class Const {
     public const bool UseAffineProlongation = true;
     public const float RestrictResidualDeltaVScale = 0.35f;
     public const float PostProlongSmoothing = 0.2f;
+    public const int ParentKNearest = 2;
+    public const float ParentWeightEpsilon = 1e-3f;
 
     // Collisions
     public const float CollisionSupportScale = 0.3f;

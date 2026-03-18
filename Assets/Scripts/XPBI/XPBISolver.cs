@@ -723,9 +723,9 @@ namespace GPU.Solver {
             }
 
             if (layer > 0 && fineCount > activeCount) {
-                Dispatch("XPBI.Prolongate", shader, kProlongate, Groups256(fineCount - activeCount), 1, 1);
+                Dispatch("XPBI.Prolongate", shader, kProlongate, Groups256(fineCount), 1, 1);
                 if (Const.PostProlongSmoothing > 0f)
-                    Dispatch("XPBI.SmoothProlongatedFineVel", shader, kSmoothProlongatedFineVel, Groups256(fineCount - activeCount), 1, 1);
+                    Dispatch("XPBI.SmoothProlongatedFineVel", shader, kSmoothProlongatedFineVel, Groups256(fineCount), 1, 1);
             }
 
             if (injectRestrictedGameplay || injectRestrictedResidual)

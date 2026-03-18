@@ -4,6 +4,7 @@
     #include "Utils.hlsl"
 
     #define targetNeighborCount 16
+    #define targetParentCount 4
 
     // Core particle data
     RWStructuredBuffer<float2> _Pos;
@@ -17,6 +18,8 @@
     StructuredBuffer<float> _InvMass;
     StructuredBuffer<float> _RestVolume;
     RWStructuredBuffer<int> _ParentIndex;
+    RWStructuredBuffer<int> _ParentIndices;
+    RWStructuredBuffer<float> _ParentWeights;
 
     // Deformation gradients
     RWStructuredBuffer<float4> _F;
@@ -105,6 +108,8 @@
     float _Compliance;
     float _MaxSpeed;
     float _MaxStep;
+    int _ParentKNearest;
+    float _ParentWeightEpsilon;
 
     // Constants
     static const float EPS = 1e-6;
@@ -162,9 +167,9 @@
         return asfloat(_CurrentTotalMassBits[gi]);
     }
 
-    static uint ReadFixedChildCount(uint gi)
+    static float ReadFixedChildCount(uint gi)
     {
-        return _FixedChildCount[gi];
+        return asfloat(_FixedChildCount[gi]);
     }
 
     static float2 ReadFixedChildPosSum(uint gi)
@@ -178,15 +183,58 @@
     static float2 ReadFixedChildAnchor(uint gi)
     {
         float2 result = 0.0;
-        uint cnt = 0u;
+        float cnt = 0.0;
         cnt = ReadFixedChildCount(gi);
-        if (cnt != 0u)
+        if (cnt > EPS)
         {
             float2 posSum = 0.0;
             posSum = ReadFixedChildPosSum(gi);
-            result = posSum / max((float)cnt, 1.0);
+            result = posSum / max(cnt, 1.0);
         }
         return result;
+    }
+
+    static uint ParentSlotBase(uint gi)
+    {
+        return gi * targetParentCount;
+    }
+
+    static uint ParentReadCount()
+    {
+        return min((uint)max(_ParentKNearest, 1), (uint)targetParentCount);
+    }
+
+    static int ReadParentBySlot(uint gi, uint slot)
+    {
+        if (slot >= ParentReadCount()) return -1;
+        return _ParentIndices[ParentSlotBase(gi) + slot];
+    }
+
+    static float ReadParentWeightBySlot(uint gi, uint slot)
+    {
+        if (slot >= ParentReadCount()) return 0.0;
+        return _ParentWeights[ParentSlotBase(gi) + slot];
+    }
+
+    static int ReadDominantParent(uint gi)
+    {
+        int bestParent = -1;
+        float bestWeight = -1.0;
+        uint parentCount = ParentReadCount();
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= parentCount) break;
+            int p = ReadParentBySlot(gi, slot);
+            if (p < 0) continue;
+            float w = ReadParentWeightBySlot(gi, slot);
+            if (w > bestWeight)
+            {
+                bestWeight = w;
+                bestParent = p;
+            }
+        }
+        if (bestParent < 0) bestParent = _ParentIndex[gi];
+        return bestParent;
     }
 
     static float ReadEffectiveInvMass(uint gi)
@@ -304,9 +352,9 @@
 
     static void ApplySingleAnchorRadialDampingOnVel(uint gi, float mu, float lambda, float2 pos, inout float2 vel)
     {
-        uint fixedChildCount = 0u;
+        float fixedChildCount = 0.0;
         fixedChildCount = ReadFixedChildCount(gi);
-        if (fixedChildCount != 1u)
+        if (abs(fixedChildCount - 1.0) > 0.25)
         return;
 
         float2 fixedAnchor = 0.0;

@@ -179,65 +179,229 @@
     void Prolongate(uint3 id : SV_DispatchThreadID)
     {
         uint li = id.x;
-        uint childLi = _ActiveCount + li;
-        if (childLi >= _FineCount)
+        if (li >= _FineCount)
         return;
 
-        uint childGi = ~0u;
-        childGi = GlobalIndexFromLocal(childLi);
-        if (childGi == ~0u)
+        uint gi = ~0u;
+        gi = GlobalIndexFromLocal(li);
+        if (gi == ~0u)
         return;
 
-        if (IsFixedVertex(childGi))
+        if (IsFixedVertex(gi))
         return;
 
-        int p = _ParentIndex[childGi];
-        if (p < int(_Base) || p >= int(_Base + _ActiveCount))
-        return;
-
-        uint parent = uint(p);
-        float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
-
-        uint parentFixedCount = 0u;
-        parentFixedCount = ReadFixedChildCount(parent);
-        if (parentFixedCount == 1u)
+        uint parentCount = ParentReadCount();
+        uint sourceCount = 0u;
+        int sourceGi[targetParentCount];
+        float sourceWeight[targetParentCount];
+        [unroll] for (uint s = 0u; s < targetParentCount; s++)
         {
-            float2 anchor = 0.0;
-            anchor = ReadFixedChildAnchor(parent);
-            float2 rp = _Pos[parent] - anchor;
-            float rpLen = length(rp);
-            if (rpLen > EPS)
+            sourceGi[s] = -1;
+            sourceWeight[s] = 0.0;
+        }
+
+        if (li < _ActiveCount)
+        {
+            sourceCount = parentCount;
+            if (sourceCount == 0u)
+            return;
+
+            int selected[targetParentCount];
+            float selectedDistSq[targetParentCount];
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
             {
-                float parentMu, parentLambda;
-                ComputeMaterialLame(parent, parentMu, parentLambda);
+                selected[s] = -1;
+                selectedDistSq[s] = 1e30;
+            }
 
-                float2 radial = rp / rpLen;
-                float radialDV = dot(parentDeltaV, radial);
-                float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (parentMu + parentLambda) / EffectiveVolumeForCompliance(parent)));
-                parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
+            selected[0] = int(gi);
+            selectedDistSq[0] = 0.0;
 
-                if (_UseAffineProlongation != 0u)
+            uint neighborCount = 0u;
+            uint ns[targetNeighborCount];
+            [unroll] for (uint initIdx = 0u; initIdx < targetNeighborCount; initIdx++) ns[initIdx] = ~0u;
+            GetNeighbors(gi, neighborCount, ns);
+
+            [loop] for (uint k = 0u; k < targetNeighborCount; k++)
+            {
+                if (k >= neighborCount) break;
+
+                uint nj = ns[k];
+                if (nj == ~0u || nj == gi)
+                continue;
+
+                uint njLi = ~0u;
+                njLi = LocalIndexFromGlobal(nj);
+                if (njLi == ~0u || njLi >= _ActiveCount)
+                continue;
+
+                float2 d = _Pos[nj] - _Pos[gi];
+                float dsq = dot(d, d);
+
+                uint insertAt = sourceCount;
+                [unroll] for (uint s = 0u; s < targetParentCount; s++)
                 {
-                    float2 rc = _Pos[childGi] - anchor;
-                    float invRpSq = 1.0 / max(dot(rp, rp), EPS);
-                    float omega = (rp.x * parentDeltaV.y - rp.y * parentDeltaV.x) * invRpSq;
-
-                    float2 rotParent = omega * float2(-rp.y, rp.x);
-                    float2 transl = parentDeltaV - rotParent;
-                    float2 rotChild = omega * float2(-rc.y, rc.x);
-
-                    parentDeltaV = transl + rotChild;
+                    if (s >= sourceCount) break;
+                    if (dsq < selectedDistSq[s]) { insertAt = s; break; }
                 }
+                if (insertAt >= sourceCount) continue;
+
+                [unroll] for (uint shift = 0u; shift < targetParentCount; shift++)
+                {
+                    uint idx = sourceCount - 1u - shift;
+                    if (idx <= insertAt || idx >= sourceCount) continue;
+                    selected[idx] = selected[idx - 1u];
+                    selectedDistSq[idx] = selectedDistSq[idx - 1u];
+                }
+
+                selected[insertAt] = int(nj);
+                selectedDistSq[insertAt] = dsq;
+            }
+
+            float maxDist = 0.0;
+            uint selectedCount = 0u;
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
+            {
+                if (s >= sourceCount) break;
+                if (selected[s] < 0) continue;
+                selectedCount++;
+                maxDist = max(maxDist, sqrt(max(selectedDistSq[s], 0.0)));
+            }
+            if (selectedCount == 0u)
+            return;
+
+            float invMaxDist = (maxDist > EPS) ? (1.0 / maxDist) : 0.0;
+            float rawWeight[targetParentCount];
+            float rawWeightSum = 0.0;
+
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
+            {
+                rawWeight[s] = 0.0;
+                if (s >= sourceCount) continue;
+
+                int pj = selected[s];
+                if (pj < 0) continue;
+
+                float d = sqrt(max(selectedDistSq[s], 0.0));
+                float normalizedD = (maxDist > EPS) ? (d * invMaxDist) : 0.0;
+                float w = 1.0 / (normalizedD + max(_ParentWeightEpsilon, 1e-6));
+                if (w <= EPS) continue;
+
+                sourceGi[s] = pj;
+                rawWeight[s] = w;
+                rawWeightSum += w;
+            }
+
+            if (rawWeightSum <= EPS)
+            return;
+
+            [unroll] for (uint s = 0u; s < targetParentCount; s++)
+            {
+                if (s >= sourceCount) break;
+                if (sourceGi[s] < 0) continue;
+                sourceWeight[s] = rawWeight[s] / rawWeightSum;
+            }
+        }
+        else
+        {
+            sourceCount = parentCount;
+            float rawWeightSum = 0.0;
+
+            [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+            {
+                if (slot >= sourceCount) break;
+
+                int p = ReadParentBySlot(gi, slot);
+                if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+
+                float w = max(ReadParentWeightBySlot(gi, slot), 0.0);
+                if (w <= EPS) continue;
+
+                sourceGi[slot] = p;
+                sourceWeight[slot] = w;
+                rawWeightSum += w;
+            }
+
+            if (rawWeightSum <= EPS)
+            return;
+
+            [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+            {
+                if (slot >= sourceCount) break;
+                if (sourceGi[slot] < 0) continue;
+                sourceWeight[slot] /= rawWeightSum;
             }
         }
 
-        _Vel[childGi] += parentDeltaV * _ProlongationScale;
+        float2 blendedDeltaV = 0.0;
+        float weightSum = 0.0;
+
+        [unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+        {
+            if (slot >= sourceCount) break;
+
+            int p = sourceGi[slot];
+            if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+
+            float w = max(sourceWeight[slot], 0.0);
+            if (w <= EPS) continue;
+
+            uint parent = (uint)p;
+            float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
+
+            float parentFixedCount = 0.0;
+            parentFixedCount = ReadFixedChildCount(parent);
+            if (abs(parentFixedCount - 1.0) <= 0.25)
+            {
+                float2 anchor = 0.0;
+                anchor = ReadFixedChildAnchor(parent);
+                float2 rp = _Pos[parent] - anchor;
+                float rpLen = length(rp);
+                if (rpLen > EPS)
+                {
+                    float parentMu, parentLambda;
+                    ComputeMaterialLame(parent, parentMu, parentLambda);
+
+                    float2 radial = rp / rpLen;
+                    float radialDV = dot(parentDeltaV, radial);
+                    float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (parentMu + parentLambda) / EffectiveVolumeForCompliance(parent)));
+                    parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
+
+                    if (_UseAffineProlongation != 0u)
+                    {
+                        float2 rc = _Pos[gi] - anchor;
+                        float invRpSq = 1.0 / max(dot(rp, rp), EPS);
+                        float omega = (rp.x * parentDeltaV.y - rp.y * parentDeltaV.x) * invRpSq;
+
+                        float2 rotParent = omega * float2(-rp.y, rp.x);
+                        float2 transl = parentDeltaV - rotParent;
+                        float2 rotChild = omega * float2(-rc.y, rc.x);
+
+                        parentDeltaV = transl + rotChild;
+                    }
+                }
+            }
+
+            blendedDeltaV += parentDeltaV * w;
+            weightSum += w;
+        }
+
+        if (weightSum <= EPS) return;
+        float2 prolongatedDeltaV = (blendedDeltaV / weightSum) * _ProlongationScale;
+        if (li < _ActiveCount)
+        {
+            _Vel[gi] = _SavedVelPrefix[gi] + prolongatedDeltaV;
+        }
+        else
+        {
+            _Vel[gi] += prolongatedDeltaV;
+        }
     }
 
     [numthreads(256, 1, 1)]
     void SmoothProlongatedFineVel(uint3 id : SV_DispatchThreadID)
     {
-        uint li = _ActiveCount + id.x;
+        uint li = id.x;
         if (li >= _FineCount)
         return;
 
