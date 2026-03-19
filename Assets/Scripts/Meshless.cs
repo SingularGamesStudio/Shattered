@@ -8,6 +8,7 @@ using GPU.Delaunay;
 public class Meshless : MonoBehaviour {
     public static readonly List<Meshless> Active = new List<Meshless>(64);
     public List<Node> nodes = new List<Node>();
+    [HideInInspector]
     public int maxLayer = 2;
     [HideInInspector]
     public int[] layerEndIndex;
@@ -83,6 +84,7 @@ public class Meshless : MonoBehaviour {
 
     public void Build() {
         nodes = nodes.OrderByDescending(node => node.maxLayer).ToList();
+        ResolveMaxLayerFromNodes();
 
         ApplyFixedObjectState();
 
@@ -94,6 +96,19 @@ public class Meshless : MonoBehaviour {
 
         RecomputeMassFromDensity();
 
+    }
+
+    void ResolveMaxLayerFromNodes() {
+        if (nodes == null || nodes.Count == 0) {
+            maxLayer = 0;
+            return;
+        }
+
+        int resolvedMaxLayer = 0;
+        for (int i = 0; i < nodes.Count; i++)
+            resolvedMaxLayer = math.max(resolvedMaxLayer, nodes[i].maxLayer);
+
+        maxLayer = math.max(0, resolvedMaxLayer);
     }
 
     public void RecomputeMassFromDensity() {

@@ -2,6 +2,14 @@ public static class Const {
     public const float Gravity = -0.01f;
     public const float Compliance = 1f;
 
+    // Global point generation
+    public const float Layer0PointDensity = 256f;
+    public const float LayerDownsampleRatio = 0.25f;
+    public const int MinVerticesPerLayer = 10;
+    public const int MaxAutoLayers = 6;
+    public const float PoissonRadiusScale = 0.85f;
+    public const int PoissonK = 30;
+
     // Neighbors
     public const int NeighborCount = 16;
     public const float LayerKernelHFromPoissonRadius = 2f;
@@ -10,8 +18,8 @@ public static class Const {
     // XPBI Solver
     public const int JRIterationsLMax = 2;
     public const int JRIterationsLMid = 4;
-    public const int GSIterationsL0 = 20;
-    public const int JRIterationsL0 = 0;
+    public const int GSIterationsL0 = 4;
+    public const int JRIterationsL0 = 16;
     public const float JROmegaV = 0.3f;
     public const float JROmegaL = 0.3f;
     public const int PersistentCoarseMaxNodes = 256;

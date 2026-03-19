@@ -12,26 +12,24 @@ public class Box : Meshless {
     public float2 size;
 
     [Header("Generator")]
-    public int pointCount;
     public bool generateOnStart = false;
     public AnchorMode defaultAnchorMode = AnchorMode.TopRightCorner;
 
     [Header("Seed")]
     public uint seed = 1;
 
-    [Header("Hierarchy")]
-    [Range(0.01f, 0.99f)] public float layerRatio = 0.10f;
-    [Min(0.01f)] public float radiusScale = 0.85f;
-    [Min(1)] public int poissonK = 30;
+    [Header("Generated")]
+    [Min(1)] public int generatedLayer0PointCount;
+    [Min(1)] public int generatedLayerCount;
 
     [HideInInspector]
     public int[] layerNodeCounts;
     void Start() {
-        if (generateOnStart) Generate(pointCount, 0);
+        if (generateOnStart) Generate(0, 0);
     }
 
     public void Generate(int count, short material) {
-        GenerateHierarchy(count);
+        GenerateHierarchy();
 
         if (defaultAnchorMode == AnchorMode.TopRightCorner)
             FixTopRightCorner();
@@ -90,23 +88,24 @@ public class Box : Meshless {
         FixNode(cornerIdx);
     }
 
-    void GenerateHierarchy(int randomPointCount) {
-        if (maxLayer < 0) maxLayer = 0;
-
+    void GenerateHierarchy() {
         var half = size * 0.5f;
         var min = new float2(transform.position.x, transform.position.y) - half;
         var max = new float2(transform.position.x, transform.position.y) + half;
         var area = math.max(1e-12f, size.x * size.y);
 
-        int layerCount = maxLayer + 1;
-
-        // Counts: layer 0 total is fixed: random points + 4 corners.
-        // Higher layers are computed only from the random points (corners do not propagate up).
-        var perLayerRandom = ComputeStrictlyDecreasingCounts(
-            math.max(0, randomPointCount),
-            layerCount,
-            layerRatio
+        int layer0Count = ComputeLayer0PointCount(area);
+        var perLayerRandom = ComputeAutoLayerCounts(
+            layer0Count,
+            Const.LayerDownsampleRatio,
+            Const.MinVerticesPerLayer,
+            Const.MaxAutoLayers
         );
+
+        int layerCount = perLayerRandom.Length;
+        maxLayer = layerCount - 1;
+        generatedLayer0PointCount = layer0Count;
+        generatedLayerCount = layerCount;
 
         layerNodeCounts = new int[layerCount];
         for (int l = 0; l < layerCount; l++)
@@ -115,10 +114,10 @@ public class Box : Meshless {
         layerRadii = new float[layerCount];
         layerKernelH = new float[layerCount];
 
-        // Radii (initial guess). Layer 0 uses total (random + fixed) because corners constrain it.
-        layerRadii[0] = radiusScale * math.sqrt(area / math.max(1, layerNodeCounts[0]));
+        // Radii (initial guess).
+        layerRadii[0] = Const.PoissonRadiusScale * math.sqrt(area / math.max(1, layerNodeCounts[0]));
         for (int l = 1; l < layerCount; l++)
-            layerRadii[l] = radiusScale * math.sqrt(area / math.max(1, layerNodeCounts[l]));
+            layerRadii[l] = Const.PoissonRadiusScale * math.sqrt(area / math.max(1, layerNodeCounts[l]));
 
         // Ensure non-decreasing radii with layer index (coarser layers should have >= radius).
         for (int l = 1; l < layerCount; l++)
@@ -146,7 +145,7 @@ public class Box : Meshless {
                 radius,
                 target,
                 (short)l,
-                poissonK,
+                Const.PoissonK,
                 pts,
                 ptsMaxLayer
             );
@@ -162,6 +161,36 @@ public class Box : Meshless {
 
         for (int i = 0; i < pts.Count; i++)
             AddAndSetMaxLayer(pts[i], ptsMaxLayer[i]);
+
+        generatedLayer0PointCount = pts.Count;
+    }
+
+    static int ComputeLayer0PointCount(float area) {
+        int densityTarget = (int)math.round(area * Const.Layer0PointDensity);
+        return math.max(Const.MinVerticesPerLayer, densityTarget);
+    }
+
+    static int[] ComputeAutoLayerCounts(int layer0Count, float ratio, int minPerLayer, int maxLayers) {
+        int clampedMinPerLayer = math.max(1, minPerLayer);
+        int clampedLayer0Count = math.max(clampedMinPerLayer, layer0Count);
+        int clampedMaxLayers = math.max(1, maxLayers);
+        float clampedRatio = math.clamp(ratio, 0.01f, 0.99f);
+
+        var counts = new List<int>(clampedMaxLayers) { clampedLayer0Count };
+
+        for (int layer = 1; layer < clampedMaxLayers; layer++) {
+            int prev = counts[layer - 1];
+            int next = (int)math.floor(prev * clampedRatio);
+            if (next >= prev)
+                next = prev - 1;
+
+            if (next < clampedMinPerLayer)
+                break;
+
+            counts.Add(next);
+        }
+
+        return counts.ToArray();
     }
 
     int AddAndSetMaxLayer(float2 p, short maxLayer) {
@@ -174,29 +203,6 @@ public class Box : Meshless {
         nodes[idx] = n;
 
         return idx;
-    }
-
-    static int[] ComputeStrictlyDecreasingCounts(int baseCount, int layers, float ratio) {
-        var counts = new int[layers];
-        counts[0] = baseCount;
-
-        for (int l = 1; l < layers; l++) {
-            int next = (int)math.round(counts[l - 1] * ratio);
-            next = math.max(1, next);
-
-            if (counts[l - 1] > 1)
-                next = math.min(next, counts[l - 1] - 1);
-
-            counts[l] = next;
-        }
-
-        // If baseCount is 0, keep all layers at 0 (except we don't want negative).
-        if (baseCount == 0) {
-            counts[0] = 0;
-            for (int l = 1; l < layers; l++) counts[l] = 0;
-        }
-
-        return counts;
     }
 
     static float FillPoissonToTarget(

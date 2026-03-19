@@ -15,7 +15,7 @@ public class BoxGenerator : Editor {
 
         root.Add(new Button(() => {
             Undo.RecordObject(Target, "Generate Box");
-            Target.Generate(Target.pointCount, 0);
+            Target.Generate(0, 0);
             EditorUtility.SetDirty(Target);
         }) { text = "Generate" });
 
