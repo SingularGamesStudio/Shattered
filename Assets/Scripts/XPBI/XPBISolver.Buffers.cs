@@ -35,8 +35,9 @@ namespace GPU.Solver {
         internal void EnsureKernelsCached() {
             if (kernelsCached) return;
 
-            gameplayForce.CacheKernels(shader);
-            layerSolve.CacheRuntimeKernels();
+            gameplayForce.CacheKernels();
+            layerCacheRuntime.CacheRuntimeKernels();
+            layerSolveRuntime.CacheRuntimeKernels();
             hierarchySync.CacheRuntimeKernels();
             collisionEvent.CacheRuntimeKernels();
             solverDebug.CacheRuntimeKernels();
@@ -117,7 +118,7 @@ namespace GPU.Solver {
             FCpu = new float4[capacity];
             FpCpu = new float4[capacity];
 
-            layerSolve.AllocateRuntimeBuffers(capacity);
+            layerSolveRuntime.AllocateRuntimeBuffers(capacity);
             collisionEvent.AllocateRuntimeBuffers(capacity);
             coloring.AllocateRuntimeBuffers(capacity);
 
@@ -129,27 +130,30 @@ namespace GPU.Solver {
             initializedCount = -1;
         }
 
-        internal void SetCommonShaderParams(float dt, float gravity, float compliance, int total, int baseIndex) {
-            asyncCb.SetComputeFloatParam(shader, "_Dt", dt);
-            asyncCb.SetComputeFloatParam(shader, "_Gravity", gravity);
-            asyncCb.SetComputeFloatParam(shader, "_Compliance", compliance);
-            asyncCb.SetComputeFloatParam(shader, "_MaxSpeed", Const.MaxVelocity);
-            asyncCb.SetComputeFloatParam(shader, "_MaxStep", Const.MaxDisplacementPerTick);
-            asyncCb.SetComputeIntParam(shader, "_TotalCount", total);
-            asyncCb.SetComputeIntParam(shader, "_Base", baseIndex);
-            asyncCb.SetComputeFloatParam(shader, "_ProlongationScale", Const.ProlongationScale);
-            asyncCb.SetComputeFloatParam(shader, "_PostProlongSmoothing", Const.PostProlongSmoothing);
-            asyncCb.SetComputeFloatParam(shader, "_WendlandSupport", Const.WendlandSupport);
-            asyncCb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);
-            asyncCb.SetComputeFloatParam(shader, "_CollisionCompliance", Const.CollisionCompliance);
-            asyncCb.SetComputeFloatParam(shader, "_CollisionFriction", Const.CollisionFriction);
-            asyncCb.SetComputeFloatParam(shader, "_CollisionRestitution", Const.CollisionRestitution);
-            asyncCb.SetComputeFloatParam(shader, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
-            asyncCb.SetComputeFloatParam(shader, "_DurabilityCompliance", Const.DurabilityCompliance);
-            asyncCb.SetComputeFloatParam(shader, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
-            asyncCb.SetComputeIntParam(shader, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
-            asyncCb.SetComputeIntParam(shader, "_ParentKNearest", math.clamp(Const.ParentKNearest, 1, 4));
-            asyncCb.SetComputeFloatParam(shader, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));
+        internal void SetCommonShaderParams(float dt, int total, int baseIndex) {
+            for (int i = 0; i < commonParamShaders.Length; i++) {
+                ComputeShader target = commonParamShaders[i];
+                asyncCb.SetComputeFloatParam(target, "_Dt", dt);
+                asyncCb.SetComputeFloatParam(target, "_Gravity", Const.Gravity);
+                asyncCb.SetComputeFloatParam(target, "_Compliance", Const.Compliance);
+                asyncCb.SetComputeFloatParam(target, "_MaxSpeed", Const.MaxVelocity);
+                asyncCb.SetComputeFloatParam(target, "_MaxStep", Const.MaxDisplacementPerTick);
+                asyncCb.SetComputeIntParam(target, "_TotalCount", total);
+                asyncCb.SetComputeIntParam(target, "_Base", baseIndex);
+                asyncCb.SetComputeFloatParam(target, "_ProlongationScale", Const.ProlongationScale);
+                asyncCb.SetComputeFloatParam(target, "_PostProlongSmoothing", Const.PostProlongSmoothing);
+                asyncCb.SetComputeFloatParam(target, "_WendlandSupport", Const.WendlandSupport);
+                asyncCb.SetComputeFloatParam(target, "_CollisionSupportScale", Const.CollisionSupportScale);
+                asyncCb.SetComputeFloatParam(target, "_CollisionCompliance", Const.CollisionCompliance);
+                asyncCb.SetComputeFloatParam(target, "_CollisionFriction", Const.CollisionFriction);
+                asyncCb.SetComputeFloatParam(target, "_CollisionRestitution", Const.CollisionRestitution);
+                asyncCb.SetComputeFloatParam(target, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
+                asyncCb.SetComputeFloatParam(target, "_DurabilityCompliance", Const.DurabilityCompliance);
+                asyncCb.SetComputeFloatParam(target, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
+                asyncCb.SetComputeIntParam(target, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
+                asyncCb.SetComputeIntParam(target, "_ParentKNearest", math.clamp(Const.ParentKNearest, 1, 4));
+                asyncCb.SetComputeFloatParam(target, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));
+            }
         }
 
         void ReleaseBuffers() {
@@ -164,7 +168,7 @@ namespace GPU.Solver {
             F?.Dispose(); F = null;
             Fp?.Dispose(); Fp = null;
 
-            layerSolve.ReleaseRuntimeBuffers();
+            layerSolveRuntime.ReleaseRuntimeBuffers();
             collisionEvent.ReleaseRuntimeBuffers();
             coloring.ReleaseRuntimeBuffers();
             solverDebug.ReleaseRuntimeBuffers();

@@ -1,60 +1,60 @@
 public static class Const {
-    public const float Gravity = -0.01f;
-    public const float Compliance = 1f;
+    public static float Gravity => SimulationParamSource.Current.solverCore.gravity;
+    public static float Compliance => SimulationParamSource.Current.solverCore.compliance;
 
     // Global point generation
-    public const float Layer0PointDensity = 256f;
-    public const float LayerDownsampleRatio = 0.25f;
-    public const int MinVerticesPerLayer = 10;
-    public const int MaxAutoLayers = 6;
-    public const float PoissonRadiusScale = 0.85f;
-    public const int PoissonK = 30;
+    public static float Layer0PointDensity => SimulationParamSource.Current.pointCloud.layer0PointDensity;
+    public static float LayerDownsampleRatio => SimulationParamSource.Current.pointCloud.layerDownsampleRatio;
+    public static int MinVerticesPerLayer => SimulationParamSource.Current.pointCloud.minVerticesPerLayer;
+    public static int MaxAutoLayers => SimulationParamSource.Current.pointCloud.maxAutoLayers;
+    public static float PoissonRadiusScale => SimulationParamSource.Current.pointCloud.poissonRadiusScale;
+    public static int PoissonK => SimulationParamSource.Current.pointCloud.poissonK;
 
     // Neighbors
-    public const int NeighborCount = 16;
-    public const float LayerKernelHFromPoissonRadius = 2f;
-    public const float WendlandSupport = 2.0f;
+    public static int NeighborCount = 16;
+    public static float LayerKernelHFromPoissonRadius => SimulationParamSource.Current.neighbors.layerKernelHFromPoissonRadius;
+    public static float WendlandSupport => SimulationParamSource.Current.neighbors.wendlandSupport;
 
     // XPBI Solver
-    public const int JRIterationsLMax = 2;
-    public const int JRIterationsLMid = 4;
-    public const int GSIterationsL0 = 4;
-    public const int JRIterationsL0 = 16;
-    public const float JROmegaV = 0.3f;
-    public const float JROmegaL = 0.3f;
-    public const int PersistentCoarseMaxNodes = 256;
+    public static int JRIterationsLMax => SimulationParamSource.Current.iterations.jrIterationsLMax;
+    public static int JRIterationsLMid => SimulationParamSource.Current.iterations.jrIterationsLMid;
+    public static int GSIterationsL0 => SimulationParamSource.Current.iterations.gsIterationsL0;
+    public static int JRIterationsL0 => SimulationParamSource.Current.iterations.jrIterationsL0;
+    public static float JROmegaV => SimulationParamSource.Current.iterations.jrOmegaV;
+    public static float JROmegaL => SimulationParamSource.Current.iterations.jrOmegaL;
+    public static int PersistentCoarseMaxNodes = 256;
 
     // DT maintenance
-    public const int ColoringConflictRounds = 3;
-    public const int InitColoringConflictRounds = 24;
-    public const int DTFixIterations = 2;
-    public const int DTLegalizeIterations = 2;
+    public static int ColoringConflictRounds => SimulationParamSource.Current.dtMaintenance.coloringConflictRounds;
+    public static int InitColoringConflictRounds => SimulationParamSource.Current.dtMaintenance.initColoringConflictRounds;
+    public static int DTFixIterations => SimulationParamSource.Current.dtMaintenance.dtFixIterations;
+    public static int DTLegalizeIterations => SimulationParamSource.Current.dtMaintenance.dtLegalizeIterations;
 
     // Stability limits
-    public const float MaxVelocity = 2.0f;
-    public const float MaxDisplacementPerTick = 0.012f;
+    public static float MaxVelocity => SimulationParamSource.Current.stability.maxVelocity;
+    public static float MaxDisplacementPerTick => SimulationParamSource.Current.stability.maxDisplacementPerTick;
 
     // Multigrid prolongation
-    public const float ProlongationScale = 0.5f;
-    public const float RestrictedDeltaVScale = 0.75f;
-    public const bool UseAffineProlongation = true;
-    public const float RestrictResidualDeltaVScale = 0.35f;
-    public const float PostProlongSmoothing = 0.2f;
-    public const int ParentKNearest = 2;
-    public const float ParentWeightEpsilon = 1e-3f;
+    public static float ProlongationScale => SimulationParamSource.Current.prolongation.prolongationScale;
+    public static float RestrictedDeltaVScale => SimulationParamSource.Current.prolongation.restrictedDeltaVScale;
+    public static bool UseAffineProlongation => SimulationParamSource.Current.prolongation.useAffineProlongation;
+    public static float RestrictResidualDeltaVScale => SimulationParamSource.Current.prolongation.restrictResidualDeltaVScale;
+    public static float PostProlongSmoothing => SimulationParamSource.Current.prolongation.postProlongSmoothing;
+    public static int ParentKNearest => SimulationParamSource.Current.prolongation.parentKNearest;
+    public static float ParentWeightEpsilon => SimulationParamSource.Current.prolongation.parentWeightEpsilon;
 
     // Collisions
-    public const float CollisionSupportScale = 0.3f;
-    public const float CollisionCompliance = 0.1f;
-    public const float CollisionFriction = 0.2f;
-    public const float CollisionRestitution = 0.0f;
-    public const float CollisionRestitutionThreshold = 0.005f;
+    public static float CollisionSupportScale => SimulationParamSource.Current.collision.collisionSupportScale;
+    public static float CollisionCompliance => SimulationParamSource.Current.collision.collisionCompliance;
+    public static float CollisionFriction => SimulationParamSource.Current.collision.collisionFriction;
+    public static float CollisionRestitution => SimulationParamSource.Current.collision.collisionRestitution;
+    public static float CollisionRestitutionThreshold => SimulationParamSource.Current.collision.collisionRestitutionThreshold;
 
     // Durability tether (unilateral max-distance inequality)
-    public const float DurabilityCompliance = 0.8f;
-    public const float DurabilityMaxDistanceRatio = 0.8f;
+    public static float DurabilityCompliance => SimulationParamSource.Current.durability.durabilityCompliance;
+    public static float DurabilityMaxDistanceRatio => SimulationParamSource.Current.durability.durabilityMaxDistanceRatio;
 
     // Optional deep-debug probe; when enabled it forces per-batch fence waits + readback.
-    public const bool ProlongationConstraintDebugEnabled = false;
+    public static bool ProlongationConstraintDebugEnabled => SimulationParamSource.Current.uiAndReadback.prolongationConstraintDebugEnabled;
 
 }

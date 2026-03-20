@@ -1,0 +1,44 @@
+#pragma enable_d3d11_debug_symbols
+
+#pragma kernel ApplyGameplayForces
+#pragma kernel ExternalForces
+
+#include "../CommonShaders/Solver.Shared.hlsl"
+
+// ----------------------------------------------------------------------------
+// ApplyGameplayForces: external per-node acceleration/impulse-like input.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void ApplyGameplayForces(uint3 id : SV_DispatchThreadID)
+{
+    uint ei = id.x;
+    if (ei >= _ForceEventCount)
+        return;
+
+    XPBI_ForceEvent e = _ForceEvents[ei];
+    uint gi = e.node;
+
+    if (gi < _Base || gi >= _Base + _TotalCount)
+        return;
+    if (IsFixedVertex(gi))
+        return;
+
+    _Vel[gi] += e.force * _Dt;
+}
+
+// ----------------------------------------------------------------------------
+// ExternalForces: gravity acceleration.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void ExternalForces(uint3 id : SV_DispatchThreadID)
+{
+    uint li = id.x;
+    if (li >= _TotalCount)
+        return;
+
+    uint gi = _Base + li;
+    if (IsFixedVertex(gi))
+        return;
+
+    _Vel[gi].y += _Gravity * _Dt;
+}

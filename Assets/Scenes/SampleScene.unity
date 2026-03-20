@@ -149,22 +149,77 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c69399c35ed965b438b9f480ff1013c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  targetTPS: 500
-  targetFPS: 30
-  simulationSpeed: 10
-  manual: 0
-  showTpsOverlay: 1
-  ConvergenceDebugEnabled: 1
-  useHierarchicalSolver: 1
-  neighborSearchMode: 0
-  gpuXpbiSolverShader: {fileID: 7200000, guid: 3546e6cb2d94a4c418327c6f7f60c20f, type: 3}
+  simulationParams:
+    pointCloud:
+      layer0PointDensity: 256
+      layerDownsampleRatio: 0.12
+      minVerticesPerLayer: 10
+      maxAutoLayers: 6
+      poissonRadiusScale: 0.85
+      poissonK: 30
+    runtime:
+      targetTPS: 500
+      targetFPS: 30
+      simulationSpeed: 10
+      maxTicksPerBatch: 32
+    interaction:
+      manual: 0
+      holdThreshold: 0.2
+      useHierarchicalSolver: 1
+      neighborSearchMode: 0
+    solverCore:
+      gravity: -0.01
+      compliance: 1
+    neighbors:
+      layerKernelHFromPoissonRadius: 2
+      wendlandSupport: 2
+    iterations:
+      jrIterationsLMax: 2
+      jrIterationsLMid: 4
+      gsIterationsL0: 4
+      jrIterationsL0: 16
+      jrOmegaV: 0.3
+      jrOmegaL: 0.3
+    stability:
+      maxVelocity: 2
+      maxDisplacementPerTick: 0.012
+    prolongation:
+      prolongationScale: 0.5
+      restrictedDeltaVScale: 0.75
+      useAffineProlongation: 1
+      restrictResidualDeltaVScale: 0.35
+      postProlongSmoothing: 0.2
+      parentKNearest: 2
+      parentWeightEpsilon: 0.001
+    collision:
+      collisionSupportScale: 0.3
+      collisionCompliance: 0.1
+      collisionFriction: 0.2
+      collisionRestitution: 0
+      collisionRestitutionThreshold: 0.005
+    durability:
+      durabilityCompliance: 0.8
+      durabilityMaxDistanceRatio: 0.8
+    dtMaintenance:
+      coloringConflictRounds: 3
+      initColoringConflictRounds: 24
+      dtFixIterations: 2
+      dtLegalizeIterations: 2
+    uiAndReadback:
+      showTpsOverlay: 1
+      convergenceDebugEnabled: 1
+      enableContinuousCpuReadback: 1
+      cpuReadbackInterval: 0.02
+      prolongationConstraintDebugEnabled: 0
+  layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}
+  layerSolveShader: {fileID: 7200000, guid: 3e6c7b34eb07a224fa7e8227c3bae1b8, type: 3}
+  gameplayForcesShader: {fileID: 7200000, guid: 326aeac9b85c37247a0fc8e59da76e0c, type: 3}
+  hierarchySyncShader: {fileID: 7200000, guid: 2b969a253377f964faaf380293a69c7e, type: 3}
+  collisionEventsShader: {fileID: 7200000, guid: 8a2dfc6820dad2d4ca7e31f1958ac6ea, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
   asyncQueue: 2
-  maxTicksPerBatch: 4
-  enableContinuousCpuReadback: 0
-  cpuReadbackInterval: 0.02
 --- !u!4 &86236646
 Transform:
   m_ObjectHideFlags: 0
@@ -356,10 +411,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   scenario: 5
   generateOnStart: 1
-  pointCount: 1000
-  maxLayer: 2
-  layerRatio: 0.12
-  radiusScale: 0.85
   hangCenter: {x: 0, y: 0}
   hangSize: {x: 3.4, y: 2.2}
   hangFixedCornerWidthFraction: 0.12
@@ -375,8 +426,6 @@ MonoBehaviour:
   dropSlimeCenter: {x: 0, y: 2.8}
   dropSlimeSize: {x: 2.4, y: 2}
   obstacleCount: 5
-  obstaclePointCount: 200
-  obstaclePointJitterFraction: 0.2
   obstacleClusterCenter: {x: 0, y: 0.3}
   obstacleClusterHalfSpread: {x: 1.5, y: 1}
   obstacleBaseSize: {x: 0.45, y: 0.45}
@@ -386,7 +435,6 @@ MonoBehaviour:
   addFloorPlane: 0
   floorCenter: {x: 0, y: -2.2}
   floorSize: {x: 8, y: 1.2}
-  floorPointCount: 10000
 --- !u!4 &1458040637
 Transform:
   m_ObjectHideFlags: 0

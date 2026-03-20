@@ -16,41 +16,21 @@ public sealed class SimulationController : MonoBehaviour {
 
     public static SimulationController Instance { get; private set; }
 
-    [Header("Rate")]
-    [Min(1f)] public float targetTPS = 1000f;
-    [Min(1f)] public float targetFPS = 60f;
-    public float simulationSpeed = 1f;
-
-    [Header("Mode")]
-    [Tooltip("When enabled, simulation advances only via the T key (tap = 1 tick, hold = continuous).")]
-    public bool manual = true;
-
-    [Header("UI")]
-    public bool showTpsOverlay = true;
-    public bool ConvergenceDebugEnabled = true;
+    [Header("Simulation Params")]
+    [SerializeField] SimulationParams simulationParams = new SimulationParams();
     Vector2 tpsOverlayPos = new Vector2(10f, 10f);
 
-    const float holdThreshold = 0.2f;
+    [Header("Solver Shaders")]
+    public ComputeShader layerCacheShader;
+    public ComputeShader layerSolveShader;
+    public ComputeShader gameplayForcesShader;
+    public ComputeShader hierarchySyncShader;
+    public ComputeShader collisionEventsShader;
 
-    [Header("Hierarchy")]
-    public bool useHierarchicalSolver = true;
-
-    [Header("Neighbor Search")]
-    public NeighborSearchMode neighborSearchMode = NeighborSearchMode.DelaunayTriangulation;
-
-    [Tooltip("Compute shader with kernels from XPBISolver.compute.")]
-    public ComputeShader gpuXpbiSolverShader;
+    [Header("Auxiliary Shaders")]
     public ComputeShader ColoringShader;
     public ComputeShader delaunayShader;
     public ComputeShader uniformGridNeighborShader;
-
-    [Header("GPU")]
-    public ComputeQueueType asyncQueue = ComputeQueueType.Background;
-    [Min(1)] public int maxTicksPerBatch = 32;
-
-    [Header("CPU Readback")]
-    public bool enableContinuousCpuReadback = true;
-    [Min(0.001f)] public float cpuReadbackInterval = 0.02f;
 
     readonly List<Meshless> meshless = new List<Meshless>(64);
     readonly List<Meshless> activeMeshlessBatch = new List<Meshless>(64);
@@ -104,9 +84,28 @@ public sealed class SimulationController : MonoBehaviour {
     float renderAlpha;
     public float RenderAlpha => renderAlpha;
 
+    SimulationParams Params {
+        get {
+            if (simulationParams == null)
+                simulationParams = new SimulationParams();
+            return simulationParams;
+        }
+    }
+
     void Awake() {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+        BindParams();
+    }
+
+    void OnValidate() {
+        BindParams();
+    }
+
+    void BindParams() {
+        if (simulationParams == null)
+            simulationParams = new SimulationParams();
+        SimulationParamSource.Set(simulationParams);
     }
 
     void OnEnable() {
@@ -151,7 +150,7 @@ public sealed class SimulationController : MonoBehaviour {
             cachedGlobalBatchFrame = -1;
 
             if (globalSolver == null)
-                globalSolver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
+                globalSolver = new XPBISolver(ColoringShader, layerCacheShader, layerSolveShader, gameplayForcesShader, hierarchySyncShader, collisionEventsShader);
             if (globalDTHierarchy == null)
                 globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
             if (uniformGridNeighborSearch == null && uniformGridNeighborShader != null)
@@ -218,17 +217,17 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void Update() {
-        if (targetTPS <= 0f)
+        if (Params.runtime.targetTPS <= 0f)
             return;
 
-        float tickDt = 1f / targetTPS;
+        float tickDt = 1f / Params.runtime.targetTPS;
 
         lastFrameTicks = 0;
 
         // Process completed async batches and try to promote finished slots
         ProcessAsyncBatchCompletions();
 
-        if (manual) ManualUpdateAsync(Time.deltaTime, tickDt);
+        if (Params.interaction.manual) ManualUpdateAsync(Time.deltaTime, tickDt);
         else AutoUpdateAsync(Time.deltaTime, tickDt);
 
         UpdateContinuousCpuReadback();
@@ -257,11 +256,11 @@ public sealed class SimulationController : MonoBehaviour {
     void AutoUpdateAsync(float frameDt, float tickDt) {
         accumulator += frameDt;
 
-        int ticksToRun = Mathf.Min(maxTicksPerBatch, (int)(accumulator / tickDt));
+        int ticksToRun = Mathf.Min(Params.runtime.maxTicksPerBatch, (int)(accumulator / tickDt));
 
         if (ticksToRun <= 0) return;
 
-        float dt = tickDt * simulationSpeed;
+        float dt = tickDt * Params.runtime.simulationSpeed;
 
         if (SubmitGlobalAsyncBatch(dt, ticksToRun)) {
             accumulator -= tickDt * ticksToRun;
@@ -280,13 +279,13 @@ public sealed class SimulationController : MonoBehaviour {
         if (Input.GetKey(KeyCode.T)) {
             keyHeldTime += frameDt;
 
-            if (keyHeldTime >= holdThreshold) {
+            if (keyHeldTime >= Params.interaction.holdThreshold) {
                 accumulator += frameDt;
 
-                int ticksToRun = Mathf.Min(maxTicksPerBatch, (int)(accumulator / tickDt));
+                int ticksToRun = Mathf.Min(Params.runtime.maxTicksPerBatch, (int)(accumulator / tickDt));
 
                 if (ticksToRun > 0) {
-                    float dt = tickDt * simulationSpeed;
+                    float dt = tickDt * Params.runtime.simulationSpeed;
                     if (SubmitGlobalAsyncBatch(dt, ticksToRun)) {
                         accumulator -= tickDt * ticksToRun;
                         if (accumulator < 0f)
@@ -298,8 +297,8 @@ public sealed class SimulationController : MonoBehaviour {
         }
 
         if (Input.GetKeyUp(KeyCode.T)) {
-            if (keyHeldTime < holdThreshold) {
-                float dt = tickDt * simulationSpeed;
+            if (keyHeldTime < Params.interaction.holdThreshold) {
+                float dt = tickDt * Params.runtime.simulationSpeed;
                 if (SubmitGlobalAsyncBatch(dt, 1))
                     lastFrameTicks += 1;
             }
@@ -314,7 +313,7 @@ public sealed class SimulationController : MonoBehaviour {
             return false;
 
         if (globalSolver == null)
-            globalSolver = new XPBISolver(gpuXpbiSolverShader, ColoringShader);
+            globalSolver = new XPBISolver(ColoringShader, layerCacheShader, layerSolveShader, gameplayForcesShader, hierarchySyncShader, collisionEventsShader);
 
         if (asyncState.renderFences == null || asyncState.renderFences.Length != 3)
             return false;
@@ -333,7 +332,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (activeMeshlessBatch.Count == 0)
             return false;
 
-        bool useUniformGridSearch = neighborSearchMode == NeighborSearchMode.UniformGridPaper;
+        bool useUniformGridSearch = Params.interaction.neighborSearchMode == NeighborSearchMode.UniformGridPaper;
         if (useUniformGridSearch && uniformGridNeighborSearch == null) {
             if (uniformGridNeighborShader == null)
                 return false;
@@ -364,16 +363,11 @@ public sealed class SimulationController : MonoBehaviour {
                 return false;
         }
 
-        bool useHierarchicalThisBatch = useHierarchicalSolver && !useUniformGridSearch;
-
         int readSlot = asyncState.renderSlot;
         GraphicsFence computeFence = globalSolver.SubmitSolve(
             activeMeshlessBatch,
             dtPerTick,
             ticksToRun,
-            useHierarchicalThisBatch,
-            ConvergenceDebugEnabled,
-            asyncQueue,
             readSlot,
             freeSlot,
             globalDTHierarchy,
@@ -450,7 +444,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (!globalHierarchyDirty)
             return;
 
-        int maxLayerOverride = neighborSearchMode == NeighborSearchMode.UniformGridPaper ? 0 : -1;
+        int maxLayerOverride = Params.interaction.neighborSearchMode == NeighborSearchMode.UniformGridPaper ? 0 : -1;
         globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, true, maxLayerOverride);
         globalHierarchyDirty = false;
     }
@@ -566,13 +560,13 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void UpdateContinuousCpuReadback() {
-        if (!enableContinuousCpuReadback)
+        if (!Params.uiAndReadback.enableContinuousCpuReadback)
             return;
 
         if (globalCpuReadbackPending)
             return;
 
-        if (Time.time < globalCpuReadbackLastRequestTime + cpuReadbackInterval)
+        if (Time.time < globalCpuReadbackLastRequestTime + Params.uiAndReadback.cpuReadbackInterval)
             return;
 
         if (!TryGetGlobalRenderBatch(out GlobalDTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets))
@@ -683,7 +677,7 @@ public sealed class SimulationController : MonoBehaviour {
         float fpsInst = frameDt > 0f ? (1f / frameDt) : 0f;
         fpsSmoothed = Mathf.Lerp(fpsSmoothed, fpsInst, k);
 
-        if (manual && lastFrameTicks == 0)
+        if (Params.interaction.manual && lastFrameTicks == 0)
             return;
 
         float inst = frameDt > 0f ? (lastFrameTicks / frameDt) : 0f;
@@ -691,18 +685,18 @@ public sealed class SimulationController : MonoBehaviour {
     }
 
     void OnGUI() {
-        if (!showTpsOverlay) return;
+        if (!Params.uiAndReadback.showTpsOverlay) return;
 
-        bool paused = manual && !Input.GetKey(KeyCode.T) && lastFrameTicks == 0;
+        bool paused = Params.interaction.manual && !Input.GetKey(KeyCode.T) && lastFrameTicks == 0;
 
-        float tickDt = targetTPS > 0f ? (1f / targetTPS) : 0f;
+        float tickDt = Params.runtime.targetTPS > 0f ? (1f / Params.runtime.targetTPS) : 0f;
         string text =
             $"FPS: {fpsSmoothed:0}\n" +
             $"TPS: {tpsSmoothed:0}\n" +
-            $"Target: {targetTPS:0}\n" +
+            $"Target: {Params.runtime.targetTPS:0}\n" +
             $"Ticks/frame: {lastFrameTicks}\n" +
             $"Tick dt: {tickDt:0.000000}\n" +
-            $"Sim speed: {simulationSpeed:0.###}";
+            $"Sim speed: {Params.runtime.simulationSpeed:0.###}";
 
         GUI.Label(new Rect(tpsOverlayPos.x, tpsOverlayPos.y, 260f, 105f), text);
     }

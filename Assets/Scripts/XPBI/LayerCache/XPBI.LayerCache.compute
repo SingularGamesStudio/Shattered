@@ -1,0 +1,355 @@
+#pragma enable_d3d11_debug_symbols
+
+#pragma kernel ClearHierarchicalStats
+#pragma kernel CacheHierarchicalStats
+#pragma kernel FinalizeHierarchicalStats
+#pragma kernel ComputeCorrectionL
+#pragma kernel CacheF0AndResetLambda
+#pragma kernel SaveVelPrefix
+#pragma kernel ClearVelDelta
+#pragma kernel ResetCollisionLambda
+
+#pragma kernel ClearRestrictedDeltaV
+#pragma kernel RestrictGameplayDeltaVFromEvents
+#pragma kernel RestrictFineVelocityResidualToActive
+#pragma kernel ApplyRestrictedDeltaVToActiveAndPrefix
+#pragma kernel RemoveRestrictedDeltaVFromActive
+
+#include "../CommonShaders/Solver.Shared.hlsl"
+
+[numthreads(256, 1, 1)]
+void ClearHierarchicalStats(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_CurrentVolumeBits[gi] = 0u;
+	_CurrentTotalMassBits[gi] = 0u;
+	_FixedChildPosBits[gi * 2u + 0u] = 0u;
+	_FixedChildPosBits[gi * 2u + 1u] = 0u;
+	_FixedChildCount[gi] = 0u;
+	_CoarseFixed[gi] = 0u;
+}
+
+[numthreads(256, 1, 1)]
+void CacheHierarchicalStats(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _FineCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+
+	float invM = _InvMass[gi];
+	float leafMass = (invM > EPS) ? (1.0 / invM) : 0.0;
+	float restV = _RestVolume[gi];
+	Mat2 F = Mat2FromFloat4(_F[gi]);
+	float detF = DetMat2(F);
+	if (!isfinite(detF)) return;
+	float leafVol = restV * min(abs(detF), 4.0);
+	if (!isfinite(leafVol)) return;
+
+	uint ownerGiList[targetParentCount];
+	float ownerWeightList[targetParentCount];
+	uint ownerCount = 0u;
+	float ownerWeightSum = 0.0;
+	[unroll] for (uint i = 0u; i < targetParentCount; i++) { ownerGiList[i] = ~0u; ownerWeightList[i] = 0.0; }
+
+	if (li < _ActiveCount)
+	{
+		ownerGiList[0] = gi;
+		ownerWeightList[0] = 1.0;
+		ownerCount = 1u;
+		ownerWeightSum = 1.0;
+	}
+	else
+	{
+		uint parentCount = ParentReadCount();
+		[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+		{
+			if (slot >= parentCount) break;
+			int p = ReadParentBySlot(gi, slot);
+			if (p < 0) continue;
+			uint pLi = LocalIndexFromGlobal((uint)p);
+			if (pLi == ~0u || pLi >= _ActiveCount) continue;
+			float w = max(ReadParentWeightBySlot(gi, slot), 0.0);
+			if (w <= EPS) continue;
+			ownerGiList[ownerCount] = (uint)p;
+			ownerWeightList[ownerCount] = w;
+			ownerWeightSum += w;
+			ownerCount++;
+		}
+		if (ownerCount == 0u)
+		{
+			int pDom = ReadDominantParent(gi);
+			if (pDom >= 0)
+			{
+				uint pLi = LocalIndexFromGlobal((uint)pDom);
+				if (pLi != ~0u && pLi < _ActiveCount)
+				{
+					ownerGiList[0] = (uint)pDom;
+					ownerWeightList[0] = 1.0;
+					ownerCount = 1u;
+					ownerWeightSum = 1.0;
+				}
+			}
+		}
+	}
+
+	if (ownerCount == 0u || ownerWeightSum <= EPS) return;
+
+	[unroll] for (uint oi = 0u; oi < targetParentCount; oi++)
+	{
+		if (oi >= ownerCount) break;
+		uint ownerGi = ownerGiList[oi];
+		if (ownerGi == ~0u) continue;
+		float wNorm = ownerWeightList[oi] / ownerWeightSum;
+		if (wNorm <= EPS) continue;
+
+		if (IsFixedVertex(gi))
+		{
+			AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 0u, _Pos[gi].x * wNorm);
+			AtomicAddFloatBits(_FixedChildPosBits, ownerGi * 2u + 1u, _Pos[gi].y * wNorm);
+			AtomicAddFloatBits(_FixedChildCount, ownerGi, wNorm);
+		}
+
+		if (leafMass > EPS) AtomicAddFloatBits(_CurrentTotalMassBits, ownerGi, leafMass * wNorm);
+		if (leafVol > EPS) AtomicAddFloatBits(_CurrentVolumeBits, ownerGi, leafVol * wNorm);
+	}
+}
+
+[numthreads(256, 1, 1)]
+void FinalizeHierarchicalStats(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_CoarseFixed[gi] = (asfloat(_FixedChildCount[gi]) > 1.0) ? 1u : 0u;
+}
+
+[numthreads(256, 1, 1)]
+void ComputeCorrectionL(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+
+	float h = max(_LayerKernelH, 1e-4);
+	if (h <= EPS) { _L[gi] = float4(0, 0, 0, 0); return; }
+	float kernelH = WendlandKernelHFromSupport(h);
+	if (kernelH <= EPS) { _L[gi] = float4(0, 0, 0, 0); return; }
+
+	uint neighborCount = 0u;
+	uint ns[targetNeighborCount];
+	[unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+	GetNeighbors(gi, neighborCount, ns);
+
+	float2 xi = _Pos[gi];
+	Mat2 sum = Mat2Zero();
+	uint valid = 0u;
+
+	[unroll] for (uint k = 0u; k < targetNeighborCount; k++)
+	{
+		uint gj = ns[k];
+		if (gj == ~0u) continue;
+		uint gjLi = LocalIndexFromGlobal(gj);
+		if (gjLi == ~0u || gjLi >= _ActiveCount) continue;
+		float2 xij = _Pos[gj] - xi;
+		float2 gradW = GradWendlandC2(xij, kernelH, EPS);
+		if (dot(gradW, gradW) <= EPS * EPS) continue;
+		float Vb = ReadCurrentVolume(gj);
+		if (!(Vb > EPS)) continue;
+		sum.c0 += (Vb * xij.x) * gradW;
+		sum.c1 += (Vb * xij.y) * gradW;
+		valid++;
+	}
+
+	float sumFro2 = dot(sum.c0, sum.c0) + dot(sum.c1, sum.c1);
+	if (valid < 3u || !(sumFro2 > 1e-12) || !(abs(DetMat2(sum)) > 1e-10 * sumFro2))
+	{
+		_L[gi] = float4(0, 0, 0, 0);
+		return;
+	}
+
+	Mat2 Lm = PseudoInverseMat2(sum, STRETCH_EPS, EIGEN_OFFDIAG_EPS);
+	float4 L4 = Float4FromMat2(Lm);
+	if (any(isnan(L4)) || any(abs(L4) > 1e3)) { _L[gi] = float4(0, 0, 0, 0); return; }
+	_L[gi] = L4;
+}
+
+[numthreads(256, 1, 1)]
+void CacheF0AndResetLambda(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_F0[gi] = _F[gi];
+	_Lambda[gi] = 0.0;
+}
+
+[numthreads(256, 1, 1)]
+void SaveVelPrefix(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_SavedVelPrefix[gi] = _Vel[gi];
+}
+
+[numthreads(256, 1, 1)]
+void ClearVelDelta(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_VelDeltaBits[gi * 2u + 0u] = 0u;
+	_VelDeltaBits[gi * 2u + 1u] = 0u;
+}
+
+[numthreads(256, 1, 1)]
+void ResetCollisionLambda(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
+	uint baseIdx = dtLi * _DtNeighborCount;
+	[unroll] for (uint k = 0u; k < targetNeighborCount; k++)
+	{
+		if (k >= _DtNeighborCount) break;
+		_DurabilityLambda[baseIdx + k] = 0.0;
+		_CollisionLambda[baseIdx + k] = 0.0;
+	}
+}
+
+[numthreads(256, 1, 1)]
+void ClearRestrictedDeltaV(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_RestrictedDeltaVBits[gi * 2u + 0u] = 0u;
+	_RestrictedDeltaVBits[gi * 2u + 1u] = 0u;
+	_RestrictedDeltaVCount[gi] = 0u;
+	_RestrictedDeltaVAvg[gi] = 0.0f;
+}
+
+[numthreads(256, 1, 1)]
+void RestrictGameplayDeltaVFromEvents(uint3 id : SV_DispatchThreadID)
+{
+	uint ei = id.x;
+	if (ei >= _ForceEventCount) return;
+	XPBI_ForceEvent e = _ForceEvents[ei];
+	uint gi = e.node;
+	if (gi < _Base || gi >= _Base + _FineCount) return;
+	if (IsFixedVertex(gi)) return;
+
+	float2 leafDeltaV = e.force * _Dt;
+	uint liOwner = LocalIndexFromGlobal(gi);
+	if (liOwner != ~0u && liOwner < _ActiveCount)
+	{
+		AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 0u, leafDeltaV.x);
+		AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 1u, leafDeltaV.y);
+		InterlockedAdd(_RestrictedDeltaVCount[gi], 1u);
+		return;
+	}
+
+	uint parentCount = ParentReadCount();
+	float weightSum = 0.0;
+	[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+	{
+		if (slot >= parentCount) break;
+		int p = ReadParentBySlot(gi, slot);
+		if (p < 0) continue;
+		uint pLi = LocalIndexFromGlobal((uint)p);
+		if (pLi == ~0u || pLi >= _ActiveCount) continue;
+		weightSum += max(ReadParentWeightBySlot(gi, slot), 0.0);
+	}
+	if (weightSum <= EPS) return;
+
+	[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+	{
+		if (slot >= parentCount) break;
+		int p = ReadParentBySlot(gi, slot);
+		if (p < 0) continue;
+		uint pGi = (uint)p;
+		uint pLi = LocalIndexFromGlobal(pGi);
+		if (pLi == ~0u || pLi >= _ActiveCount) continue;
+		float w = max(ReadParentWeightBySlot(gi, slot), 0.0) / weightSum;
+		if (w <= EPS) continue;
+		AtomicAddFloatBits(_RestrictedDeltaVBits, pGi * 2u + 0u, leafDeltaV.x * w);
+		AtomicAddFloatBits(_RestrictedDeltaVBits, pGi * 2u + 1u, leafDeltaV.y * w);
+		InterlockedAdd(_RestrictedDeltaVCount[pGi], 1u);
+	}
+}
+
+[numthreads(256, 1, 1)]
+void RestrictFineVelocityResidualToActive(uint3 id : SV_DispatchThreadID)
+{
+	uint li = _ActiveCount + id.x;
+	if (li >= _FineCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u || IsFixedVertex(gi)) return;
+
+	uint parentCount = ParentReadCount();
+	float weightSum = 0.0;
+	[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+	{
+		if (slot >= parentCount) break;
+		int p = ReadParentBySlot(gi, slot);
+		if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+		weightSum += max(ReadParentWeightBySlot(gi, slot), 0.0);
+	}
+	if (weightSum <= EPS) return;
+
+	[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
+	{
+		if (slot >= parentCount) break;
+		int p = ReadParentBySlot(gi, slot);
+		if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+		uint ownerGi = (uint)p;
+		float w = max(ReadParentWeightBySlot(gi, slot), 0.0) / weightSum;
+		if (w <= EPS) continue;
+		float2 residual = _Vel[gi] - _Vel[ownerGi];
+		AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 0u, residual.x * w);
+		AtomicAddFloatBits(_RestrictedDeltaVBits, ownerGi * 2u + 1u, residual.y * w);
+		InterlockedAdd(_RestrictedDeltaVCount[ownerGi], 1u);
+	}
+}
+
+[numthreads(256, 1, 1)]
+void ApplyRestrictedDeltaVToActiveAndPrefix(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+
+	if (_CoarseFixed[gi] != 0u) { _RestrictedDeltaVAvg[gi] = 0.0f; return; }
+
+	uint cnt = _RestrictedDeltaVCount[gi];
+	if (cnt == 0u) { _RestrictedDeltaVAvg[gi] = 0.0f; return; }
+
+	float2 sum = float2(asfloat(_RestrictedDeltaVBits[gi * 2u + 0u]), asfloat(_RestrictedDeltaVBits[gi * 2u + 1u]));
+	float2 dv = sum * ((1.0 / max((float)cnt, 1.0)) * _RestrictedDeltaVScale);
+
+	_RestrictedDeltaVAvg[gi] = dv;
+	_Vel[gi] += dv;
+	_SavedVelPrefix[gi] += dv;
+}
+
+[numthreads(256, 1, 1)]
+void RemoveRestrictedDeltaVFromActive(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u) return;
+	_Vel[gi] -= _RestrictedDeltaVAvg[gi];
+}
+

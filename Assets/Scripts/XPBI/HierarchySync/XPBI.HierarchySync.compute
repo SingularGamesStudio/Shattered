@@ -1,0 +1,361 @@
+#pragma enable_d3d11_debug_symbols
+
+#pragma kernel ClampVelocities
+#pragma kernel IntegratePositions
+#pragma kernel UpdateDtPositions
+#pragma kernel UpdateDtPositionsMapped
+#pragma kernel RebuildParentsAtLayer
+
+#include "../CommonShaders/Solver.Shared.hlsl"
+
+
+// ----------------------------------------------------------------------------
+// RebuildParentsAtLayer: find nearest coarse particle, then assign k nearest weighted parents.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
+{
+    uint liFine = _ParentRangeStart + id.x;
+    if (liFine >= _ParentRangeEnd)
+        return;
+
+    uint gi = (_UseDtGlobalNodeMap != 0u) ? GlobalIndexFromLocal(liFine) : (_Base + liFine);
+    if (gi == ~0u)
+        return;
+
+    float2 q = _Pos[gi];
+    uint parentCount = ParentReadCount();
+    uint parentBase = ParentSlotBase(gi);
+
+    [unroll]
+    for (uint clearIdx = 0u; clearIdx < targetParentCount; clearIdx++)
+    {
+        _ParentIndices[parentBase + clearIdx] = -1;
+        _ParentWeights[parentBase + clearIdx] = 0.0;
+    }
+
+    int cur = _ParentIndex[gi];
+    uint curLi = (cur >= 0) ? LocalIndexFromGlobal((uint)cur) : ~0u;
+    if (curLi == ~0u || curLi >= _ParentCoarseCount)
+    {
+        uint firstGi = GlobalIndexFromLocal(0u);
+        if (firstGi == ~0u)
+            return;
+        cur = int(firstGi);
+    }
+
+    float2 d0 = _Pos[cur] - q;
+    float best = dot(d0, d0);
+
+    [loop]
+    for (uint iter = 0; iter < 32; iter++)
+    {
+        uint liBase = LocalIndexFromGlobal((uint)cur);
+        if (liBase == ~0u)
+            break;
+
+        uint li = (_UseDtGlobalNodeMap != 0u) ? liBase : (_DtLocalBase + liBase);
+        if (liBase >= _ParentCoarseCount)
+            break;
+
+        uint cnt = min(_DtNeighborCounts[li], _DtNeighborCount);
+
+        int bestNext = cur;
+        float bestNextDist = best;
+
+        uint baseIdx = li * _DtNeighborCount;
+        for (uint k = 0; k < cnt; k++)
+        {
+            uint njLocal = _DtNeighbors[baseIdx + k];
+            uint nj = GlobalIndexFromLocal(njLocal);
+            if (nj == ~0u)
+                continue;
+
+            uint njLi = LocalIndexFromGlobal(nj);
+            if (njLi == ~0u || njLi >= _ParentCoarseCount)
+                continue;
+
+            float2 d = _Pos[nj] - q;
+            float dsq = dot(d, d);
+            if (dsq < bestNextDist)
+            {
+                bestNextDist = dsq;
+                bestNext = int(nj);
+            }
+        }
+
+        if (bestNext == cur)
+            break;
+
+        cur = bestNext;
+        best = bestNextDist;
+    }
+
+    int candidateGi[targetNeighborCount + 1];
+    float candidateDistSq[targetNeighborCount + 1];
+    uint candidateCount = 0u;
+
+    candidateGi[candidateCount] = cur;
+    candidateDistSq[candidateCount] = best;
+    candidateCount++;
+
+    uint curLocal = LocalIndexFromGlobal((uint)cur);
+    if (curLocal != ~0u && curLocal < _ParentCoarseCount)
+    {
+        uint dtLi = (_UseDtGlobalNodeMap != 0u) ? curLocal : (_DtLocalBase + curLocal);
+        uint rawCount = _DtNeighborCounts[dtLi];
+        uint nCount = min(min(rawCount, _DtNeighborCount), targetNeighborCount);
+        uint nBase = dtLi * _DtNeighborCount;
+
+        [loop]
+        for (uint k = 0u; k < nCount; k++)
+        {
+            uint njLocal = _DtNeighbors[nBase + k];
+            uint nj = GlobalIndexFromLocal(njLocal);
+            if (nj == ~0u)
+                continue;
+
+            uint njLi = LocalIndexFromGlobal(nj);
+            if (njLi == ~0u || njLi >= _ParentCoarseCount)
+                continue;
+
+            bool duplicate = false;
+            [unroll]
+            for (uint c = 0u; c < targetNeighborCount + 1; c++)
+            {
+                if (c >= candidateCount)
+                    break;
+                if (candidateGi[c] == int(nj))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (duplicate || candidateCount >= (targetNeighborCount + 1))
+                continue;
+
+            float2 d = _Pos[nj] - q;
+            candidateGi[candidateCount] = int(nj);
+            candidateDistSq[candidateCount] = dot(d, d);
+            candidateCount++;
+        }
+    }
+
+    int selectedParent[targetParentCount];
+    float selectedDistSq[targetParentCount];
+    [unroll]
+    for (uint i = 0u; i < targetParentCount; i++)
+    {
+        selectedParent[i] = -1;
+        selectedDistSq[i] = 1e30;
+    }
+
+    [loop]
+    for (uint c = 0u; c < targetNeighborCount + 1; c++)
+    {
+        if (c >= candidateCount)
+            break;
+
+        int cand = candidateGi[c];
+        float candDist = candidateDistSq[c];
+
+        uint insertAt = parentCount;
+        [unroll]
+        for (uint s = 0u; s < targetParentCount; s++)
+        {
+            if (s >= parentCount)
+                break;
+            if (candDist < selectedDistSq[s])
+            {
+                insertAt = s;
+                break;
+            }
+        }
+
+        if (insertAt >= parentCount)
+            continue;
+
+        [unroll]
+        for (uint shift = 0u; shift < targetParentCount; shift++)
+        {
+            uint idx = parentCount - 1u - shift;
+            if (idx <= insertAt || idx >= parentCount)
+                continue;
+            selectedParent[idx] = selectedParent[idx - 1u];
+            selectedDistSq[idx] = selectedDistSq[idx - 1u];
+        }
+
+        selectedParent[insertAt] = cand;
+        selectedDistSq[insertAt] = candDist;
+    }
+
+    uint usedCount = 0u;
+    float maxDist = 0.0;
+    [unroll]
+    for (uint s = 0u; s < targetParentCount; s++)
+    {
+        if (s >= parentCount)
+            break;
+        int p = selectedParent[s];
+        if (p < 0)
+            continue;
+        usedCount++;
+        maxDist = max(maxDist, sqrt(max(selectedDistSq[s], 0.0)));
+    }
+
+    if (usedCount == 0u)
+    {
+        selectedParent[0] = cur;
+        selectedDistSq[0] = best;
+        usedCount = 1u;
+        maxDist = sqrt(max(best, 0.0));
+    }
+
+    float invMaxDist = (maxDist > EPS) ? (1.0 / maxDist) : 0.0;
+    float weightSum = 0.0;
+    float rawWeight[targetParentCount];
+
+    [unroll]
+    for (uint s = 0u; s < targetParentCount; s++)
+    {
+        rawWeight[s] = 0.0;
+        if (s >= parentCount)
+            continue;
+
+        int p = selectedParent[s];
+        if (p < 0)
+            continue;
+
+        float d = sqrt(max(selectedDistSq[s], 0.0));
+        float normalizedD = (maxDist > EPS) ? (d * invMaxDist) : 0.0;
+        float w = 1.0 / (normalizedD + max(_ParentWeightEpsilon, 1e-6));
+        rawWeight[s] = w;
+        weightSum += w;
+    }
+
+    if (weightSum <= EPS)
+    {
+        float equalW = 1.0 / max((float)usedCount, 1.0);
+        [unroll]
+        for (uint s = 0u; s < targetParentCount; s++)
+        {
+            if (s >= parentCount)
+                break;
+            if (selectedParent[s] < 0)
+                continue;
+            rawWeight[s] = equalW;
+        }
+        weightSum = 1.0;
+    }
+
+    [unroll]
+    for (uint s = 0u; s < targetParentCount; s++)
+    {
+        if (s >= parentCount)
+            break;
+
+        int p = selectedParent[s];
+        if (p < 0)
+            continue;
+
+        _ParentIndices[parentBase + s] = p;
+        _ParentWeights[parentBase + s] = rawWeight[s] / weightSum;
+    }
+
+    _ParentIndex[gi] = cur;
+}
+
+// ----------------------------------------------------------------------------
+// ClampVelocities: hard safety bound against runaway impulses.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void ClampVelocities(uint3 id : SV_DispatchThreadID)
+{
+    uint li = id.x;
+    if (li >= _TotalCount)
+        return;
+
+    uint gi = _Base + li;
+    if (IsFixedVertex(gi))
+        return;
+
+    float2 v = _Vel[gi];
+    if (!all(isfinite(v)))
+    {
+        _Vel[gi] = 0.0;
+        return;
+    }
+
+    float maxSpeed = max(_MaxSpeed, 0.0);
+    if (maxSpeed <= 0.0)
+        return;
+
+    float speed = length(v);
+    if (speed > maxSpeed)
+        _Vel[gi] = v * (maxSpeed / max(speed, EPS));
+}
+
+// ----------------------------------------------------------------------------
+// IntegratePositions: forward Euler.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void IntegratePositions(uint3 id : SV_DispatchThreadID)
+{
+    uint li = id.x;
+    if (li >= _TotalCount)
+        return;
+
+    uint gi = _Base + li;
+    if (IsFixedVertex(gi))
+        return;
+
+    float2 p = _Pos[gi];
+    float2 v = _Vel[gi];
+
+    if (!all(isfinite(p)))
+        p = 0.0;
+    if (!all(isfinite(v)))
+    {
+        _Vel[gi] = 0.0;
+        _Pos[gi] = p;
+        return;
+    }
+
+    float2 dx = v * _Dt;
+    float maxStep = max(_MaxStep, 0.0);
+    if (maxStep > 0.0)
+    {
+        float stepLen = length(dx);
+        if (stepLen > maxStep)
+            dx *= maxStep / max(stepLen, EPS);
+    }
+
+    _Pos[gi] = p + dx;
+}
+
+[numthreads(256, 1, 1)]
+void UpdateDtPositions(uint3 id : SV_DispatchThreadID)
+{
+    uint li = id.x;
+    if (li >= _ActiveCount)
+        return;
+
+    uint gi = _Base + li;
+    _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
+}
+
+[numthreads(256, 1, 1)]
+void UpdateDtPositionsMapped(uint3 id : SV_DispatchThreadID)
+{
+    uint li = id.x;
+    if (li >= _ActiveCount)
+        return;
+
+    int giSigned = _DtGlobalNodeMap[li];
+    if (giSigned < 0)
+        return;
+
+    uint gi = (uint)giSigned;
+    _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
+}
