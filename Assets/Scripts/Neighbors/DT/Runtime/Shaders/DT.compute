@@ -1,0 +1,21 @@
+#pragma kernel ClearTriLocks
+#pragma kernel ClearVertexToEdge
+#pragma kernel BuildVertexToEdge
+#pragma kernel BuildNeighbors
+#pragma kernel FixHalfEdges
+#pragma kernel LegalizeHalfEdges
+#pragma kernel ClearTriToHE
+#pragma kernel BuildRenderableTriToHE
+#pragma kernel ClearDirtyVertexFlags
+#pragma kernel MarkAllDirty
+#pragma kernel CopyHalfEdges
+#pragma kernel ClearBoundaryData
+#pragma kernel BuildTriToHEAll
+#pragma kernel ClassifyInternalTriangles
+#pragma kernel MarkBoundaryEdges
+#pragma kernel BuildBoundaryNormals
+
+#include "DT.Common.hlsl"
+#include "DT.Adjacency.hlsl"
+#include "DT.Legalization.hlsl"
+#include "DT.Boundary.hlsl"
