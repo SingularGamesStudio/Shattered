@@ -57,7 +57,7 @@ namespace GPU.Solver {
             public readonly int TickCount;
             public readonly int ReadSlot;
             public readonly int WriteSlot;
-            public readonly GlobalDTHierarchy GlobalDTHierarchy;
+            public readonly DTHierarchy GlobalDTHierarchy;
             public readonly INeighborSearch Layer0NeighborSearch;
             public readonly float2 Layer0NeighborBoundsMin;
             public readonly float2 Layer0NeighborBoundsMax;
@@ -68,7 +68,7 @@ namespace GPU.Solver {
                 int tickCount,
                 int readSlot,
                 int writeSlot,
-                GlobalDTHierarchy globalDTHierarchy,
+                DTHierarchy globalDTHierarchy,
                 INeighborSearch layer0NeighborSearch,
                 float2 layer0NeighborBoundsMin,
                 float2 layer0NeighborBoundsMax

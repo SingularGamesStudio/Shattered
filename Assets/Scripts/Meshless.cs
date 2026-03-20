@@ -14,8 +14,6 @@ public class Meshless : MonoBehaviour {
     public int[] layerEndIndex;
     const float dtNormalizePadding = 2f;
     const bool dtAutoNormalizeIncludeCamera = true;
-    [HideInInspector]
-    public DTHierarchy delaunayHierarchy;
 
     float2 dtNormCenter;
     float dtNormInvHalfExtent;
@@ -67,11 +65,6 @@ public class Meshless : MonoBehaviour {
         return lib == null ? 0 : lib.GetMaterialIndex(baseMaterialDef);
     }
 
-    public bool TryGetLayerDt(int layer, out DT dt) {
-        dt = delaunayHierarchy?.GetLayerDt(layer);
-        return dt != null;
-    }
-
     public void FixNode(int nodeIdx) {
         nodes[nodeIdx].isFixed = true;
         nodes[nodeIdx].invMass = -1f;
@@ -92,7 +85,7 @@ public class Meshless : MonoBehaviour {
 
         RecomputeDelaunayNormalizationBounds(dtAutoNormalizeIncludeCamera ? Camera.main : null);
 
-        BuildDelaunayHierarchy();
+        ComputeLayer0RestVolumesFromDT();
 
         RecomputeMassFromDensity();
 
@@ -195,22 +188,46 @@ public class Meshless : MonoBehaviour {
         dtNormInvHalfExtent = 1f / math.max(1e-6f, half);
     }
 
-    void BuildDelaunayHierarchy() {
+    void ComputeLayer0RestVolumesFromDT() {
         float2 dtSuper0, dtSuper1, dtSuper2;
         ComputeSuperTriangle(dtBoundsMinWorld, dtBoundsMaxWorld, 2f, out dtSuper0, out dtSuper1, out dtSuper2);
-        delaunayHierarchy?.Dispose();
-        delaunayHierarchy = new DTHierarchy(SimulationController.Instance.delaunayShader);
-        delaunayHierarchy.InitFromMeshlessNodes(
-            nodes,
-            layerEndIndex,
-            maxLayer,
-            dtNormCenter,
-            dtNormInvHalfExtent,
-            dtSuper0,
-            dtSuper1,
-            dtSuper2,
-            Const.NeighborCount
-        );
+
+        int n = NodeCount(0);
+        if (n < 3)
+            return;
+
+        var points = new float2[n + 3];
+        for (int i = 0; i < n; i++)
+            points[i] = (nodes[i].pos - dtNormCenter) * dtNormInvHalfExtent;
+        points[n + 0] = (dtSuper0 - dtNormCenter) * dtNormInvHalfExtent;
+        points[n + 1] = (dtSuper1 - dtNormCenter) * dtNormInvHalfExtent;
+        points[n + 2] = (dtSuper2 - dtNormCenter) * dtNormInvHalfExtent;
+
+        var triangles = new List<DTBuilder.Triangle>(math.max(16, 2 * n));
+        DTBuilder.BuildDelaunay(points, n, triangles);
+
+        float worldAreaScale = 1f / (dtNormInvHalfExtent * dtNormInvHalfExtent);
+        for (int i = 0; i < n; i++) {
+            var node = nodes[i];
+            node.restVolume = 0f;
+            nodes[i] = node;
+        }
+
+        for (int i = 0; i < triangles.Count; i++) {
+            var tri = triangles[i];
+            if ((uint)tri.a >= (uint)n || (uint)tri.b >= (uint)n || (uint)tri.c >= (uint)n)
+                continue;
+
+            float2 a = points[tri.a];
+            float2 b = points[tri.b];
+            float2 c = points[tri.c];
+            float areaNorm = 0.5f * math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+            float share = (areaNorm * worldAreaScale) / 3f;
+
+            var na = nodes[tri.a]; na.restVolume += share; nodes[tri.a] = na;
+            var nb = nodes[tri.b]; nb.restVolume += share; nodes[tri.b] = nb;
+            var nc = nodes[tri.c]; nc.restVolume += share; nodes[tri.c] = nc;
+        }
     }
 
     static void ComputeSuperTriangle(float2 min, float2 max, float scale, out float2 p0, out float2 p1, out float2 p2) {
@@ -231,12 +248,7 @@ public class Meshless : MonoBehaviour {
     void OnDisable() {
         SimulationController.Instance?.Unregister(this);
         Active.Remove(this);
-        delaunayHierarchy?.Dispose();
-        delaunayHierarchy = null;
     }
 
-    void OnDestroy() {
-        delaunayHierarchy?.Dispose();
-        delaunayHierarchy = null;
-    }
+    void OnDestroy() { }
 }

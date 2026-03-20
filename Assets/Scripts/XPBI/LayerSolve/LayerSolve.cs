@@ -1,4 +1,5 @@
 using GPU.Delaunay;
+using GPU.Neighbors;
 using LayerContext = GPU.Solver.XPBISolver.LayerContext;
 using ProlongationConstraintProbe = GPU.Solver.XPBISolver.ProlongationConstraintProbe;
 using SolveSession = GPU.Solver.XPBISolver.SolveSession;
@@ -116,7 +117,7 @@ namespace GPU.Solver {
             int jrIterations = GetJRIterationsForLayer(layer, session.MaxSolveLayer);
             int gsIterations = layer == 0 ? Const.GSIterationsL0 : 1;
 
-            DTColoring layerColoring = null;
+            NeighborColoring layerColoring = null;
             if (gsIterations > 0) {
                 layerColoring = solver.coloring.RebuildForLayer(session.AsyncCb, session, layerContext, session.FixedObjectSignature);
                 if (layerColoring != null) {

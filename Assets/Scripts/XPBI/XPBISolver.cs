@@ -112,7 +112,7 @@ namespace GPU.Solver {
     int tickCount,
     int readSlot,
     int writeSlot,
-    GlobalDTHierarchy globalDTHierarchy,
+            DTHierarchy globalDTHierarchy,
     INeighborSearch layer0NeighborSearch = null,
     float2 layer0NeighborBoundsMin = default,
     float2 layer0NeighborBoundsMax = default

@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using GPU.Delaunay;
 using GPU.Neighbors;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -9,7 +8,7 @@ using SolveSession = GPU.Solver.XPBISolver.SolveSession;
 namespace GPU.Solver {
     internal sealed partial class Coloring {
         private readonly ComputeShader shader;
-        private readonly Dictionary<ulong, DTColoring> coloringByMeshLayer = new Dictionary<ulong, DTColoring>(128);
+        private readonly Dictionary<ulong, NeighborColoring> coloringByMeshLayer = new Dictionary<ulong, NeighborColoring>(128);
         private readonly Dictionary<int, LayerColoringMaskCache> coloringMaskCacheByLayer = new Dictionary<int, LayerColoringMaskCache>(8);
 
         private sealed class LayerColoringMaskCache {
@@ -26,7 +25,7 @@ namespace GPU.Solver {
         /// <summary>
         /// Rebuilds global coloring for the layer with current ownership/fixed-object filters.
         /// </summary>
-        public DTColoring RebuildForLayer(CommandBuffer cb, SolveSession session, LayerContext layerContext, int fixedObjectSignature) {
+        public NeighborColoring RebuildForLayer(CommandBuffer cb, SolveSession session, LayerContext layerContext, int fixedObjectSignature) {
             return RebuildGlobalColoringForLayer(
             cb,
                 layerContext.Layer,
@@ -114,7 +113,7 @@ namespace GPU.Solver {
         /// <summary>
         /// Rebuilds and updates global coloring data for one layer based on current neighborhood and activity mask.
         /// </summary>
-        private DTColoring RebuildGlobalColoringForLayer(
+        private NeighborColoring RebuildGlobalColoringForLayer(
             CommandBuffer cb,
             int layer,
             INeighborSearch neighborSearch,
@@ -134,8 +133,8 @@ namespace GPU.Solver {
                 return null;
 
             ulong key = 0xFFFFFFFF00000000UL | (uint)layer;
-            if (!coloringByMeshLayer.TryGetValue(key, out DTColoring layerColoring) || layerColoring == null) {
-                layerColoring = new DTColoring(shader);
+            if (!coloringByMeshLayer.TryGetValue(key, out NeighborColoring layerColoring) || layerColoring == null) {
+                layerColoring = new NeighborColoring(shader);
                 coloringByMeshLayer[key] = layerColoring;
             }
 

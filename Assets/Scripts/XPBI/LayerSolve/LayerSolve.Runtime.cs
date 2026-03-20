@@ -200,7 +200,7 @@ namespace GPU.Solver {
             kSmoothProlongatedFineVel = shader.FindKernel("SmoothProlongatedFineVel");
         }
 
-        internal void BindLayerColoringBuffers(CommandBuffer cb, DTColoring layerColoring) {
+        internal void BindLayerColoringBuffers(CommandBuffer cb, NeighborColoring layerColoring) {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ColorOrder", layerColoring.OrderBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ColorStarts", layerColoring.StartsBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ColorCounts", layerColoring.CountsBuffer);
@@ -319,6 +319,9 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kProlongate, "_ParentIndices", parentIndices);
             cb.SetComputeBufferParam(shader, kProlongate, "_ParentWeights", parentWeights);
             cb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
+            cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kProlongate, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
 
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);

@@ -4,7 +4,7 @@ using Unity.Mathematics;
 using UnityEngine;
 
 namespace GPU.Delaunay {
-    public sealed class GlobalDTHierarchy : IDisposable {
+    public sealed class DTHierarchy : IDisposable {
         struct LayerData {
             public DT dt;
             public int[] ownerBodyByLocal;
@@ -24,7 +24,7 @@ namespace GPU.Delaunay {
 
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
 
-        public GlobalDTHierarchy(ComputeShader shader) {
+        public DTHierarchy(ComputeShader shader) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
         }
 
@@ -305,7 +305,7 @@ namespace GPU.Delaunay {
 
                 var he = DTBuilder.BuildHalfEdges(dtPoints, triangles);
                 var dt = new DT(shader);
-                dt.Init(dtPoints, activeCount, he, triangles.Count, Const.NeighborCount);
+                dt.Init(dtPoints, activeCount, he, triangles.Count, Const.NeighborCount, owners);
 
                 if (!allowCrossBodyTopology && HasMultipleOwners(owners, activeCount))
                     FilterNeighborsByOwner(dt, owners, activeCount);

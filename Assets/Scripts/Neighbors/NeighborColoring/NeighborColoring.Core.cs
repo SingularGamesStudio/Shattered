@@ -1,15 +1,14 @@
 using System;
-using GPU.Neighbors;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace GPU.Delaunay {
+namespace GPU.Neighbors {
     /// <summary>
     /// Manages compute-based graph coloring for Delaunay triangulation vertices.
     /// Uses a parallel greedy coloring algorithm with 16 colors and 2-hop conflict detection.
     /// </summary>
-    public sealed class DTColoring : IDisposable {
-        private const string MarkerPrefix = "XPBI.DTColoring.";
+    public sealed class NeighborColoring : IDisposable {
+        private const string MarkerPrefix = "XPBI.NeighborColoring.";
 
         // Compute shader and kernel indices
         readonly ComputeShader shader;
@@ -77,7 +76,7 @@ namespace GPU.Delaunay {
         public ComputeBuffer CountsBuffer => counts;
 
         /// <summary>Creates a new instance, cloning the given compute shader.</summary>
-        public DTColoring(ComputeShader shader) {
+        public NeighborColoring(ComputeShader shader) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
             // Clone to allow per‑instance parameter modifications without affecting others.
             this.shader = UnityEngine.Object.Instantiate(shader);
@@ -161,7 +160,7 @@ namespace GPU.Delaunay {
         }
 
         public void UpdateActiveMask(uint[] mask, int count) {
-            if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
+            if (color == null) throw new InvalidOperationException("NeighborColoring.Init must be called first.");
             if (mask == null) throw new ArgumentNullException(nameof(mask));
             if (count < 0 || count > activeCount || count > mask.Length) throw new ArgumentOutOfRangeException(nameof(count));
 
@@ -189,7 +188,7 @@ namespace GPU.Delaunay {
         public void EnqueueInitTriGrid(CommandBuffer cb, ComputeBuffer positions, float layerCellSize) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
-            if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
+            if (color == null) throw new InvalidOperationException("NeighborColoring.Init must be called first.");
 
             SetCommonParams(cb, positions, layerCellSize);
 
@@ -221,7 +220,7 @@ namespace GPU.Delaunay {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (neighborSearch == null) throw new ArgumentNullException(nameof(neighborSearch));
-            if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
+            if (color == null) throw new InvalidOperationException("NeighborColoring.Init must be called first.");
             if (iterations <= 0) throw new ArgumentOutOfRangeException(nameof(iterations));
 
             EnsureConflictHistoryCapacity(iterations);
@@ -325,7 +324,7 @@ namespace GPU.Delaunay {
         /// </summary>
         public void EnqueueRebuildOrderAndArgs(CommandBuffer cb) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
-            if (color == null) throw new InvalidOperationException("DTColoring.Init must be called first.");
+            if (color == null) throw new InvalidOperationException("NeighborColoring.Init must be called first.");
 
             // Clear per‑colour metadata
             cb.SetComputeBufferParam(shader, kClearMeta, "_ColoringCounts", counts);

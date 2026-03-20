@@ -36,7 +36,7 @@ public sealed class SimulationController : MonoBehaviour {
     readonly List<Meshless> activeMeshlessBatch = new List<Meshless>(64);
     readonly List<int> activeMeshlessBaseOffsets = new List<int>(64);
     XPBISolver globalSolver;
-    GlobalDTHierarchy globalDTHierarchy;
+    DTHierarchy globalDTHierarchy;
     UniformGridNeighborSearch uniformGridNeighborSearch;
     bool globalHierarchyDirty = true;
 
@@ -152,7 +152,7 @@ public sealed class SimulationController : MonoBehaviour {
             if (globalSolver == null)
                 globalSolver = new XPBISolver(ColoringShader, layerCacheShader, layerSolveShader, gameplayForcesShader, hierarchySyncShader, collisionEventsShader);
             if (globalDTHierarchy == null)
-                globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
+                globalDTHierarchy = new DTHierarchy(delaunayShader);
             if (uniformGridNeighborSearch == null && uniformGridNeighborShader != null)
                 uniformGridNeighborSearch = new UniformGridNeighborSearch(uniformGridNeighborShader, Const.NeighborCount);
 
@@ -188,7 +188,7 @@ public sealed class SimulationController : MonoBehaviour {
         return true;
     }
 
-    public bool TryGetGlobalRenderBatch(out GlobalDTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets) {
+    public bool TryGetGlobalRenderBatch(out DTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets) {
         hierarchy = null;
         meshes = null;
         baseOffsets = null;
@@ -440,7 +440,7 @@ public sealed class SimulationController : MonoBehaviour {
 
     void EnsureGlobalDTHierarchyBuilt() {
         if (globalDTHierarchy == null)
-            globalDTHierarchy = new GlobalDTHierarchy(delaunayShader);
+            globalDTHierarchy = new DTHierarchy(delaunayShader);
         if (!globalHierarchyDirty)
             return;
 
@@ -569,7 +569,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (Time.time < globalCpuReadbackLastRequestTime + Params.uiAndReadback.cpuReadbackInterval)
             return;
 
-        if (!TryGetGlobalRenderBatch(out GlobalDTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets))
+        if (!TryGetGlobalRenderBatch(out DTHierarchy hierarchy, out IReadOnlyList<Meshless> meshes, out IReadOnlyList<int> baseOffsets))
             return;
 
         if (!TryGetStableReadSlot(out int slot))
