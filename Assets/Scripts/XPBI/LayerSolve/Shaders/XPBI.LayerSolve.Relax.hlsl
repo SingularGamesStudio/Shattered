@@ -33,6 +33,7 @@ float2 vi = 0.0;
 vi = XPBI_VEL(li, gi);
 
 float durabilityCompliance = _DurabilityCompliance;
+float invDtClampLocal = 1.0 / max(_DtClamp, EPS);
 if (durabilityCompliance >= 0.0)
 {
     float durabilityRatio = saturate(_DurabilityMaxDistanceRatio);
@@ -41,7 +42,7 @@ if (durabilityCompliance >= 0.0)
     {
         float maxDistanceSq = maxDistance * maxDistance;
         float durabilityAlphaTilde = durabilityCompliance * invDt2;
-        float maxDeltaVPerIterTether = support * invDt;
+        float maxDeltaVPerIterTether = support * invDtClampLocal;
         float maxDeltaVPerIterTetherSq = maxDeltaVPerIterTether * maxDeltaVPerIterTether;
 
         [loop] for (uint nIdxT = 0u; nIdxT < targetNeighborCount; nIdxT++)
@@ -250,8 +251,8 @@ if (_ConvergenceDebugEnable != 0)
 
 float velScale = dLambda * invDt;
 
-float maxDeltaVPerIter = support * invDt;
-float maxSpeedLocal = (4.0 * support) * invDt;
+float maxDeltaVPerIter = support * invDtClampLocal;
+float maxSpeedLocal = (4.0 * support) * invDtClampLocal;
 
 float pred2 = (velScale * velScale) * (maxInvMassLocal * maxInvMassLocal) * max(maxGradNorm2Local, 1e-12);
 float maxDv2 = maxDeltaVPerIter * maxDeltaVPerIter;

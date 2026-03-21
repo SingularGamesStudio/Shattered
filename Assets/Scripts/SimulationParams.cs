@@ -27,16 +27,19 @@ public sealed class SimulationParams {
     [InspectorName("08. Prolongation")]
     [SerializeField] public ProlongationParams prolongation = new ProlongationParams();
 
-    [InspectorName("09. Collisions")]
+    [InspectorName("09. Particle Regularization")]
+    [SerializeField] public ParticleRegularizationParams particleRegularization = new ParticleRegularizationParams();
+
+    [InspectorName("10. Collisions")]
     [SerializeField] public CollisionParams collision = new CollisionParams();
 
-    [InspectorName("10. Durability")]
+    [InspectorName("11. Durability")]
     [SerializeField] public DurabilityParams durability = new DurabilityParams();
 
-    [InspectorName("11. DT Maintenance")]
+    [InspectorName("12. DT Maintenance")]
     [SerializeField] public DtMaintenanceParams dtMaintenance = new DtMaintenanceParams();
 
-    [InspectorName("12. UI and CPU Readback")]
+    [InspectorName("13. UI and CPU Readback")]
     [SerializeField] public UiAndReadbackParams uiAndReadback = new UiAndReadbackParams();
 
     [Serializable]
@@ -97,6 +100,27 @@ public sealed class SimulationParams {
     }
 
     [Serializable]
+    public sealed class ParticleRegularizationParams {
+        [Tooltip("XSPH artificial viscosity blending coefficient (XPBI Eq. 20).")]
+        [Range(0f, 0.2f)] public float xsphC = 0.01f;
+
+        [Tooltip("Enable pairwise minimum-distance position correction (XPBI Eq. 21 style).")]
+        public bool enablePositionCorrection = true;
+
+        [Tooltip("Additional correction passes per layer solve.")]
+        [Min(0)] public int positionCorrectionIterations = 1;
+
+        [Tooltip("Gap ratio epsilon/r used by the minimum-distance inequality. 0.25 matches the paper.")]
+        [Range(0f, 1f)] public float positionCorrectionGapRatio = 0.25f;
+
+        [Tooltip("XPBD compliance for the pairwise position correction; 0 means hard correction.")]
+        [Min(0f)] public float positionCorrectionCompliance = 0f;
+
+        [Tooltip("Per-pass correction clamp as a fraction of the target minimum distance.")]
+        [Range(0f, 1f)] public float positionCorrectionMaxFraction = 0.25f;
+    }
+
+    [Serializable]
     public sealed class CollisionParams {
         [Range(0f, 2f)] public float collisionSupportScale = 0.3f;
         [Min(0f)] public float collisionCompliance = 0.1f;
@@ -118,8 +142,6 @@ public sealed class SimulationParams {
         [Min(1f)] public float targetFPS = 60f;
         [Min(0f)] public float simulationSpeed = 1f;
         [Min(1)] public int maxTicksPerBatch = 32;
-        [Tooltip("Number of XPBI substeps per simulation tick. 1 preserves legacy behavior.")]
-        [Min(1)] public int solverSubsteps = 1;
     }
 
     [Serializable]

@@ -10,6 +10,9 @@
 #pragma kernel ClearConvergenceDebugStats
 #pragma kernel CopyConvergenceDebug
 #pragma kernel SmoothProlongatedFineVel
+#pragma kernel CopyVelToPrev
+#pragma kernel ApplyXsph
+#pragma kernel ApplyPositionCorrection
 
 #include "../../CommonShaders/Solver.Shared.hlsl"
 #include "XPBI.LayerSolve.Relax.Colored.hlsl"
@@ -49,6 +52,20 @@ static Mat2 EstimateVelocityGradient(uint gi, float2 xi, float2 vi, Mat2 Lm, flo
 	}
 
 	return gradV;
+}
+
+static float WendlandC2Value(float2 xij, float h)
+{
+	float hSafe = max(h, 1e-4);
+	float r = length(xij);
+	float q = r / hSafe;
+	if (q >= 2.0)
+		return 0.0;
+
+	float s = 1.0 - 0.5 * q;
+	float s2 = s * s;
+	float s4 = s2 * s2;
+	return Alpha2D(hSafe) * s4 * (2.0 * q + 1.0);
 }
 
 [numthreads(256, 1, 1)]
@@ -175,7 +192,7 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 				ComputeMaterialLame(parent, parentMu, parentLambda);
 				float2 radial = rp / rpLen;
 				float radialDV = dot(parentDeltaV, radial);
-				float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (parentMu + parentLambda) / EffectiveVolumeForCompliance(parent)));
+				float radialKeep = saturate(_Compliance / (_Compliance + (_DtClamp * _DtClamp) * (parentMu + parentLambda) / EffectiveVolumeForCompliance(parent)));
 				parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
 				if (_UseAffineProlongation != 0u)
 				{
@@ -221,6 +238,145 @@ void SmoothProlongatedFineVel(uint3 id : SV_DispatchThreadID)
 	[unroll] for (uint k = 0u; k < targetNeighborCount; k++) { uint gj = ns[k]; if (gj == ~0u) continue; sum += _Vel[gj]; total += 1.0; }
 	if (total <= 0.0) return;
 	_Vel[gi] = lerp(_Vel[gi], sum / total, w);
+}
+
+[numthreads(256, 1, 1)]
+void CopyVelToPrev(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u || IsLayerFixed(gi)) return;
+
+	_VelPrev[gi] = _Vel[gi];
+}
+
+[numthreads(256, 1, 1)]
+void ApplyXsph(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u || IsLayerFixed(gi)) return;
+
+	float c = max(_XsphC, 0.0);
+	if (c <= 0.0) return;
+
+	float h = max(_LayerKernelH, 1e-4);
+	float kernelH = WendlandKernelHFromSupport(h);
+	if (kernelH <= EPS) return;
+
+	float2 xp = _Pos[gi];
+	float2 vp = _VelPrev[gi];
+
+	uint neighborCount = 0u;
+	uint ns[targetNeighborCount];
+	[unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+	GetNeighbors(gi, neighborCount, ns);
+	if (neighborCount == 0u) return;
+
+	float2 accum = 0.0;
+	[loop] for (uint k = 0u; k < targetNeighborCount; k++)
+	{
+		if (k >= neighborCount) break;
+
+		uint gj = ns[k];
+		if (gj == ~0u || gj == gi) continue;
+
+		float Vb = ReadCurrentVolume(gj);
+		if (Vb <= EPS)
+			Vb = max(_RestVolume[gj], EPS);
+
+		float2 xij = xp - _Pos[gj];
+		float w = WendlandC2Value(xij, kernelH);
+		if (w <= 0.0) continue;
+
+		float2 vb = _VelPrev[gj];
+		accum += Vb * (vb - vp) * w;
+	}
+
+	float2 vNew = vp + c * accum;
+	if (!all(isfinite(vNew)))
+		return;
+
+	_Vel[gi] = vNew;
+}
+
+[numthreads(256, 1, 1)]
+void ApplyPositionCorrection(uint3 id : SV_DispatchThreadID)
+{
+	if (_EnablePositionCorrection == 0u) return;
+
+	uint li = id.x;
+	if (li >= _ActiveCount) return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u || IsLayerFixed(gi)) return;
+
+	float r = max(_LayerKernelH, 1e-4);
+	float minDistance = max(r * (1.0 - saturate(_PositionCorrectionGapRatio)), r * 0.05);
+	if (minDistance <= EPS) return;
+
+	float2 xi = _Pos[gi];
+	float wi = ReadEffectiveInvMass(gi);
+	if (wi <= EPS) return;
+
+	float alphaTilde = max(_PositionCorrectionCompliance, 0.0) / max(_Dt * _Dt, EPS * EPS);
+	float maxCorrection = max(0.0, _PositionCorrectionMaxFraction) * minDistance;
+	float maxCorrectionSq = maxCorrection * maxCorrection;
+
+	uint neighborCount = 0u;
+	uint ns[targetNeighborCount];
+	[unroll] for (uint i = 0u; i < targetNeighborCount; i++) ns[i] = ~0u;
+	GetNeighbors(gi, neighborCount, ns);
+	if (neighborCount == 0u) return;
+
+	float2 correction = 0.0;
+	float correctionCount = 0.0;
+
+	[loop] for (uint k = 0u; k < targetNeighborCount; k++)
+	{
+		if (k >= neighborCount) break;
+
+		uint gj = ns[k];
+		if (gj == ~0u || gj == gi) continue;
+
+		float2 xij = xi - _Pos[gj];
+		float d2 = dot(xij, xij);
+		if (d2 <= EPS * EPS) continue;
+
+		float d = sqrt(d2);
+		float C = d - minDistance;
+		if (C >= 0.0) continue;
+
+		float wj = IsLayerFixed(gj) ? 0.0 : ReadEffectiveInvMass(gj);
+		float denom = wi + wj + alphaTilde;
+		if (denom <= EPS) continue;
+
+		float dLambda = -C / denom;
+		float2 n = xij / d;
+		float2 dXi = wi * dLambda * n;
+
+		if (maxCorrection > EPS)
+		{
+			float dXi2 = dot(dXi, dXi);
+			if (dXi2 > maxCorrectionSq)
+				dXi *= maxCorrection * rsqrt(max(dXi2, EPS * EPS));
+		}
+
+		correction += dXi;
+		correctionCount += 1.0;
+	}
+
+	if (correctionCount <= 0.0) return;
+
+	float2 avgCorrection = correction / correctionCount;
+	if (!all(isfinite(avgCorrection))) return;
+
+	_Pos[gi] += avgCorrection;
+	_Vel[gi] += avgCorrection / max(_Dt, EPS);
 }
 
 [numthreads(256, 1, 1)]

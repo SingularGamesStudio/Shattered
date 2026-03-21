@@ -130,19 +130,32 @@ namespace GPU.Solver {
             initializedCount = -1;
         }
 
-        internal void SetCommonShaderParams(float dt, int total, int baseIndex, float maxStep) {
+        internal void SetCommonShaderParams(float dt, int total, int baseIndex, float maxStep, float dtClamp = -1f) {
+            float dtClampValue = dtClamp > 0f ? dtClamp : dt;
+            float prolongationScale = Const.ProlongationScale;
+            float postProlongSmoothing = math.max(0f, Const.PostProlongSmoothing);
+            float xsphC = math.max(0f, Const.XsphC);
+            float positionCorrectionMaxFraction = math.max(0f, Const.PositionCorrectionMaxFraction);
+
             for (int i = 0; i < commonParamShaders.Length; i++) {
                 ComputeShader target = commonParamShaders[i];
                 asyncCb.SetComputeFloatParam(target, "_Dt", dt);
+                asyncCb.SetComputeFloatParam(target, "_DtClamp", dtClampValue);
                 asyncCb.SetComputeFloatParam(target, "_Gravity", Const.Gravity);
                 asyncCb.SetComputeFloatParam(target, "_Compliance", Const.Compliance);
                 asyncCb.SetComputeFloatParam(target, "_MaxSpeed", Const.MaxVelocity);
                 asyncCb.SetComputeFloatParam(target, "_MaxStep", maxStep);
                 asyncCb.SetComputeIntParam(target, "_TotalCount", total);
                 asyncCb.SetComputeIntParam(target, "_Base", baseIndex);
-                asyncCb.SetComputeFloatParam(target, "_ProlongationScale", Const.ProlongationScale);
-                asyncCb.SetComputeFloatParam(target, "_PostProlongSmoothing", Const.PostProlongSmoothing);
+                asyncCb.SetComputeFloatParam(target, "_ProlongationScale", prolongationScale);
+                asyncCb.SetComputeFloatParam(target, "_PostProlongSmoothing", postProlongSmoothing);
                 asyncCb.SetComputeFloatParam(target, "_WendlandSupport", Const.WendlandSupport);
+                asyncCb.SetComputeFloatParam(target, "_XsphC", xsphC);
+                asyncCb.SetComputeIntParam(target, "_EnablePositionCorrection", Const.EnablePositionCorrection ? 1 : 0);
+                asyncCb.SetComputeIntParam(target, "_PositionCorrectionIterations", Mathf.Max(0, Const.PositionCorrectionIterations));
+                asyncCb.SetComputeFloatParam(target, "_PositionCorrectionGapRatio", Const.PositionCorrectionGapRatio);
+                asyncCb.SetComputeFloatParam(target, "_PositionCorrectionCompliance", Const.PositionCorrectionCompliance);
+                asyncCb.SetComputeFloatParam(target, "_PositionCorrectionMaxFraction", positionCorrectionMaxFraction);
                 asyncCb.SetComputeFloatParam(target, "_CollisionSupportScale", Const.CollisionSupportScale);
                 asyncCb.SetComputeFloatParam(target, "_CollisionCompliance", Const.CollisionCompliance);
                 asyncCb.SetComputeFloatParam(target, "_CollisionFriction", Const.CollisionFriction);

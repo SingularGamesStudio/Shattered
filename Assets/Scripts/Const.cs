@@ -16,7 +16,6 @@ public static class Const {
     public static float WendlandSupport => SimulationParamSource.Current.neighbors.wendlandSupport;
 
     // XPBI Solver
-    public static int SolverSubsteps => SimulationParamSource.Current.runtime.solverSubsteps;
     public static int JRIterationsLMax => SimulationParamSource.Current.iterations.jrIterationsLMax;
     public static int JRIterationsLMid => SimulationParamSource.Current.iterations.jrIterationsLMid;
     public static int GSIterationsL0 => SimulationParamSource.Current.iterations.gsIterationsL0;
@@ -43,6 +42,14 @@ public static class Const {
     public static float PostProlongSmoothing => SimulationParamSource.Current.prolongation.postProlongSmoothing;
     public static int ParentKNearest => SimulationParamSource.Current.prolongation.parentKNearest;
     public static float ParentWeightEpsilon => SimulationParamSource.Current.prolongation.parentWeightEpsilon;
+
+    // XPBI particle regularization
+    public static float XsphC => SimulationParamSource.Current.particleRegularization.xsphC;
+    public static bool EnablePositionCorrection => SimulationParamSource.Current.particleRegularization.enablePositionCorrection;
+    public static int PositionCorrectionIterations => SimulationParamSource.Current.particleRegularization.positionCorrectionIterations;
+    public static float PositionCorrectionGapRatio => SimulationParamSource.Current.particleRegularization.positionCorrectionGapRatio;
+    public static float PositionCorrectionCompliance => SimulationParamSource.Current.particleRegularization.positionCorrectionCompliance;
+    public static float PositionCorrectionMaxFraction => SimulationParamSource.Current.particleRegularization.positionCorrectionMaxFraction;
 
     // Collisions
     public static float CollisionSupportScale => SimulationParamSource.Current.collision.collisionSupportScale;

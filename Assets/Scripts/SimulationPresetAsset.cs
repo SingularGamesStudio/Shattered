@@ -1,13 +1,12 @@
 using UnityEngine;
-using UnityEngine.Serialization;
 
 [CreateAssetMenu(fileName = "SimulationPreset", menuName = "Shattered/Simulation Preset", order = 10)]
 public sealed class SimulationPresetAsset : ScriptableObject {
     [Header("Iterations")]
-    [Min(1)] public int gsIterationsL0 = 4;
-    [Min(1)] public int jrIterationsL0 = 16;
-    [Min(1)] public int jrIterationsLMid = 4;
-    [Min(1)] public int jrIterationsLMax = 2;
+     public int gsIterationsL0 = 4;
+     public int jrIterationsL0 = 16;
+     public int jrIterationsLMid = 4;
+     public int jrIterationsLMax = 2;
 
     [Header("Solver Mode")]
     public bool useHierarchicalSolver = true;
@@ -17,10 +16,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
     [Min(0f)] public float compliance = 1f;
     [Min(0f)] public float collisionCompliance = 0.1f;
     [Min(0f)] public float durabilityCompliance = 0.8f;
-
-    [Header("Substeps")]
-    [FormerlySerializedAs("substeps")]
-    [Min(1)] public int sbsteps = 1;
 
     public void ApplyTo(SimulationParams target) {
         if (target == null)
@@ -37,8 +32,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         target.solverCore.compliance = Mathf.Max(0f, compliance);
         target.collision.collisionCompliance = Mathf.Max(0f, collisionCompliance);
         target.durability.durabilityCompliance = Mathf.Max(0f, durabilityCompliance);
-
-        target.runtime.solverSubsteps = Mathf.Max(1, sbsteps);
     }
 
     public void CaptureFrom(SimulationParams source) {
@@ -56,7 +49,5 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         compliance = Mathf.Max(0f, source.solverCore.compliance);
         collisionCompliance = Mathf.Max(0f, source.collision.collisionCompliance);
         durabilityCompliance = Mathf.Max(0f, source.durability.durabilityCompliance);
-
-        sbsteps = Mathf.Max(1, source.runtime.solverSubsteps);
     }
 }

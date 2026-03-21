@@ -83,6 +83,12 @@
     float _RestrictedDeltaVScale;
     float _ProlongationScale;
     float _PostProlongSmoothing;
+    float _XsphC;
+    uint _EnablePositionCorrection;
+    uint _PositionCorrectionIterations;
+    float _PositionCorrectionGapRatio;
+    float _PositionCorrectionCompliance;
+    float _PositionCorrectionMaxFraction;
     float _LayerKernelH;
     float _WendlandSupport;
     float _CollisionSupportScale;
@@ -104,6 +110,7 @@
 
     // Simulation parameters
     float _Dt;
+    float _DtClamp;
     float _Gravity;
     float _Compliance;
     float _MaxSpeed;
@@ -380,7 +387,7 @@
 
         float2 radial = r / rLen;
         float vr = dot(vel, radial);
-        float radialKeep = saturate(_Compliance / (_Compliance + (_Dt * _Dt) * (mu + lambda) / EffectiveVolumeForCompliance(gi)));
+        float radialKeep = saturate(_Compliance / (_Compliance + (_DtClamp * _DtClamp) * (mu + lambda) / EffectiveVolumeForCompliance(gi)));
         vel -= radial * vr * (1.0 - radialKeep);
     }
 

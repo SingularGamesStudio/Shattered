@@ -160,16 +160,15 @@ MonoBehaviour:
     runtime:
       targetTPS: 500
       targetFPS: 30
-      simulationSpeed: 10
+      simulationSpeed: 1
       maxTicksPerBatch: 32
-      solverSubsteps: 1
     interaction:
       manual: 0
       holdThreshold: 0.2
       useHierarchicalSolver: 1
       neighborSearchMode: 0
     solverCore:
-      gravity: -0.01
+      gravity: -9.81
       compliance: 1
     neighbors:
       layerKernelHFromPoissonRadius: 2
@@ -192,6 +191,13 @@ MonoBehaviour:
       postProlongSmoothing: 0.2
       parentKNearest: 2
       parentWeightEpsilon: 0.001
+    particleRegularization:
+      xsphC: 0.01
+      enablePositionCorrection: 1
+      positionCorrectionIterations: 1
+      positionCorrectionGapRatio: 0.25
+      positionCorrectionCompliance: 1
+      positionCorrectionMaxFraction: 0.25
     collision:
       collisionSupportScale: 0.3
       collisionCompliance: 0.1

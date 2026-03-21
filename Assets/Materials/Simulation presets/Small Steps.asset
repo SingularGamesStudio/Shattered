@@ -12,13 +12,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9804b76ddcfb65d42970b691852eb9b8, type: 3}
   m_Name: Small Steps
   m_EditorClassIdentifier: Assembly-CSharp::SimulationPresetAsset
-  gsIterationsL0: 2
-  jrIterationsL0: 1
-  jrIterationsLMid: 0
-  jrIterationsLMax: 0
-  useHierarchicalSolver: 0
+  gsIterationsL0: 4
+  jrIterationsL0: 16
+  jrIterationsLMid: 4
+  jrIterationsLMax: 2
+  useHierarchicalSolver: 1
   neighborSearchMode: 0
-  compliance: 1
-  collisionCompliance: 0.1
-  durabilityCompliance: 0.8
-  sbsteps: 1
+  compliance: 0.2
+  collisionCompliance: 0
+  durabilityCompliance: 1

@@ -53,6 +53,10 @@ namespace GPU.Solver {
         /// Records per-layer DT position sync and DT maintenance passes after integration.
         /// </summary>
         public void RecordPostIntegrateDtSync(SolveSession session) {
+            RecordPostIntegrateDtSync(session, session.Request.ReadSlot);
+        }
+
+        public void RecordPostIntegrateDtSync(SolveSession session, int dtReadSlot) {
             for (int layer = session.MaxSolveLayer; layer >= 0; layer--) {
                 if (!session.Request.GlobalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                     continue;
@@ -85,7 +89,7 @@ namespace GPU.Solver {
                             supportRadius,
                             session.Request.Layer0NeighborBoundsMin,
                             session.Request.Layer0NeighborBoundsMax,
-                            session.Request.ReadSlot,
+                            dtReadSlot,
                             session.Request.WriteSlot,
                             Const.DTFixIterations,
                             Const.DTLegalizeIterations,
@@ -108,7 +112,7 @@ namespace GPU.Solver {
                         normalizedLayerNeighborSupportRadius,
                         float2.zero,
                         float2.zero,
-                        session.Request.ReadSlot,
+                        dtReadSlot,
                         session.Request.WriteSlot,
                         Const.DTFixIterations,
                         Const.DTLegalizeIterations);

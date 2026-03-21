@@ -124,7 +124,7 @@ void JR_Apply(uint3 id : SV_DispatchThreadID)
 
     float h = max(_LayerKernelH, 1e-4);
     float support = WendlandSupportRadius(h);
-    float maxSpeedLocal = (4.0 * support) / max(_Dt, EPS);
+    float maxSpeedLocal = (4.0 * support) / max(_DtClamp, EPS);
     float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
     float v2 = dot(_Vel[gi], _Vel[gi]);
     if (v2 > maxSpeed2)

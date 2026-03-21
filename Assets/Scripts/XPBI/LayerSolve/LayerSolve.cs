@@ -181,6 +181,17 @@ namespace GPU.Solver {
                 }
             }
 
+            if (Const.EnablePositionCorrection && Const.PositionCorrectionIterations > 0) {
+                for (int iter = 0; iter < Const.PositionCorrectionIterations; iter++) {
+                    Dispatch(session.AsyncCb, "XPBI.PositionCorrection", shader, runtime.KApplyPositionCorrection, XPBISolver.Groups256(activeCount), 1, 1);
+                }
+            }
+
+            if (Const.XsphC > 0f) {
+                Dispatch(session.AsyncCb, "XPBI.CopyVelToPrev", shader, runtime.KCopyVelToPrev, XPBISolver.Groups256(activeCount), 1, 1);
+                Dispatch(session.AsyncCb, "XPBI.ApplyXsph", shader, runtime.KApplyXsph, XPBISolver.Groups256(activeCount), 1, 1);
+            }
+
             if (layer > 0 && fineCount > activeCount) {
                 Dispatch(session.AsyncCb, "XPBI.Prolongate", shader, runtime.KProlongate, XPBISolver.Groups256(fineCount), 1, 1);
                 if (Const.PostProlongSmoothing > 0f)

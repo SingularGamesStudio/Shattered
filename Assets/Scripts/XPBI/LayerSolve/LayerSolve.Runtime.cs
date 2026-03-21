@@ -45,6 +45,9 @@ namespace GPU.Solver {
         internal int kProlongate;
         internal int kCommitDeformation;
         internal int kSmoothProlongatedFineVel;
+        internal int kCopyVelToPrev;
+        internal int kApplyXsph;
+        internal int kApplyPositionCorrection;
 
         private ComputeBuffer pos => solver.pos;
         private ComputeBuffer vel => solver.vel;
@@ -144,6 +147,9 @@ namespace GPU.Solver {
         internal int KProlongate => kProlongate;
         internal int KCommitDeformation => kCommitDeformation;
         internal int KSmoothProlongatedFineVel => kSmoothProlongatedFineVel;
+        internal int KCopyVelToPrev => kCopyVelToPrev;
+        internal int KApplyXsph => kApplyXsph;
+        internal int KApplyPositionCorrection => kApplyPositionCorrection;
 
         internal void AllocateRuntimeBuffers(int newCapacity) {
             currentVolumeBits = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -198,6 +204,9 @@ namespace GPU.Solver {
             kProlongate = shader.FindKernel("Prolongate");
             kCommitDeformation = shader.FindKernel("CommitDeformation");
             kSmoothProlongatedFineVel = shader.FindKernel("SmoothProlongatedFineVel");
+            kCopyVelToPrev = shader.FindKernel("CopyVelToPrev");
+            kApplyXsph = shader.FindKernel("ApplyXsph");
+            kApplyPositionCorrection = shader.FindKernel("ApplyPositionCorrection");
         }
 
         internal void BindLayerColoringBuffers(CommandBuffer cb, NeighborColoring layerColoring) {
@@ -407,6 +416,33 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             BindDtGlobalMappingParams(cb, kSmoothProlongatedFineVel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            cb.SetComputeBufferParam(shader, kCopyVelToPrev, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kCopyVelToPrev, "_VelPrev", velPrev);
+            cb.SetComputeBufferParam(shader, kCopyVelToPrev, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kCopyVelToPrev, "_CoarseFixed", coarseFixed);
+            BindDtGlobalMappingParams(cb, kCopyVelToPrev, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_VelPrev", velPrev);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_CurrentVolumeBits", currentVolumeBits);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_CoarseFixed", coarseFixed);
+            BindDtGlobalMappingParams(cb, kApplyXsph, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CurrentTotalMassBits", currentTotalMassBits);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighbors", neighborSearch.NeighborsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CoarseFixed", coarseFixed);
+            BindDtGlobalMappingParams(cb, kApplyPositionCorrection, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             BindDtGlobalMappingParams(cb, kProlongate, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
