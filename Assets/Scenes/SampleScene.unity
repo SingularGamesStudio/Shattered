@@ -151,7 +151,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   simulationParams:
     pointCloud:
-      layer0PointDensity: 256
+      layer0PointDensity: 128
       layerDownsampleRatio: 0.12
       minVerticesPerLayer: 10
       maxAutoLayers: 6
@@ -162,6 +162,7 @@ MonoBehaviour:
       targetFPS: 30
       simulationSpeed: 10
       maxTicksPerBatch: 32
+      solverSubsteps: 1
     interaction:
       manual: 0
       holdThreshold: 0.2
@@ -211,6 +212,8 @@ MonoBehaviour:
       enableContinuousCpuReadback: 1
       cpuReadbackInterval: 0.02
       prolongationConstraintDebugEnabled: 0
+  simulationPreset: {fileID: 11400000, guid: 2082c9cdf9ec0ac4298ef5420949fc18, type: 2}
+  applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}
   layerSolveShader: {fileID: 7200000, guid: 3e6c7b34eb07a224fa7e8227c3bae1b8, type: 3}
   gameplayForcesShader: {fileID: 7200000, guid: 326aeac9b85c37247a0fc8e59da76e0c, type: 3}
@@ -219,7 +222,6 @@ MonoBehaviour:
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
-  asyncQueue: 2
 --- !u!4 &86236646
 Transform:
   m_ObjectHideFlags: 0

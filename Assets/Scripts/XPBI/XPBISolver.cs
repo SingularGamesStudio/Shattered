@@ -136,26 +136,38 @@ namespace GPU.Solver {
             session.AsyncCb = asyncCb;
             solverDebug.PrepareSession(session);
 
+            int substepsPerTick = Mathf.Max(1, Const.SolverSubsteps);
+            float dtPerSubstep = session.Request.DtPerTick / substepsPerTick;
+            float maxStepPerSubstep = Const.MaxDisplacementPerTick / substepsPerTick;
+
             for (int tick = 0; tick < session.Request.TickCount; tick++) {
                 TickContext tickContext = new TickContext(tick, gameplayForce.EventCount, gameplayForce.HasEventsBuffer);
-                SetCommonShaderParams(session.Request.DtPerTick, session.TotalCount, 0);
 
+                // Build collision events once per tick and reuse them across all substeps.
+                SetCommonShaderParams(session.Request.DtPerTick, session.TotalCount, 0, Const.MaxDisplacementPerTick);
                 hierarchySync.RecordPreSolveParentRebuild(session);
-                gameplayForce.RecordApplyForces(session, tickContext);
                 collisionEvent.RecordLayer0Build(session, tickContext);
 
-                for (int layer = session.MaxSolveLayer; layer >= 0; layer--) {
-                    if (!layerMappingCache.TryBuildLayerContext(session, layer, out LayerContext layerContext))
-                        continue;
+                for (int substep = 0; substep < substepsPerTick; substep++) {
+                    if (substep > 0)
+                        hierarchySync.RecordPreSolveParentRebuild(session);
 
-                    layerCachePass.RecordCache(session, tickContext, layerContext, out bool injectRestrictedGameplay, out bool injectRestrictedResidual);
-                    collisionEvent.RecordTransferredRestriction(session, layerContext);
-                    layerSolvePass.RecordSolve(session, tickContext, layerContext);
-                    layerCachePass.RecordRestrictionCleanup(session.AsyncCb, layerContext.ActiveCount, injectRestrictedGameplay, injectRestrictedResidual);
+                    SetCommonShaderParams(dtPerSubstep, session.TotalCount, 0, maxStepPerSubstep);
+                    gameplayForce.RecordApplyForces(session, tickContext);
+
+                    for (int layer = session.MaxSolveLayer; layer >= 0; layer--) {
+                        if (!layerMappingCache.TryBuildLayerContext(session, layer, out LayerContext layerContext))
+                            continue;
+
+                        layerCachePass.RecordCache(session, tickContext, layerContext, out bool injectRestrictedGameplay, out bool injectRestrictedResidual);
+                        collisionEvent.RecordTransferredRestriction(session, layerContext);
+                        layerSolvePass.RecordSolve(session, tickContext, layerContext);
+                        layerCachePass.RecordRestrictionCleanup(session.AsyncCb, layerContext.ActiveCount, injectRestrictedGameplay, injectRestrictedResidual);
+                    }
+
+                    hierarchySync.RecordIntegrate(session);
+                    hierarchySync.RecordPostIntegrateDtSync(session);
                 }
-
-                hierarchySync.RecordIntegrate(session);
-                hierarchySync.RecordPostIntegrateDtSync(session);
             }
 
             GraphicsFence fence = asyncCb.CreateGraphicsFence(

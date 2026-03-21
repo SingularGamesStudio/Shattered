@@ -41,7 +41,7 @@ void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
     uint rawCount = _DtNeighborCounts[dtLi];
     uint nCount = min(min(rawCount, _DtNeighborCount), targetNeighborCount);
 
-    float2 xi = _Pos[gi];
+    float2 xi = _Pos[gi] + _Vel[gi] * _Dt;
 
     [loop]
     for (uint k = 0u; k < nCount; k++)
@@ -58,7 +58,7 @@ void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
         if (gj == ~0u || gj <= gi)
             continue;
 
-        float2 xj = _Pos[gj];
+        float2 xj = _Pos[gj] + _Vel[gj] * _Dt;
         float2 dx = xj - xi;
         float distSq = dot(dx, dx);
         if (distSq <= EPS * EPS || distSq > targetSepSq)

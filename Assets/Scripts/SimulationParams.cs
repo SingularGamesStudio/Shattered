@@ -118,6 +118,8 @@ public sealed class SimulationParams {
         [Min(1f)] public float targetFPS = 60f;
         [Min(0f)] public float simulationSpeed = 1f;
         [Min(1)] public int maxTicksPerBatch = 32;
+        [Tooltip("Number of XPBI substeps per simulation tick. 1 preserves legacy behavior.")]
+        [Min(1)] public int solverSubsteps = 1;
     }
 
     [Serializable]

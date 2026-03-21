@@ -130,14 +130,14 @@ namespace GPU.Solver {
             initializedCount = -1;
         }
 
-        internal void SetCommonShaderParams(float dt, int total, int baseIndex) {
+        internal void SetCommonShaderParams(float dt, int total, int baseIndex, float maxStep) {
             for (int i = 0; i < commonParamShaders.Length; i++) {
                 ComputeShader target = commonParamShaders[i];
                 asyncCb.SetComputeFloatParam(target, "_Dt", dt);
                 asyncCb.SetComputeFloatParam(target, "_Gravity", Const.Gravity);
                 asyncCb.SetComputeFloatParam(target, "_Compliance", Const.Compliance);
                 asyncCb.SetComputeFloatParam(target, "_MaxSpeed", Const.MaxVelocity);
-                asyncCb.SetComputeFloatParam(target, "_MaxStep", Const.MaxDisplacementPerTick);
+                asyncCb.SetComputeFloatParam(target, "_MaxStep", maxStep);
                 asyncCb.SetComputeIntParam(target, "_TotalCount", total);
                 asyncCb.SetComputeIntParam(target, "_Base", baseIndex);
                 asyncCb.SetComputeFloatParam(target, "_ProlongationScale", Const.ProlongationScale);

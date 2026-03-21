@@ -16,6 +16,7 @@ public static class Const {
     public static float WendlandSupport => SimulationParamSource.Current.neighbors.wendlandSupport;
 
     // XPBI Solver
+    public static int SolverSubsteps => SimulationParamSource.Current.runtime.solverSubsteps;
     public static int JRIterationsLMax => SimulationParamSource.Current.iterations.jrIterationsLMax;
     public static int JRIterationsLMid => SimulationParamSource.Current.iterations.jrIterationsLMid;
     public static int GSIterationsL0 => SimulationParamSource.Current.iterations.gsIterationsL0;

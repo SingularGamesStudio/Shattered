@@ -18,6 +18,8 @@ public sealed class SimulationController : MonoBehaviour {
 
     [Header("Simulation Params")]
     [SerializeField] SimulationParams simulationParams = new SimulationParams();
+    [SerializeField] SimulationPresetAsset simulationPreset;
+    [SerializeField] bool applyPresetOnAwake = true;
     Vector2 tpsOverlayPos = new Vector2(10f, 10f);
 
     [Header("Solver Shaders")]
@@ -96,10 +98,32 @@ public sealed class SimulationController : MonoBehaviour {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
         BindParams();
+        if (applyPresetOnAwake)
+            ApplySelectedPreset();
     }
 
     void OnValidate() {
         BindParams();
+    }
+
+    [ContextMenu("Apply Selected Simulation Preset")]
+    public void ApplySelectedPreset() {
+        if (simulationPreset == null)
+            return;
+
+        simulationPreset.ApplyTo(Params);
+        BindParams();
+    }
+
+    [ContextMenu("Capture Current Params Into Selected Preset")]
+    public void CaptureCurrentParamsIntoSelectedPreset() {
+        if (simulationPreset == null)
+            return;
+
+        simulationPreset.CaptureFrom(Params);
+#if UNITY_EDITOR
+        UnityEditor.EditorUtility.SetDirty(simulationPreset);
+#endif
     }
 
     void BindParams() {
