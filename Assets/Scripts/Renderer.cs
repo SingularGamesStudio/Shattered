@@ -98,6 +98,9 @@ public sealed class Renderer : MonoBehaviour {
         public ComputeBuffer restNorm;
         public Vector2[] restNormCpu;
 
+        public ComputeBuffer uvModes;
+        public int[] uvModesCpu;
+
         public int capacity;
         public float2 lastCenter;
         public float lastInvHalfExtent;
@@ -174,6 +177,7 @@ public sealed class Renderer : MonoBehaviour {
     static readonly int ID_RestVolumes = Shader.PropertyToID("_RestVolumes");
 
     static readonly int ID_RestNormPositions = Shader.PropertyToID("_RestNormPositions");
+    static readonly int ID_UvModes = Shader.PropertyToID("_UvModes");
     static readonly int ID_RealPointCount = Shader.PropertyToID("_RealPointCount");
     static readonly int ID_LayerKernelH = Shader.PropertyToID("_LayerKernelH");
     static readonly int ID_WendlandSupportScale = Shader.PropertyToID("_WendlandSupportScale");
@@ -220,6 +224,7 @@ public sealed class Renderer : MonoBehaviour {
             kv.Value.materialIds?.Dispose();
             kv.Value.restVolumes?.Dispose();
             kv.Value.restNorm?.Dispose();
+            kv.Value.uvModes?.Dispose();
         }
         layerStates.Clear();
 
@@ -601,12 +606,13 @@ public sealed class Renderer : MonoBehaviour {
             layerStates[layer] = st;
         }
 
-        bool reallocated = st.capacity != activeCount || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null;
+        bool reallocated = st.capacity != activeCount || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null || st.uvModes == null;
         if (reallocated) {
             st.ownerByLocal?.Dispose();
             st.materialIds?.Dispose();
             st.restVolumes?.Dispose();
             st.restNorm?.Dispose();
+            st.uvModes?.Dispose();
 
             st.ownerByLocal = new ComputeBuffer(activeCount, sizeof(int), ComputeBufferType.Structured);
             st.ownerByLocalCpu = new int[activeCount];
@@ -620,6 +626,9 @@ public sealed class Renderer : MonoBehaviour {
             st.restNorm = new ComputeBuffer(activeCount, sizeof(float) * 2, ComputeBufferType.Structured);
             st.restNormCpu = new Vector2[activeCount];
 
+            st.uvModes = new ComputeBuffer(activeCount, sizeof(int), ComputeBufferType.Structured);
+            st.uvModesCpu = new int[activeCount];
+
             st.capacity = activeCount;
             st.lastCenter = new float2(float.NaN, float.NaN);
             st.lastInvHalfExtent = float.NaN;
@@ -629,6 +638,7 @@ public sealed class Renderer : MonoBehaviour {
         bool materialIdsChanged = reallocated;
         bool restVolumesChanged = reallocated;
         bool restNormChanged = reallocated || !math.all(st.lastCenter == normCenter) || st.lastInvHalfExtent != normInvHalfExtent;
+        bool uvModesChanged = reallocated;
         int meshHint = 0;
 
         for (int li = 0; li < activeCount; li++) {
@@ -642,6 +652,18 @@ public sealed class Renderer : MonoBehaviour {
             if (!TryResolveGlobalNode(gi, meshes, baseOffsets, ref meshHint, out Node node))
                 continue;
 
+            Meshless ownerMesh = null;
+            if (owner >= 0 && owner < meshes.Count)
+                ownerMesh = meshes[owner];
+            if (ownerMesh == null)
+                ownerMesh = node.parent;
+
+            int uvMode = ownerMesh != null && ownerMesh.UsesSpriteUv ? 1 : 0;
+            if (st.uvModesCpu[li] != uvMode) {
+                st.uvModesCpu[li] = uvMode;
+                uvModesChanged = true;
+            }
+
             int materialId = node.materialId;
             if (st.materialIdsCpu[li] != materialId) {
                 st.materialIdsCpu[li] = materialId;
@@ -654,9 +676,14 @@ public sealed class Renderer : MonoBehaviour {
                 restVolumesChanged = true;
             }
 
-            if (restNormChanged) {
-                float2 norm = (node.originalPos - normCenter) * normInvHalfExtent;
-                st.restNormCpu[li] = new Vector2(norm.x, norm.y);
+            float2 uv = uvMode == 1
+                ? node.materialUv
+                : (node.originalPos - normCenter) * normInvHalfExtent;
+
+            Vector2 uv2 = new Vector2(uv.x, uv.y);
+            if (restNormChanged || st.restNormCpu[li] != uv2) {
+                st.restNormCpu[li] = uv2;
+                restNormChanged = true;
             }
         }
 
@@ -671,6 +698,8 @@ public sealed class Renderer : MonoBehaviour {
             st.lastCenter = normCenter;
             st.lastInvHalfExtent = normInvHalfExtent;
         }
+        if (uvModesChanged)
+            st.uvModes.SetData(st.uvModesCpu, 0, 0, activeCount);
 
         return st;
     }
@@ -756,7 +785,7 @@ public sealed class Renderer : MonoBehaviour {
         float normInvHalfExtent,
         int slot
     ) {
-        if (st == null || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null)
+        if (st == null || st.ownerByLocal == null || st.materialIds == null || st.restNorm == null || st.uvModes == null)
             return;
 
         float alpha = 0f;
@@ -788,6 +817,7 @@ public sealed class Renderer : MonoBehaviour {
         mpb.SetBuffer(ID_MaterialIds, st.materialIds);
         mpb.SetBuffer(ID_RestVolumes, st.restVolumes);
         mpb.SetBuffer(ID_RestNormPositions, st.restNorm);
+        mpb.SetBuffer(ID_UvModes, st.uvModes);
 
         float layerKernelHNorm = layerKernelH * normInvHalfExtent;
         mpb.SetFloat(ID_LayerKernelH, layerKernelHNorm);

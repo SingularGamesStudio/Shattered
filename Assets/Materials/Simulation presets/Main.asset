@@ -10,7 +10,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 9804b76ddcfb65d42970b691852eb9b8, type: 3}
-  m_Name: Small Steps
+  m_Name: Main
   m_EditorClassIdentifier: Assembly-CSharp::SimulationPresetAsset
   gsIterationsL0: 4
   jrIterationsL0: 16
@@ -18,6 +18,7 @@ MonoBehaviour:
   jrIterationsLMax: 2
   useHierarchicalSolver: 1
   neighborSearchMode: 0
-  compliance: 0.2
+  compliance: 1
   collisionCompliance: 0
   durabilityCompliance: 1
+  positionCorrectionCompliance: 0.01

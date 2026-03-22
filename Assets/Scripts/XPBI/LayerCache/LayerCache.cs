@@ -43,7 +43,8 @@ namespace GPU.Solver {
                     0,
                     layerContext.GlobalNodeMap,
                     layerContext.GlobalToLocalMap,
-                    layerContext.OwnerByLocalBuffer)));
+                    layerContext.OwnerByLocalBuffer,
+                    layerContext.CollisionOwnerByLocalBuffer)));
 
             Dispatch(session.AsyncCb, "XPBI.ClearHierarchicalStats", layerCacheShader, runtime.KClearHierarchicalStats, XPBISolver.Groups256(activeCount), 1, 1);
             Dispatch(session.AsyncCb, "XPBI.CacheHierarchicalStats", layerCacheShader, runtime.KCacheHierarchicalStats, XPBISolver.Groups256(fineCount), 1, 1);

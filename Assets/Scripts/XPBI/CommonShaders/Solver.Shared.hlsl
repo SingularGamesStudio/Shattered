@@ -61,6 +61,7 @@
     StructuredBuffer<uint> _DtNeighbors;
     StructuredBuffer<uint> _DtNeighborCounts;
     StructuredBuffer<int> _DtOwnerByLocal;
+    StructuredBuffer<int> _DtCollisionOwnerByLocal;
     StructuredBuffer<int> _DtGlobalNodeMap;
     StructuredBuffer<int> _DtGlobalToLayerLocalMap;
     uint _UseDtOwnerFilter;

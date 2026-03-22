@@ -45,6 +45,7 @@ namespace GPU.Solver {
         private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
         private ComputeBuffer xferColPenBits => solver.collisionEvent.XferColPenBitsBuffer;
         private ComputeBuffer defaultDtOwnerByLocal => solver.layerMappingCache.DefaultDtOwnerByLocal;
+        private ComputeBuffer defaultDtCollisionOwnerByLocal => solver.layerMappingCache.DefaultDtCollisionOwnerByLocal;
         private int kClearCollisionEventCount => solver.collisionEvent.ClearCollisionEventCountKernel;
         private int kBuildCollisionEventsL0 => solver.collisionEvent.BuildCollisionEventsL0Kernel;
         private int kClearTransferredCollision => solver.collisionEvent.ClearTransferredCollisionKernel;
@@ -77,19 +78,22 @@ namespace GPU.Solver {
             public readonly ComputeBuffer DtGlobalNodeMap;
             public readonly ComputeBuffer DtGlobalToLayerLocalMap;
             public readonly ComputeBuffer DtOwnerByLocal;
+            public readonly ComputeBuffer DtCollisionOwnerByLocal;
 
             public DtMappingContext(
                 bool useDtGlobalNodeMap,
                 int dtLocalBase,
                 ComputeBuffer dtGlobalNodeMap,
                 ComputeBuffer dtGlobalToLayerLocalMap,
-                ComputeBuffer dtOwnerByLocal
+                ComputeBuffer dtOwnerByLocal,
+                ComputeBuffer dtCollisionOwnerByLocal
             ) {
                 UseDtGlobalNodeMap = useDtGlobalNodeMap;
                 DtLocalBase = dtLocalBase;
                 DtGlobalNodeMap = dtGlobalNodeMap;
                 DtGlobalToLayerLocalMap = dtGlobalToLayerLocalMap;
                 DtOwnerByLocal = dtOwnerByLocal;
+                DtCollisionOwnerByLocal = dtCollisionOwnerByLocal;
             }
         }
 
@@ -162,6 +166,7 @@ namespace GPU.Solver {
             ComputeBuffer dtGlobalNodeMap = context.Mapping.DtGlobalNodeMap;
             ComputeBuffer dtGlobalToLayerLocalMap = context.Mapping.DtGlobalToLayerLocalMap;
             ComputeBuffer dtOwnerByLocal = context.Mapping.DtOwnerByLocal;
+            ComputeBuffer dtCollisionOwnerByLocal = context.Mapping.DtCollisionOwnerByLocal;
 
             cb.SetComputeIntParam(shader, "_Base", baseIndex);
             cb.SetComputeIntParam(shader, "_ActiveCount", activeCount);
@@ -215,6 +220,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_CollisionEvents", collisionEvents);
             cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_CollisionEventCount", collisionEventCount);
 

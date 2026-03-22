@@ -77,6 +77,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighbors", layer0NeighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighborCounts", layer0NeighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtOwnerByLocal);
+			cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtCollisionOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEvents", collisionEvents);
             cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEventCount", collisionEventCount);
 

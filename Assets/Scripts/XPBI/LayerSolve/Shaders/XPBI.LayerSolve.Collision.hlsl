@@ -2,7 +2,7 @@
 //   uint li, gi, active, dtLi
 //   float support
 
-int ownerICollision = (li < active) ? _DtOwnerByLocal[li] : -1;
+int ownerICollision = (li < active) ? _DtCollisionOwnerByLocal[li] : -1;
 if (ownerICollision >= 0 && _ActiveCount == _FineCount)
 {
     float targetSeparation = max(EPS, _CollisionSupportScale * support);
@@ -28,7 +28,7 @@ if (ownerICollision >= 0 && _ActiveCount == _FineCount)
         uint gjLi = _DtNeighbors[baseIdxCol + kCol];
         if (gjLi == ~0u || gjLi >= active) continue;
 
-        int ownerJ = _DtOwnerByLocal[gjLi];
+        int ownerJ = _DtCollisionOwnerByLocal[gjLi];
         if (ownerJ < 0 || ownerJ == ownerICollision) continue;
 
         uint gj = XPBI_GET_GJ(gjLi);

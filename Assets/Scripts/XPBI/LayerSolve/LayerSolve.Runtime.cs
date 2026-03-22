@@ -64,6 +64,7 @@ namespace GPU.Solver {
         private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
         private ComputeBuffer xferColPenBits => solver.collisionEvent.XferColPenBitsBuffer;
         private ComputeBuffer defaultDtOwnerByLocal => solver.layerMappingCache.DefaultDtOwnerByLocal;
+        private ComputeBuffer defaultDtCollisionOwnerByLocal => solver.layerMappingCache.DefaultDtCollisionOwnerByLocal;
 
         private void BindDtGlobalMappingParams(CommandBuffer cb, int kernel, bool useDtGlobalNodeMap, int dtLocalBase, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap) {
             solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kernel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
@@ -95,19 +96,22 @@ namespace GPU.Solver {
             public readonly ComputeBuffer DtGlobalNodeMap;
             public readonly ComputeBuffer DtGlobalToLayerLocalMap;
             public readonly ComputeBuffer DtOwnerByLocal;
+            public readonly ComputeBuffer DtCollisionOwnerByLocal;
 
             public DtMappingContext(
                 bool useDtGlobalNodeMap,
                 int dtLocalBase,
                 ComputeBuffer dtGlobalNodeMap,
                 ComputeBuffer dtGlobalToLayerLocalMap,
-                ComputeBuffer dtOwnerByLocal
+                ComputeBuffer dtOwnerByLocal,
+                ComputeBuffer dtCollisionOwnerByLocal
             ) {
                 UseDtGlobalNodeMap = useDtGlobalNodeMap;
                 DtLocalBase = dtLocalBase;
                 DtGlobalNodeMap = dtGlobalNodeMap;
                 DtGlobalToLayerLocalMap = dtGlobalToLayerLocalMap;
                 DtOwnerByLocal = dtOwnerByLocal;
+                DtCollisionOwnerByLocal = dtCollisionOwnerByLocal;
             }
         }
 
@@ -259,6 +263,7 @@ namespace GPU.Solver {
             ComputeBuffer dtGlobalNodeMap = context.Mapping.DtGlobalNodeMap;
             ComputeBuffer dtGlobalToLayerLocalMap = context.Mapping.DtGlobalToLayerLocalMap;
             ComputeBuffer dtOwnerByLocal = context.Mapping.DtOwnerByLocal;
+            ComputeBuffer dtCollisionOwnerByLocal = context.Mapping.DtCollisionOwnerByLocal;
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
@@ -331,6 +336,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kProlongate, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
 
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);
@@ -347,11 +353,13 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             BindDtGlobalMappingParams(cb, kRelaxColored, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             BindDtGlobalMappingParams(cb, kRelaxColoredPersistentCoarse, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Vel", vel);
@@ -381,6 +389,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CoarseFixed", coarseFixed);
 
             cb.SetComputeBufferParam(shader, kJRApply, "_Vel", vel);
@@ -403,6 +412,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             BindDtGlobalMappingParams(cb, kCommitDeformation, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseFixed", coarseFixed);
@@ -415,6 +425,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kSmoothProlongatedFineVel, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             BindDtGlobalMappingParams(cb, kSmoothProlongatedFineVel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kCopyVelToPrev, "_Vel", vel);
@@ -431,6 +442,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_CoarseFixed", coarseFixed);
             BindDtGlobalMappingParams(cb, kApplyXsph, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
@@ -441,6 +453,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CoarseFixed", coarseFixed);
             BindDtGlobalMappingParams(cb, kApplyPositionCorrection, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 

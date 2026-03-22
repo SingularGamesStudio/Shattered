@@ -8,6 +8,7 @@ namespace GPU.Delaunay {
         struct LayerData {
             public DT dt;
             public int[] ownerBodyByLocal;
+            public int[] collisionOwnerByLocal;
             public int[] globalNodeByLocal;
             public int[] globalFineNodeByLocal;
             public int activeCount;
@@ -57,6 +58,15 @@ namespace GPU.Delaunay {
             activeCount = layers[layer].activeCount;
             fineCount = layers[layer].fineCount;
             return activeCount > 0;
+        }
+
+        public bool TryGetLayerCollisionOwnerMapping(int layer, out int[] collisionOwnerByLocal) {
+            collisionOwnerByLocal = null;
+            if (layers == null || layer < 0 || layer >= layers.Length)
+                return false;
+
+            collisionOwnerByLocal = layers[layer].collisionOwnerByLocal;
+            return collisionOwnerByLocal != null && collisionOwnerByLocal.Length >= layers[layer].activeCount;
         }
 
         public bool TryGetLayerExecutionContext(int layer, out int activeCount, out int fineCount, out float layerKernelH) {
@@ -129,6 +139,7 @@ namespace GPU.Delaunay {
             }
 
             layers = new LayerData[maxLayer + 1];
+            int[] collisionOwnerByMesh = BuildCollisionOwnerRepresentatives(meshes);
 
             ComputeGlobalNormalization(meshes);
             float2 super0;
@@ -139,6 +150,7 @@ namespace GPU.Delaunay {
             for (int layer = 0; layer <= maxLayer; layer++) {
                 var points = new List<float2>(1024);
                 var owners = new List<int>(1024);
+                var collisionOwners = new List<int>(1024);
                 var globals = new List<int>(1024);
                 var fineGlobals = new List<int>(1024);
                 float layerKernelH = 0f;
@@ -148,6 +160,7 @@ namespace GPU.Delaunay {
                     int totalNodes = CountAllNodes(meshes);
                     float2[] pointsByGlobal = new float2[math.max(1, totalNodes)];
                     int[] ownerByGlobal = new int[math.max(1, totalNodes)];
+                    int[] collisionOwnerByGlobal = new int[math.max(1, totalNodes)];
                     bool[] filledByGlobal = new bool[math.max(1, totalNodes)];
 
                     for (int meshIdx = 0; meshIdx < meshes.Count; meshIdx++) {
@@ -171,6 +184,7 @@ namespace GPU.Delaunay {
 
                             pointsByGlobal[gi] = (m.nodes[i].pos - normCenter) * normInvHalfExtent;
                             ownerByGlobal[gi] = meshIdx;
+                            collisionOwnerByGlobal[gi] = collisionOwnerByMesh[meshIdx];
                             filledByGlobal[gi] = true;
                         }
                     }
@@ -181,6 +195,7 @@ namespace GPU.Delaunay {
 
                         points.Add(pointsByGlobal[gi]);
                         owners.Add(ownerByGlobal[gi]);
+                        collisionOwners.Add(collisionOwnerByGlobal[gi]);
                         globals.Add(gi);
                         fineGlobals.Add(gi);
                     }
@@ -209,6 +224,7 @@ namespace GPU.Delaunay {
                             float2 p = (m.nodes[i].pos - normCenter) * normInvHalfExtent;
                             points.Add(p);
                             owners.Add(meshIdx);
+                            collisionOwners.Add(collisionOwnerByMesh[meshIdx]);
                             globals.Add(baseOffset + i);
                             fineGlobals.Add(baseOffset + i);
                         }
@@ -229,6 +245,7 @@ namespace GPU.Delaunay {
                     layers[layer] = new LayerData {
                         dt = null,
                         ownerBodyByLocal = owners.ToArray(),
+                        collisionOwnerByLocal = collisionOwners.ToArray(),
                         globalNodeByLocal = globals.ToArray(),
                         globalFineNodeByLocal = fineGlobals.ToArray(),
                         activeCount = activeCount,
@@ -313,6 +330,7 @@ namespace GPU.Delaunay {
                 layers[layer] = new LayerData {
                     dt = dt,
                     ownerBodyByLocal = owners.ToArray(),
+                    collisionOwnerByLocal = collisionOwners.ToArray(),
                     globalNodeByLocal = globals.ToArray(),
                     globalFineNodeByLocal = fineGlobals.ToArray(),
                     activeCount = activeCount,
@@ -484,6 +502,33 @@ namespace GPU.Delaunay {
             return false;
         }
 
+        static int[] BuildCollisionOwnerRepresentatives(IReadOnlyList<Meshless> meshes) {
+            int meshCount = meshes != null ? meshes.Count : 0;
+            int[] representatives = new int[meshCount];
+            var representativeByKey = new Dictionary<UnityEngine.Object, int>(meshCount);
+
+            for (int meshIdx = 0; meshIdx < meshCount; meshIdx++) {
+                Meshless mesh = meshes[meshIdx];
+                if (mesh == null) {
+                    representatives[meshIdx] = meshIdx;
+                    continue;
+                }
+
+                UnityEngine.Object ownerKey = mesh.GetCollisionOwnerKey();
+                if (ownerKey == null)
+                    ownerKey = mesh;
+
+                if (!representativeByKey.TryGetValue(ownerKey, out int representative)) {
+                    representative = meshIdx;
+                    representativeByKey[ownerKey] = representative;
+                }
+
+                representatives[meshIdx] = representative;
+            }
+
+            return representatives;
+        }
+
         void DisposeLayers() {
             if (layers == null)
                 return;
@@ -492,6 +537,7 @@ namespace GPU.Delaunay {
                 layers[i].dt?.Dispose();
                 layers[i].dt = null;
                 layers[i].ownerBodyByLocal = null;
+                layers[i].collisionOwnerByLocal = null;
                 layers[i].globalNodeByLocal = null;
                 layers[i].globalFineNodeByLocal = null;
                 layers[i].activeCount = 0;

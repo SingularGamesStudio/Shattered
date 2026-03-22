@@ -30,6 +30,10 @@ namespace GPU.Solver {
             if (globalActiveCount < 3)
                 return false;
 
+            int[] collisionOwnerByLocal = ownerBodyByLocal;
+            if (session.Request.GlobalDTHierarchy.TryGetLayerCollisionOwnerMapping(layer, out int[] collisionOwners) && collisionOwners != null)
+                collisionOwnerByLocal = collisionOwners;
+
             if (!session.Request.GlobalDTHierarchy.TryGetLayerExecutionContext(layer, out int execActiveCount, out int execFineCount, out float layerKernelH))
                 return false;
 
@@ -45,10 +49,15 @@ namespace GPU.Solver {
             if (ownerBodyByLocal != null && ownerBodyByLocal.Length >= globalActiveCount)
                 ownerByLocalBuffer = EnsureGlobalLayerOwnerByLocalBuffer(layer, ownerBodyByLocal, globalActiveCount);
 
+            ComputeBuffer collisionOwnerByLocalBuffer = ownerByLocalBuffer;
+            if (collisionOwnerByLocal != null && collisionOwnerByLocal.Length >= globalActiveCount)
+                collisionOwnerByLocalBuffer = EnsureGlobalLayerCollisionOwnerByLocalBuffer(layer, collisionOwnerByLocal, globalActiveCount);
+
             context = new LayerContext {
                 Layer = layer,
                 NeighborSearch = layerNeighborSearch,
                 OwnerBodyByLocal = ownerBodyByLocal,
+                CollisionOwnerByLocal = collisionOwnerByLocal,
                 ActiveCount = execActiveCount,
                 FineCount = execFineCount,
                 KernelH = layerKernelH,
@@ -56,6 +65,7 @@ namespace GPU.Solver {
                 GlobalNodeMap = globalNodeMap,
                 GlobalToLocalMap = globalToLocalMap,
                 OwnerByLocalBuffer = ownerByLocalBuffer,
+                CollisionOwnerByLocalBuffer = collisionOwnerByLocalBuffer,
             };
 
             return true;

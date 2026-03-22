@@ -30,8 +30,17 @@ public class Meshless : MonoBehaviour {
     [Header("Simulation")]
     public bool fixedObject;
 
+    [Header("Collision Grouping")]
+    [Tooltip("Optional shared transform key used to group multiple Meshless objects as one collision owner.")]
+    public Transform collisionOwnerOverride;
+
     public float2 DtNormCenter => dtNormCenter;
     public float DtNormInvHalfExtent => dtNormInvHalfExtent;
+    public virtual bool UsesSpriteUv => false;
+
+    public Object GetCollisionOwnerKey() {
+        return collisionOwnerOverride != null ? (Object)collisionOwnerOverride : this;
+    }
 
     public float GetLayerKernelH(int layer) {
         if (layerKernelH != null && layer >= 0 && layer < layerKernelH.Length)

@@ -40,7 +40,7 @@ namespace GPU.Solver {
                 layer0.UseMappedIndices,
                 layer0.GlobalNodeMap,
                 layer0.GlobalToLocalMap,
-                layer0.OwnerByLocalBuffer);
+                layer0.CollisionOwnerByLocalBuffer);
         }
 
         /// <summary>

@@ -24,7 +24,7 @@ void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
     if (gi == ~0u)
         return;
 
-    int ownerI = _DtOwnerByLocal[li];
+    int ownerI = _DtCollisionOwnerByLocal[li];
     if (ownerI < 0)
         return;
 
@@ -50,7 +50,7 @@ void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
         if (gjLi == ~0u || gjLi >= _ActiveCount)
             continue;
 
-        int ownerJ = _DtOwnerByLocal[gjLi];
+        int ownerJ = _DtCollisionOwnerByLocal[gjLi];
         if (ownerJ < 0 || ownerJ == ownerI)
             continue;
 

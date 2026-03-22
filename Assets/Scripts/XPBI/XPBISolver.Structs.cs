@@ -132,6 +132,7 @@ namespace GPU.Solver {
             public int Layer;
             public INeighborSearch NeighborSearch;
             public int[] OwnerBodyByLocal;
+            public int[] CollisionOwnerByLocal;
             public int ActiveCount;
             public int FineCount;
             public float KernelH;
@@ -139,6 +140,7 @@ namespace GPU.Solver {
             public ComputeBuffer GlobalNodeMap;
             public ComputeBuffer GlobalToLocalMap;
             public ComputeBuffer OwnerByLocalBuffer;
+            public ComputeBuffer CollisionOwnerByLocalBuffer;
         }
 
         /// <summary>

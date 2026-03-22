@@ -41,8 +41,9 @@ namespace GPU.Solver {
                     ? new LayerCacheRuntime.DtMappingContext(true, 0,
                         solver.layerMappingCache.EnsureGlobalLayerNodeMapBuffer(layer, globalFineNodeByLocal, fineCount),
                         solver.layerMappingCache.EnsureGlobalLayerGlobalToLocalBufferCached(layer, globalFineNodeByLocal, fineCount, session.TotalCount),
+                        null,
                         null)
-                    : new LayerCacheRuntime.DtMappingContext(false, 0, null, null, null);
+                    : new LayerCacheRuntime.DtMappingContext(false, 0, null, null, null, null);
 
                 PrepareParentRebuildBuffers(session.AsyncCb, session.Pos, solver.parentIndex, solver.parentIndices, solver.parentWeights, new ParentRebuildContext(dtLayer, 0, activeCount, fineCount, mapping));
                 Dispatch(session.AsyncCb, "XPBI.RebuildParentsAtLayer", shader, kRebuildParentsAtLayer, XPBISolver.Groups256(fineCount - activeCount), 1, 1);

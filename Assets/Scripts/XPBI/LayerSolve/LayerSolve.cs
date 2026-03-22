@@ -52,7 +52,8 @@ namespace GPU.Solver {
                             0,
                             targetLayerContext.GlobalNodeMap,
                             targetLayerContext.GlobalToLocalMap,
-                            targetLayerContext.OwnerByLocalBuffer)));
+                            targetLayerContext.OwnerByLocalBuffer,
+                            targetLayerContext.CollisionOwnerByLocalBuffer)));
                     solver.solverDebug.CaptureCurrentConstraintErrorSample(
                         session.AsyncCb,
                         prolongationPreProbeEntry,
@@ -79,7 +80,8 @@ namespace GPU.Solver {
                         0,
                         targetLayerContext.GlobalNodeMap,
                         targetLayerContext.GlobalToLocalMap,
-                        targetLayerContext.OwnerByLocalBuffer)));
+                        targetLayerContext.OwnerByLocalBuffer,
+                        targetLayerContext.CollisionOwnerByLocalBuffer)));
                 solver.solverDebug.CaptureCurrentConstraintErrorSample(
                     session.AsyncCb,
                     prolongationPostProbeEntry,
@@ -112,7 +114,8 @@ namespace GPU.Solver {
                     0,
                     layerContext.GlobalNodeMap,
                     layerContext.GlobalToLocalMap,
-                    layerContext.OwnerByLocalBuffer)));
+                        layerContext.OwnerByLocalBuffer,
+                        layerContext.CollisionOwnerByLocalBuffer)));
 
             int jrIterations = GetJRIterationsForLayer(layer, session.MaxSolveLayer);
             int gsIterations = layer == 0 ? Const.GSIterationsL0 : 1;

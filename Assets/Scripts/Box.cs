@@ -28,7 +28,7 @@ public class Box : Meshless {
         if (generateOnStart) Generate(0, 0);
     }
 
-    public void Generate(int count, short material) {
+    public virtual void Generate(int count, short material) {
         GenerateHierarchy();
 
         if (defaultAnchorMode == AnchorMode.TopRightCorner)

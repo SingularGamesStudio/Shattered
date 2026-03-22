@@ -81,17 +81,23 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
         if (defs == null) return false;
 
+        bool found = false;
         for (int i = 0; i < defs.Length; i++) {
             var s = defs[i] != null ? defs[i].sprite : null;
             if (s == null) continue;
 
             Rect r = s.textureRect;
-            w = Mathf.RoundToInt(r.width);
-            h = Mathf.RoundToInt(r.height);
-            return w > 0 && h > 0;
+            int sw = Mathf.RoundToInt(r.width);
+            int sh = Mathf.RoundToInt(r.height);
+            if (sw <= 0 || sh <= 0)
+                continue;
+
+            w = Mathf.Max(w, sw);
+            h = Mathf.Max(h, sh);
+            found = true;
         }
 
-        return false;
+        return found;
     }
 
     static Color32[] MakeSolid(int w, int h, Color32 c) {
@@ -125,14 +131,14 @@ public sealed class MaterialLibrary : MonoBehaviour {
         bool linear = false; // store as sRGB-like for albedo; shader sampling will be fine for visualization.
         albedoArray = new Texture2DArray(sliceW, sliceH, materials.Length, TextureFormat.RGBA32, false, linear) {
             wrapMode = TextureWrapMode.Repeat,
-            filterMode = FilterMode.Bilinear
+            filterMode = FilterMode.Point
         };
 
         var gpu = new MaterialGpu[materials.Length];
 
         var rt = RenderTexture.GetTemporary(sliceW, sliceH, 0, RenderTextureFormat.ARGB32,
             QualitySettings.activeColorSpace == ColorSpace.Linear ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Default);
-        rt.filterMode = FilterMode.Bilinear;
+        rt.filterMode = FilterMode.Point;
         rt.wrapMode = TextureWrapMode.Clamp;
 
         var readback = new Texture2D(sliceW, sliceH, TextureFormat.RGBA32, false, false);
@@ -171,12 +177,8 @@ public sealed class MaterialLibrary : MonoBehaviour {
                 Rect r = s.textureRect;
                 int w = Mathf.RoundToInt(r.width);
                 int h = Mathf.RoundToInt(r.height);
-                if (w != sliceW || h != sliceH) {
-                    Debug.LogWarning($"MeshlessMaterialLibrary: Sprite '{s.name}' is {w}x{h}, expected {sliceW}x{sliceH}.");
-                    magenta ??= MakeSolid(sliceW, sliceH, new Color32(255, 0, 255, 255));
-                    albedoArray.SetPixels32(magenta, i, 0);
-                    continue;
-                }
+                if (w != sliceW || h != sliceH)
+                    Debug.LogWarning($"MeshlessMaterialLibrary: Resampling sprite '{s.name}' from {w}x{h} to atlas slice {sliceW}x{sliceH}.");
 
                 float invW = 1f / s.texture.width;
                 float invH = 1f / s.texture.height;

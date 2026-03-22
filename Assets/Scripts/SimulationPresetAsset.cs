@@ -16,6 +16,7 @@ public sealed class SimulationPresetAsset : ScriptableObject {
     [Min(0f)] public float compliance = 1f;
     [Min(0f)] public float collisionCompliance = 0.1f;
     [Min(0f)] public float durabilityCompliance = 0.8f;
+    [Min(0f)] public float positionCorrectionCompliance = 0f;
 
     public void ApplyTo(SimulationParams target) {
         if (target == null)
@@ -32,6 +33,7 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         target.solverCore.compliance = Mathf.Max(0f, compliance);
         target.collision.collisionCompliance = Mathf.Max(0f, collisionCompliance);
         target.durability.durabilityCompliance = Mathf.Max(0f, durabilityCompliance);
+        target.particleRegularization.positionCorrectionCompliance = Mathf.Max(0f, positionCorrectionCompliance);
     }
 
     public void CaptureFrom(SimulationParams source) {
@@ -49,5 +51,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         compliance = Mathf.Max(0f, source.solverCore.compliance);
         collisionCompliance = Mathf.Max(0f, source.collision.collisionCompliance);
         durabilityCompliance = Mathf.Max(0f, source.durability.durabilityCompliance);
+        positionCorrectionCompliance = Mathf.Max(0f, source.particleRegularization.positionCorrectionCompliance);
     }
 }

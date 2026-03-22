@@ -9,21 +9,26 @@ namespace GPU.Solver {
         private readonly Dictionary<int, ComputeBuffer> globalLayerNodeMapBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, ComputeBuffer> globalLayerGlobalToLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, ComputeBuffer> globalLayerOwnerByLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
+        private readonly Dictionary<int, ComputeBuffer> globalLayerCollisionOwnerByLocalBuffers = new Dictionary<int, ComputeBuffer>(16);
         private readonly Dictionary<int, int[]> globalLayerGlobalToLocalCpu = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int[]> globalLayerNodeMapRefs = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int[]> globalLayerGlobalToLocalRefs = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int[]> globalLayerOwnerByLocalRefs = new Dictionary<int, int[]>(16);
+        private readonly Dictionary<int, int[]> globalLayerCollisionOwnerByLocalRefs = new Dictionary<int, int[]>(16);
         private readonly Dictionary<int, int> globalLayerNodeMapRefCounts = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalRefCounts = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerOwnerByLocalRefCounts = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerCollisionOwnerByLocalRefCounts = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerNodeMapHashes = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalHashes = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerOwnerByLocalHashes = new Dictionary<int, int>(16);
+        private readonly Dictionary<int, int> globalLayerCollisionOwnerByLocalHashes = new Dictionary<int, int>(16);
         private readonly Dictionary<int, int> globalLayerGlobalToLocalTotals = new Dictionary<int, int>(16);
         private ComputeBuffer defaultDtGlobalNodeMap;
         private ComputeBuffer defaultDtGlobalToLocalMap;
         private ComputeBuffer defaultDtOwnerByLocal;
         internal ComputeBuffer DefaultDtOwnerByLocal => defaultDtOwnerByLocal;
+        internal ComputeBuffer DefaultDtCollisionOwnerByLocal => defaultDtOwnerByLocal;
 
         internal void AllocateLayerMappingBuffers() {
             defaultDtGlobalNodeMap = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
@@ -57,6 +62,13 @@ namespace GPU.Solver {
             globalLayerOwnerByLocalRefs.Clear();
             globalLayerOwnerByLocalRefCounts.Clear();
             globalLayerOwnerByLocalHashes.Clear();
+
+            foreach (var kv in globalLayerCollisionOwnerByLocalBuffers)
+                kv.Value?.Dispose();
+            globalLayerCollisionOwnerByLocalBuffers.Clear();
+            globalLayerCollisionOwnerByLocalRefs.Clear();
+            globalLayerCollisionOwnerByLocalRefCounts.Clear();
+            globalLayerCollisionOwnerByLocalHashes.Clear();
 
             defaultDtGlobalNodeMap?.Dispose();
             defaultDtGlobalNodeMap = null;
@@ -190,6 +202,39 @@ namespace GPU.Solver {
 
             globalLayerOwnerByLocalRefs[layer] = ownerBodyByLocal;
             globalLayerOwnerByLocalRefCounts[layer] = activeCount;
+            return ownerBuffer;
+        }
+
+        internal ComputeBuffer EnsureGlobalLayerCollisionOwnerByLocalBuffer(int layer, int[] collisionOwnerByLocal, int activeCount) {
+            if (collisionOwnerByLocal == null)
+                throw new ArgumentNullException(nameof(collisionOwnerByLocal));
+
+            if (activeCount < 0 || activeCount > collisionOwnerByLocal.Length)
+                throw new ArgumentOutOfRangeException(nameof(activeCount));
+
+            if (!globalLayerCollisionOwnerByLocalBuffers.TryGetValue(layer, out ComputeBuffer ownerBuffer) || ownerBuffer == null || !ownerBuffer.IsValid() || ownerBuffer.count != math.max(1, activeCount)) {
+                ownerBuffer?.Dispose();
+                ownerBuffer = new ComputeBuffer(math.max(1, activeCount), sizeof(int), ComputeBufferType.Structured);
+                globalLayerCollisionOwnerByLocalBuffers[layer] = ownerBuffer;
+                globalLayerCollisionOwnerByLocalHashes[layer] = int.MinValue;
+            }
+
+            if (globalLayerCollisionOwnerByLocalRefs.TryGetValue(layer, out int[] previousRef) &&
+                ReferenceEquals(previousRef, collisionOwnerByLocal) &&
+                globalLayerCollisionOwnerByLocalRefCounts.TryGetValue(layer, out int previousCount) &&
+                previousCount == activeCount)
+                return ownerBuffer;
+
+            int ownerHash = ComputeMappingHash(collisionOwnerByLocal, activeCount);
+            bool shouldUpload = !globalLayerCollisionOwnerByLocalHashes.TryGetValue(layer, out int previousHash) || previousHash != ownerHash;
+            if (shouldUpload && activeCount > 0)
+                ownerBuffer.SetData(collisionOwnerByLocal, 0, 0, activeCount);
+
+            if (shouldUpload)
+                globalLayerCollisionOwnerByLocalHashes[layer] = ownerHash;
+
+            globalLayerCollisionOwnerByLocalRefs[layer] = collisionOwnerByLocal;
+            globalLayerCollisionOwnerByLocalRefCounts[layer] = activeCount;
             return ownerBuffer;
         }
 
