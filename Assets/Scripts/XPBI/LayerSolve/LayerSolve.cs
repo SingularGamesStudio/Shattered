@@ -117,6 +117,9 @@ namespace GPU.Solver {
                         layerContext.OwnerByLocalBuffer,
                         layerContext.CollisionOwnerByLocalBuffer)));
 
+            if (layer == 0)
+                Dispatch(session.AsyncCb, "XPBI.ApplyCollisionEventsDirectL0", shader, runtime.KApplyCollisionEventsDirectL0, XPBISolver.Groups256(activeCount), 1, 1);
+
             int jrIterations = GetJRIterationsForLayer(layer, session.MaxSolveLayer);
             int gsIterations = layer == 0 ? Const.GSIterationsL0 : 1;
 
@@ -200,6 +203,9 @@ namespace GPU.Solver {
                 if (Const.PostProlongSmoothing > 0f)
                     Dispatch(session.AsyncCb, "XPBI.SmoothProlongatedFineVel", shader, runtime.KSmoothProlongatedFineVel, XPBISolver.Groups256(fineCount), 1, 1);
             }
+
+            if (layer == 0)
+                Dispatch(session.AsyncCb, "XPBI.ApplyCollisionEventsDirectL0.PostSolve", shader, runtime.KApplyCollisionEventsDirectL0, XPBISolver.Groups256(activeCount), 1, 1);
 
             if (layer == 0)
                 Dispatch(session.AsyncCb, "XPBI.CommitDeformation", shader, runtime.KCommitDeformation, XPBISolver.Groups256(activeCount), 1, 1);

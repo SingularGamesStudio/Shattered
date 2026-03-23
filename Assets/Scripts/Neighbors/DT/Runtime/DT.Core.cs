@@ -58,6 +58,9 @@ namespace GPU.Delaunay {
         /// <summary>Per-real-vertex outward boundary normal (zero for non-boundary vertices).</summary>
         public ComputeBuffer BoundaryNormalsBuffer => _boundaryNormals;
 
+        /// <summary>Per-half-edge boundary flag (1 = boundary edge candidate).</summary>
+        public ComputeBuffer BoundaryEdgeFlagsBuffer => _boundaryEdgeFlags;
+
         /// <summary>Positions buffer for the current render slot.</summary>
         public ComputeBuffer PositionsBuffer => _positions[_renderSlot];
 

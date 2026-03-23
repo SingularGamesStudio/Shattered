@@ -377,15 +377,13 @@ public sealed class SimulationController : MonoBehaviour {
 
         float2 neighborBoundsMin = default;
         float2 neighborBoundsMax = default;
-        if (useUniformGridSearch) {
-            float boundsPadding = 0f;
-            if (globalDTHierarchy != null &&
-                globalDTHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH))
-                boundsPadding = Mathf.Max(1e-5f, Const.WendlandSupport * layerKernelH);
+        float boundsPadding = 0f;
+        if (globalDTHierarchy != null &&
+            globalDTHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH))
+            boundsPadding = Mathf.Max(1e-5f, Const.WendlandSupport * layerKernelH);
 
-            if (!TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax, boundsPadding))
-                return false;
-        }
+        if (!TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax, boundsPadding))
+            return false;
 
         int readSlot = asyncState.renderSlot;
         GraphicsFence computeFence = globalSolver.SubmitSolve(
@@ -469,7 +467,7 @@ public sealed class SimulationController : MonoBehaviour {
             return;
 
         int maxLayerOverride = Params.interaction.neighborSearchMode == NeighborSearchMode.UniformGridPaper ? 0 : -1;
-        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, true, maxLayerOverride);
+        globalDTHierarchy.Rebuild(activeMeshlessBatch, activeMeshlessBaseOffsets, false, maxLayerOverride);
         globalHierarchyDirty = false;
     }
 

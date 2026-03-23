@@ -924,7 +924,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::SpriteMeshGroupTool
   includeInactiveChildren: 1
   regenerateExistingOnGenerate: 1
-  materialTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  materialTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   overwriteMaterialOnExisting: 1
   applyCollisionOwnerOverride: 1
   collisionOwnerOverride: {fileID: 1528506848}

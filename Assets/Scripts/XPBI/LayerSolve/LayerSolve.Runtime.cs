@@ -48,6 +48,7 @@ namespace GPU.Solver {
         internal int kCopyVelToPrev;
         internal int kApplyXsph;
         internal int kApplyPositionCorrection;
+        internal int kApplyCollisionEventsDirectL0;
 
         private ComputeBuffer pos => solver.pos;
         private ComputeBuffer vel => solver.vel;
@@ -154,6 +155,7 @@ namespace GPU.Solver {
         internal int KCopyVelToPrev => kCopyVelToPrev;
         internal int KApplyXsph => kApplyXsph;
         internal int KApplyPositionCorrection => kApplyPositionCorrection;
+        internal int KApplyCollisionEventsDirectL0 => kApplyCollisionEventsDirectL0;
 
         internal void AllocateRuntimeBuffers(int newCapacity) {
             currentVolumeBits = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -211,6 +213,7 @@ namespace GPU.Solver {
             kCopyVelToPrev = shader.FindKernel("CopyVelToPrev");
             kApplyXsph = shader.FindKernel("ApplyXsph");
             kApplyPositionCorrection = shader.FindKernel("ApplyPositionCorrection");
+            kApplyCollisionEventsDirectL0 = shader.FindKernel("ApplyCollisionEventsDirectL0");
         }
 
         internal void BindLayerColoringBuffers(CommandBuffer cb, NeighborColoring layerColoring) {
@@ -456,6 +459,15 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CoarseFixed", coarseFixed);
             BindDtGlobalMappingParams(cb, kApplyPositionCorrection, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CurrentTotalMassBits", currentTotalMassBits);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CoarseFixed", coarseFixed);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CollisionEvents", solver.collisionEvent.CollisionEventsBuffer);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CollisionEventCount", solver.collisionEvent.CollisionEventCountBuffer);
+            BindDtGlobalMappingParams(cb, kApplyCollisionEventsDirectL0, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             BindDtGlobalMappingParams(cb, kProlongate, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 

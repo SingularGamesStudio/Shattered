@@ -1,11 +1,177 @@
 #pragma enable_d3d11_debug_symbols
 
 #pragma kernel ClearCollisionEventCount
+#pragma kernel ClearBoundaryChunkCount
+#pragma kernel BuildBoundaryChunksL0
+#pragma kernel InitChunkSortKeys
+#pragma kernel BitonicSortChunkKeys
+#pragma kernel BuildLbvhLeaves
+#pragma kernel BuildLbvhInternalLevel
+#pragma kernel TraverseLbvhEmitCollisionEvents
+#pragma kernel ClearCollisionDebugStats
 #pragma kernel BuildCollisionEventsL0
 #pragma kernel ClearTransferredCollision
 #pragma kernel RestrictCollisionEventsToActivePairs
 
 #include "../CommonShaders/Solver.Shared.hlsl"
+
+struct DT_HalfEdge
+{
+    int v;
+    int next;
+    int twin;
+    int t;
+};
+
+struct BoundaryChunk
+{
+    uint aLi;
+    uint bLi;
+    int owner;
+    uint pad;
+};
+
+StructuredBuffer<DT_HalfEdge> _DtHalfEdges;
+StructuredBuffer<uint> _DtBoundaryEdgeFlags;
+uint _DtHalfEdgeCount;
+
+RWStructuredBuffer<uint> _BoundaryChunkCount;
+RWStructuredBuffer<BoundaryChunk> _BoundaryChunks;
+RWStructuredBuffer<float4> _BoundaryChunkAabbs;
+RWStructuredBuffer<uint> _BoundaryChunkMortonKeys;
+RWStructuredBuffer<uint> _BoundaryChunkSortKeys;
+RWStructuredBuffer<uint> _BoundaryChunkSortIndices;
+uint _BoundaryChunkCapacity;
+uint _BoundaryChunkSortCapacity;
+
+RWStructuredBuffer<float4> _LbvhNodeAabbs;
+RWStructuredBuffer<int> _LbvhNodeChunk;
+uint _LbvhLeafOffset;
+uint _LbvhNodeCount;
+int _LbvhLevelStart;
+int _LbvhLevelCount;
+
+float2 _LbvhBoundsMin;
+float2 _LbvhBoundsMax;
+int _BitonicK;
+int _BitonicJ;
+RWStructuredBuffer<uint> _CollisionDebugStats;
+
+static bool AabbOverlap(float4 a, float4 b)
+{
+    return (a.x <= b.z) && (a.z >= b.x) && (a.y <= b.w) && (a.w >= b.y);
+}
+
+static float4 InvalidAabb()
+{
+    return float4(1e30, 1e30, -1e30, -1e30);
+}
+
+static bool IsValidAabb(float4 a)
+{
+    return a.x <= a.z && a.y <= a.w;
+}
+
+static uint ExpandBits2D(uint v)
+{
+    v = (v | (v << 8)) & 0x00FF00FFu;
+    v = (v | (v << 4)) & 0x0F0F0F0Fu;
+    v = (v | (v << 2)) & 0x33333333u;
+    v = (v | (v << 1)) & 0x55555555u;
+    return v;
+}
+
+static uint Morton2D10(float2 p)
+{
+    float2 mn = _LbvhBoundsMin;
+    float2 mx = _LbvhBoundsMax;
+    float2 ext = max(mx - mn, float2(1e-5, 1e-5));
+    float2 t = saturate((p - mn) / ext);
+
+    uint x = (uint)round(t.x * 1023.0);
+    uint y = (uint)round(t.y * 1023.0);
+    return (ExpandBits2D(y) << 1) | ExpandBits2D(x);
+}
+
+static float SegmentSegmentDistanceSq(float2 p1, float2 q1, float2 p2, float2 q2, out float sOut, out float tOut, out float2 c1Out, out float2 c2Out)
+{
+    float2 d1 = q1 - p1;
+    float2 d2 = q2 - p2;
+    float2 r = p1 - p2;
+    float a = dot(d1, d1);
+    float e = dot(d2, d2);
+    float f = dot(d2, r);
+
+    float s = 0.0;
+    float t = 0.0;
+
+    if (a <= EPS && e <= EPS)
+    {
+        c1Out = p1;
+        c2Out = p2;
+        sOut = 0.0;
+        tOut = 0.0;
+        float2 d = c1Out - c2Out;
+        return dot(d, d);
+    }
+
+    if (a <= EPS)
+    {
+        s = 0.0;
+        t = saturate(f / e);
+    }
+    else
+    {
+        float c = dot(d1, r);
+        if (e <= EPS)
+        {
+            t = 0.0;
+            s = saturate(-c / a);
+        }
+        else
+        {
+            float b = dot(d1, d2);
+            float denom = a * e - b * b;
+            if (denom != 0.0)
+                s = saturate((b * f - c * e) / denom);
+            else
+                s = 0.0;
+
+            float tNom = b * s + f;
+            if (tNom < 0.0)
+            {
+                t = 0.0;
+                s = saturate(-c / a);
+            }
+            else if (tNom > e)
+            {
+                t = 1.0;
+                s = saturate((b - c) / a);
+            }
+            else
+            {
+                t = tNom / e;
+            }
+        }
+    }
+
+    c1Out = p1 + d1 * s;
+    c2Out = p2 + d2 * t;
+    sOut = s;
+    tOut = t;
+    float2 dC = c1Out - c2Out;
+    return dot(dC, dC);
+}
+
+static void ReadChunkEndpoints(uint chunkIdx, out uint ga, out uint gb, out float2 pa, out float2 pb, out int owner)
+{
+    BoundaryChunk c = _BoundaryChunks[chunkIdx];
+    owner = c.owner;
+    ga = GlobalIndexFromLocal(c.aLi);
+    gb = GlobalIndexFromLocal(c.bLi);
+    pa = (ga != ~0u) ? (_Pos[ga] + _Vel[ga] * _Dt) : 0.0;
+    pb = (gb != ~0u) ? (_Pos[gb] + _Vel[gb] * _Dt) : 0.0;
+}
 
 [numthreads(1, 1, 1)]
 void ClearCollisionEventCount(uint3 id : SV_DispatchThreadID)
@@ -13,76 +179,336 @@ void ClearCollisionEventCount(uint3 id : SV_DispatchThreadID)
     _CollisionEventCount[0] = 0u;
 }
 
-[numthreads(256, 1, 1)]
-void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
+[numthreads(1, 1, 1)]
+void ClearBoundaryChunkCount(uint3 id : SV_DispatchThreadID)
 {
-    uint li = id.x;
-    if (li >= _ActiveCount)
+    _BoundaryChunkCount[0] = 0u;
+}
+
+[numthreads(1, 1, 1)]
+void ClearCollisionDebugStats(uint3 id : SV_DispatchThreadID)
+{
+    [unroll]
+    for (uint i = 0u; i < 16u; i++)
+        _CollisionDebugStats[i] = 0u;
+}
+
+[numthreads(256, 1, 1)]
+void BuildBoundaryChunksL0(uint3 id : SV_DispatchThreadID)
+{
+    uint he = id.x;
+    if (he >= _DtHalfEdgeCount)
         return;
 
-    uint gi = GlobalIndexFromLocal(li);
-    if (gi == ~0u)
+    if (_DtBoundaryEdgeFlags[he] == 0u)
         return;
 
-    int ownerI = _DtCollisionOwnerByLocal[li];
-    if (ownerI < 0)
+    InterlockedAdd(_CollisionDebugStats[0], 1u);
+
+    DT_HalfEdge e = _DtHalfEdges[he];
+    if (e.v < 0 || e.next < 0 || e.next >= (int)_DtHalfEdgeCount)
         return;
+
+    if (e.twin >= 0 && he > (uint)e.twin)
+        return;
+
+    uint aLi = (uint)e.v;
+    uint bLi = (uint)_DtHalfEdges[e.next].v;
+    if (aLi >= _ActiveCount || bLi >= _ActiveCount || aLi == bLi)
+        return;
+
+    int ownerA = _DtCollisionOwnerByLocal[aLi];
+    int ownerB = _DtCollisionOwnerByLocal[bLi];
+    if (ownerA < 0 || ownerA != ownerB)
+        return;
+
+    uint ga = GlobalIndexFromLocal(aLi);
+    uint gb = GlobalIndexFromLocal(bLi);
+    if (ga == ~0u || gb == ~0u)
+        return;
+
+    float2 pa = _Pos[ga] + _Vel[ga] * _Dt;
+    float2 pb = _Pos[gb] + _Vel[gb] * _Dt;
+    float2 mn = min(pa, pb);
+    float2 mx = max(pa, pb);
 
     float support = WendlandSupportRadius(max(_LayerKernelH, 1e-4));
-    if (support <= EPS)
+    float pad = max(1e-5, 0.1 * support);
+    mn -= pad;
+    mx += pad;
+
+    uint idx = 0u;
+    InterlockedAdd(_BoundaryChunkCount[0], 1u, idx);
+    if (idx >= _BoundaryChunkCapacity)
         return;
 
+    BoundaryChunk c;
+    c.aLi = aLi;
+    c.bLi = bLi;
+    c.owner = ownerA;
+    c.pad = 0u;
+
+    _BoundaryChunks[idx] = c;
+    _BoundaryChunkAabbs[idx] = float4(mn.x, mn.y, mx.x, mx.y);
+    _BoundaryChunkMortonKeys[idx] = Morton2D10(0.5 * (pa + pb));
+    InterlockedAdd(_CollisionDebugStats[1], 1u);
+}
+
+[numthreads(256, 1, 1)]
+void InitChunkSortKeys(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _BoundaryChunkSortCapacity)
+        return;
+
+    uint chunkCount = min(_BoundaryChunkCount[0], _BoundaryChunkCapacity);
+    if (i < chunkCount)
+    {
+        _BoundaryChunkSortKeys[i] = _BoundaryChunkMortonKeys[i];
+        _BoundaryChunkSortIndices[i] = i;
+    }
+    else
+    {
+        _BoundaryChunkSortKeys[i] = 0xFFFFFFFFu;
+        _BoundaryChunkSortIndices[i] = ~0u;
+    }
+}
+
+[numthreads(256, 1, 1)]
+void BitonicSortChunkKeys(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _BoundaryChunkSortCapacity)
+        return;
+
+    uint j = (uint)_BitonicJ;
+    uint k = (uint)_BitonicK;
+    uint ixj = i ^ j;
+    if (ixj <= i || ixj >= _BoundaryChunkSortCapacity)
+        return;
+
+    uint keyI = _BoundaryChunkSortKeys[i];
+    uint keyJ = _BoundaryChunkSortKeys[ixj];
+    uint idxI = _BoundaryChunkSortIndices[i];
+    uint idxJ = _BoundaryChunkSortIndices[ixj];
+
+    bool ascending = ((i & k) == 0u);
+    bool shouldSwap = ascending ? (keyI > keyJ) : (keyI < keyJ);
+    if (shouldSwap)
+    {
+        _BoundaryChunkSortKeys[i] = keyJ;
+        _BoundaryChunkSortKeys[ixj] = keyI;
+        _BoundaryChunkSortIndices[i] = idxJ;
+        _BoundaryChunkSortIndices[ixj] = idxI;
+    }
+}
+
+[numthreads(256, 1, 1)]
+void BuildLbvhLeaves(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _BoundaryChunkSortCapacity)
+        return;
+
+    uint chunkCount = min(_BoundaryChunkCount[0], _BoundaryChunkCapacity);
+    uint node = _LbvhLeafOffset + i;
+    if (node >= _LbvhNodeCount)
+        return;
+
+    uint chunkIdx = _BoundaryChunkSortIndices[i];
+    if (i >= chunkCount || chunkIdx == ~0u || chunkIdx >= chunkCount)
+    {
+        _LbvhNodeAabbs[node] = InvalidAabb();
+        _LbvhNodeChunk[node] = -1;
+        return;
+    }
+
+    _LbvhNodeAabbs[node] = _BoundaryChunkAabbs[chunkIdx];
+    _LbvhNodeChunk[node] = (int)chunkIdx;
+}
+
+[numthreads(256, 1, 1)]
+void BuildLbvhInternalLevel(uint3 id : SV_DispatchThreadID)
+{
+    uint local = id.x;
+    if (local >= (uint)_LbvhLevelCount)
+        return;
+
+    uint node = (uint)_LbvhLevelStart + local;
+    if (node >= _LbvhNodeCount)
+        return;
+
+    uint left = node * 2u + 1u;
+    uint right = left + 1u;
+    if (right >= _LbvhNodeCount)
+    {
+        _LbvhNodeAabbs[node] = InvalidAabb();
+        _LbvhNodeChunk[node] = -1;
+        return;
+    }
+
+    float4 a = _LbvhNodeAabbs[left];
+    float4 b = _LbvhNodeAabbs[right];
+    bool va = IsValidAabb(a);
+    bool vb = IsValidAabb(b);
+
+    if (!va && !vb)
+    {
+        _LbvhNodeAabbs[node] = InvalidAabb();
+        _LbvhNodeChunk[node] = -1;
+        return;
+    }
+
+    if (!va) a = b;
+    if (!vb) b = a;
+
+    _LbvhNodeAabbs[node] = float4(min(a.xy, b.xy), max(a.zw, b.zw));
+    _LbvhNodeChunk[node] = -1;
+}
+
+[numthreads(256, 1, 1)]
+void TraverseLbvhEmitCollisionEvents(uint3 id : SV_DispatchThreadID)
+{
+    uint sortedIdx = id.x;
+    uint chunkCount = min(_BoundaryChunkCount[0], _BoundaryChunkCapacity);
+    if (sortedIdx >= chunkCount)
+        return;
+
+    uint queryChunk = _BoundaryChunkSortIndices[sortedIdx];
+    if (queryChunk == ~0u || queryChunk >= chunkCount)
+        return;
+
+    float4 queryAabb = _BoundaryChunkAabbs[queryChunk];
+    if (!IsValidAabb(queryAabb))
+        return;
+
+    int queryOwner = _BoundaryChunks[queryChunk].owner;
+    if (queryOwner < 0)
+        return;
+
+    uint stack[64];
+    uint sp = 0u;
+    stack[sp++] = 0u;
+
+    float support = WendlandSupportRadius(max(_LayerKernelH, 1e-4));
     float targetSep = max(EPS, _CollisionSupportScale * support);
     float targetSepSq = targetSep * targetSep;
 
-    uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
-    uint baseIdx = dtLi * _DtNeighborCount;
-
-    uint rawCount = _DtNeighborCounts[dtLi];
-    uint nCount = min(min(rawCount, _DtNeighborCount), targetNeighborCount);
-
-    float2 xi = _Pos[gi] + _Vel[gi] * _Dt;
-
     [loop]
-    for (uint k = 0u; k < nCount; k++)
+    while (sp > 0u)
     {
-        uint gjLi = _DtNeighbors[baseIdx + k];
-        if (gjLi == ~0u || gjLi >= _ActiveCount)
+        uint node = stack[--sp];
+        if (node >= _LbvhNodeCount)
             continue;
 
-        int ownerJ = _DtCollisionOwnerByLocal[gjLi];
-        if (ownerJ < 0 || ownerJ == ownerI)
+        float4 nodeAabb = _LbvhNodeAabbs[node];
+        if (!IsValidAabb(nodeAabb) || !AabbOverlap(queryAabb, nodeAabb))
             continue;
 
-        uint gj = GlobalIndexFromLocal(gjLi);
-        if (gj == ~0u || gj <= gi)
+        int leafChunk = _LbvhNodeChunk[node];
+        if (leafChunk >= 0)
+        {
+            uint otherChunk = (uint)leafChunk;
+            if (otherChunk <= queryChunk || otherChunk >= chunkCount)
+                continue;
+
+            InterlockedAdd(_CollisionDebugStats[2], 1u);
+
+            int otherOwner = _BoundaryChunks[otherChunk].owner;
+            if (otherOwner < 0 || otherOwner == queryOwner)
+            {
+                InterlockedAdd(_CollisionDebugStats[3], 1u);
+                continue;
+            }
+
+            InterlockedAdd(_CollisionDebugStats[8], 1u);
+
+            uint qaGi, qbGi, oaGi, obGi;
+            float2 qa, qb, oa, ob;
+            int ignoredOwner;
+            ReadChunkEndpoints(queryChunk, qaGi, qbGi, qa, qb, ignoredOwner);
+            ReadChunkEndpoints(otherChunk, oaGi, obGi, oa, ob, ignoredOwner);
+            if (qaGi == ~0u || qbGi == ~0u || oaGi == ~0u || obGi == ~0u)
+            {
+                InterlockedAdd(_CollisionDebugStats[4], 1u);
+                continue;
+            }
+
+            InterlockedAdd(_CollisionDebugStats[9], 1u);
+
+            float sSeg, tSeg;
+            float2 cA, cB;
+            float best = SegmentSegmentDistanceSq(qa, qb, oa, ob, sSeg, tSeg, cA, cB);
+
+            if (!(best == best))
+            {
+                InterlockedAdd(_CollisionDebugStats[13], 1u);
+                continue;
+            }
+
+            if (best <= EPS * EPS || best > targetSepSq)
+            {
+                InterlockedAdd(_CollisionDebugStats[5], 1u);
+                continue;
+            }
+
+            float dist = sqrt(best);
+            float pen = targetSep - dist;
+            if (!(pen == pen))
+            {
+                InterlockedAdd(_CollisionDebugStats[14], 1u);
+                continue;
+            }
+
+            if (!(pen > EPS))
+            {
+                InterlockedAdd(_CollisionDebugStats[5], 1u);
+                continue;
+            }
+
+            InterlockedAdd(_CollisionDebugStats[10], 1u);
+
+            uint aGi = (sSeg <= 0.5) ? qaGi : qbGi;
+            uint bGi = (tSeg <= 0.5) ? oaGi : obGi;
+            float2 nrm = (cB - cA) / max(dist, EPS);
+            if (aGi > bGi)
+            {
+                uint tg = aGi; aGi = bGi; bGi = tg;
+                nrm = -nrm;
+            }
+
+            uint outIdx = 0u;
+            InterlockedAdd(_CollisionEventCount[0], 1u, outIdx);
+            InterlockedAdd(_CollisionDebugStats[11], 1u);
+            if (outIdx >= _CollisionEventCapacity)
+            {
+                InterlockedAdd(_CollisionDebugStats[7], 1u);
+                continue;
+            }
+
+            XPBI_CollisionEvent e;
+            e.aGi = aGi;
+            e.bGi = bGi;
+            e.nPen = float4(nrm.x, nrm.y, pen, 0.0);
+            _CollisionEvents[outIdx] = e;
+            InterlockedAdd(_CollisionDebugStats[6], 1u);
+            InterlockedAdd(_CollisionDebugStats[12], 1u);
             continue;
+        }
 
-        float2 xj = _Pos[gj] + _Vel[gj] * _Dt;
-        float2 dx = xj - xi;
-        float distSq = dot(dx, dx);
-        if (distSq <= EPS * EPS || distSq > targetSepSq)
-            continue;
-
-        float dist = sqrt(distSq);
-        float Cn = dist - targetSep;
-        if (Cn >= 0.0)
-            continue;
-
-        float2 nrm = dx / max(dist, EPS);
-        float pen = -Cn;
-
-        uint idx = 0u;
-        InterlockedAdd(_CollisionEventCount[0], 1u, idx);
-        if (idx >= _CollisionEventCapacity)
-            return;
-
-        XPBI_CollisionEvent e;
-        e.aGi = gi;
-        e.bGi = gj;
-        e.nPen = float4(nrm.x, nrm.y, pen, 0.0);
-        _CollisionEvents[idx] = e;
+        uint right = node * 2u + 2u;
+        uint left = node * 2u + 1u;
+        if (right < _LbvhNodeCount && sp < 64u)
+            stack[sp++] = right;
+        if (left < _LbvhNodeCount && sp < 64u)
+            stack[sp++] = left;
     }
+}
+
+[numthreads(256, 1, 1)]
+void BuildCollisionEventsL0(uint3 id : SV_DispatchThreadID)
+{
+    // LBVH traversal emits events directly. Keep this kernel as a no-op marker.
 }
 
 [numthreads(256, 1, 1)]
