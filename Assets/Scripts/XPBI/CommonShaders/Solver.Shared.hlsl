@@ -42,7 +42,13 @@
     {
         uint aGi;
         uint bGi;
+        uint qaGi;
+        uint qbGi;
+        uint oaGi;
+        uint obGi;
         float4 nPen;
+        float2 segST;
+        float2 pad;
     };
 
     RWStructuredBuffer<XPBI_CollisionEvent> _CollisionEvents;
@@ -53,6 +59,12 @@
     RWStructuredBuffer<uint> _XferColNXBits;
     RWStructuredBuffer<uint> _XferColNYBits;
     RWStructuredBuffer<uint> _XferColPenBits;
+    RWStructuredBuffer<uint> _XferColSBits;
+    RWStructuredBuffer<uint> _XferColTBits;
+    RWStructuredBuffer<uint> _XferColQAGi;
+    RWStructuredBuffer<uint> _XferColQBGi;
+    RWStructuredBuffer<uint> _XferColOAGi;
+    RWStructuredBuffer<uint> _XferColOBGi;
     uint _UseTransferredCollisions;
 
     // Velocity delta accumulation

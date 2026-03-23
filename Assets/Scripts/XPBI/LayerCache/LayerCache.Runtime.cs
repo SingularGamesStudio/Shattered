@@ -44,6 +44,12 @@ namespace GPU.Solver {
         private ComputeBuffer xferColNXBits => solver.collisionEvent.XferColNXBitsBuffer;
         private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
         private ComputeBuffer xferColPenBits => solver.collisionEvent.XferColPenBitsBuffer;
+        private ComputeBuffer xferColSBits => solver.collisionEvent.XferColSBitsBuffer;
+        private ComputeBuffer xferColTBits => solver.collisionEvent.XferColTBitsBuffer;
+        private ComputeBuffer xferColQAGi => solver.collisionEvent.XferColQAGiBuffer;
+        private ComputeBuffer xferColQBGi => solver.collisionEvent.XferColQBGiBuffer;
+        private ComputeBuffer xferColOAGi => solver.collisionEvent.XferColOAGiBuffer;
+        private ComputeBuffer xferColOBGi => solver.collisionEvent.XferColOBGiBuffer;
         private ComputeBuffer defaultDtOwnerByLocal => solver.layerMappingCache.DefaultDtOwnerByLocal;
         private ComputeBuffer defaultDtCollisionOwnerByLocal => solver.layerMappingCache.DefaultDtCollisionOwnerByLocal;
         private int kClearCollisionEventCount => solver.collisionEvent.ClearCollisionEventCountKernel;
@@ -228,6 +234,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColSBits", xferColSBits);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColTBits", xferColTBits);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColQAGi", xferColQAGi);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColQBGi", xferColQBGi);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColOAGi", xferColOAGi);
+            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColOBGi", xferColOBGi);
 
             cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", parentIndex);
             cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_ParentIndices", parentIndices);
@@ -240,6 +252,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColPenBits", xferColPenBits);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColSBits", xferColSBits);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColTBits", xferColTBits);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColQAGi", xferColQAGi);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColQBGi", xferColQBGi);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColOAGi", xferColOAGi);
+            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColOBGi", xferColOBGi);
 
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVBits", actualRuntime.RestrictedDeltaVBits);
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVCount", actualRuntime.RestrictedDeltaVCount);

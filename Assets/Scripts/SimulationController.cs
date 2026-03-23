@@ -85,6 +85,7 @@ public sealed class SimulationController : MonoBehaviour {
 
     float renderAlpha;
     public float RenderAlpha => renderAlpha;
+    public XPBISolver GlobalSolver => globalSolver;
 
     SimulationParams Params {
         get {

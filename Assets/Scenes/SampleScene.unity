@@ -163,6 +163,7 @@ GameObject:
   - component: {fileID: 86236646}
   - component: {fileID: 86236645}
   - component: {fileID: 86236647}
+  - component: {fileID: 86236648}
   m_Layer: 0
   m_Name: Simulation
   m_TagString: Untagged
@@ -196,7 +197,7 @@ MonoBehaviour:
       simulationSpeed: 1
       maxTicksPerBatch: 32
     interaction:
-      manual: 0
+      manual: 1
       holdThreshold: 0.2
       useHierarchicalSolver: 1
       neighborSearchMode: 0
@@ -234,7 +235,7 @@ MonoBehaviour:
     collision:
       collisionSupportScale: 0.3
       collisionCompliance: 0.1
-      collisionFriction: 0.2
+      collisionFriction: 0.215
       collisionRestitution: 0.1
       collisionRestitutionThreshold: 0.005
     durability:
@@ -292,6 +293,36 @@ MonoBehaviour:
   - {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   - {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fallbackTexture: {fileID: 0}
+--- !u!114 &86236648
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 86236644}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6882209a668c5ab449fe0b731f8158ce, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CollisionDebugRenderer
+  enableOverlay: 1
+  readbackMode: 0
+  readbackInterval: 0.05
+  drawBoundaries: 1
+  boundaryColor: {r: 0.2, g: 1, b: 0.35, a: 1}
+  maxBoundarySegments: 6000
+  drawCollisionArrows: 1
+  collisionArrowColor: {r: 1, g: 0.35, b: 0.15, a: 1}
+  maxCollisionArrows: 2000
+  arrowScale: 1
+  minArrowLength: 0.015
+  arrowHeadLength: 0.02
+  arrowHeadWidthScale: 0.55
+  lineThickness: 2
+  targetCamera: {fileID: 0}
+  projectOnCameraFrontPlane: 1
+  cameraFrontPlaneDistance: 1
+  zDepth: -100
 --- !u!114 &352276157
 MonoBehaviour:
   m_ObjectHideFlags: 0

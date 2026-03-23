@@ -13,7 +13,6 @@
 #pragma kernel CopyVelToPrev
 #pragma kernel ApplyXsph
 #pragma kernel ApplyPositionCorrection
-#pragma kernel ApplyCollisionEventsDirectL0
 
 #include "../../CommonShaders/Solver.Shared.hlsl"
 #include "XPBI.LayerSolve.Relax.Colored.hlsl"
@@ -378,67 +377,6 @@ void ApplyPositionCorrection(uint3 id : SV_DispatchThreadID)
 
 	_Pos[gi] += avgCorrection;
 	_Vel[gi] += avgCorrection / max(_Dt, EPS);
-}
-
-[numthreads(256, 1, 1)]
-void ApplyCollisionEventsDirectL0(uint3 id : SV_DispatchThreadID)
-{
-	uint li = id.x;
-	if (li >= _ActiveCount) return;
-
-	uint gi = GlobalIndexFromLocal(li);
-	if (gi == ~0u || IsLayerFixed(gi)) return;
-
-	uint eventCount = min(_CollisionEventCount[0], _CollisionEventCapacity);
-	if (eventCount == 0u) return;
-
-	float selfInvMass = ReadEffectiveInvMass(gi);
-	if (selfInvMass <= EPS) return;
-
-	float alphaCollision = max(_CollisionCompliance, 0.0);
-	float invDt = 1.0 / max(_Dt, EPS);
-	float2 dv = 0.0;
-	float2 dp = 0.0;
-
-	[loop]
-	for (uint ei = 0u; ei < eventCount; ei++)
-	{
-		XPBI_CollisionEvent e = _CollisionEvents[ei];
-		if (e.aGi == e.bGi || e.aGi == ~0u || e.bGi == ~0u) continue;
-
-		bool isA = (e.aGi == gi);
-		bool isB = (e.bGi == gi);
-		if (!isA && !isB) continue;
-
-		uint otherGi = isA ? e.bGi : e.aGi;
-		float otherInvMass = IsLayerFixed(otherGi) ? 0.0 : ReadEffectiveInvMass(otherGi);
-		float denom = selfInvMass + otherInvMass + alphaCollision;
-		if (denom <= EPS) continue;
-
-		float pen = e.nPen.z;
-		if (!(pen > EPS)) continue;
-
-		float2 nrm = normalize(e.nPen.xy);
-		if (!all(isfinite(nrm))) continue;
-		if (isB) nrm = -nrm;
-
-		float dLambda = pen / max(denom, EPS);
-		dp -= selfInvMass * dLambda * nrm;
-		float impulseVel = dLambda * invDt;
-		dv -= selfInvMass * impulseVel * nrm;
-	}
-
-	if (!all(isfinite(dv)) || !all(isfinite(dp))) return;
-
-	_Pos[gi] += dp;
-
-	float2 v = _Vel[gi] + dv;
-	float maxSpeed2 = _MaxSpeed * _MaxSpeed;
-	float v2 = dot(v, v);
-	if (v2 > maxSpeed2 && maxSpeed2 > EPS)
-		v *= _MaxSpeed * rsqrt(max(v2, EPS * EPS));
-
-	_Vel[gi] = v;
 }
 
 [numthreads(256, 1, 1)]

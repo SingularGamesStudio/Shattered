@@ -69,7 +69,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
         if (def == null) return 0;
         defToIndex ??= new Dictionary<MaterialDef, int>(64);
         if (!defToIndex.TryGetValue(def, out int idx)) {
-            Debug.LogWarning($"MeshlessMaterialLibrary: material def '{def.name}' is not in MeshlessMaterialLibrary.materials; returning 0.");
+            Debug.LogError($"MeshlessMaterialLibrary: material def '{def.name}' is not in MeshlessMaterialLibrary.materials; returning 0.");
             return 0;
         }
         return idx;
@@ -161,7 +161,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
             Sprite s = def != null ? def.sprite : null;
 
             if (s != null && s.packed && s.packingRotation != SpritePackingRotation.None) {
-                Debug.LogWarning($"MeshlessMaterialLibrary: Sprite '{s.name}' is packed with rotation ({s.packingRotation}). Disable rotation in packing or it will be wrong.");
+                Debug.LogError($"MeshlessMaterialLibrary: Sprite '{s.name}' is packed with rotation ({s.packingRotation}). Disable rotation in packing or it will be wrong.");
             }
 
             Texture src = s != null ? (Texture)s.texture : (Texture)fallbackTexture;
@@ -175,10 +175,6 @@ public sealed class MaterialLibrary : MonoBehaviour {
                 Graphics.Blit(src, rt);
             } else {
                 Rect r = s.textureRect;
-                int w = Mathf.RoundToInt(r.width);
-                int h = Mathf.RoundToInt(r.height);
-                if (w != sliceW || h != sliceH)
-                    Debug.LogWarning($"MeshlessMaterialLibrary: Resampling sprite '{s.name}' from {w}x{h} to atlas slice {sliceW}x{sliceH}.");
 
                 float invW = 1f / s.texture.width;
                 float invH = 1f / s.texture.height;

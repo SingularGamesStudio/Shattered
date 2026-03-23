@@ -12,6 +12,12 @@ namespace GPU.Solver {
 		private ComputeBuffer xferColNXBits;
 		private ComputeBuffer xferColNYBits;
 		private ComputeBuffer xferColPenBits;
+		private ComputeBuffer xferColSBits;
+		private ComputeBuffer xferColTBits;
+		private ComputeBuffer xferColQAGi;
+		private ComputeBuffer xferColQBGi;
+		private ComputeBuffer xferColOAGi;
+		private ComputeBuffer xferColOBGi;
 		private ComputeBuffer boundaryChunkCount;
 		private ComputeBuffer boundaryChunkEdges;
 		private ComputeBuffer boundaryChunkAabbs;
@@ -42,10 +48,18 @@ namespace GPU.Solver {
 
 		internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
 		internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
+		internal ComputeBuffer BoundaryChunkCountBuffer => boundaryChunkCount;
+		internal ComputeBuffer BoundaryChunksBuffer => boundaryChunkEdges;
 		internal ComputeBuffer XferColCountBuffer => xferColCount;
 		internal ComputeBuffer XferColNXBitsBuffer => xferColNXBits;
 		internal ComputeBuffer XferColNYBitsBuffer => xferColNYBits;
 		internal ComputeBuffer XferColPenBitsBuffer => xferColPenBits;
+		internal ComputeBuffer XferColSBitsBuffer => xferColSBits;
+		internal ComputeBuffer XferColTBitsBuffer => xferColTBits;
+		internal ComputeBuffer XferColQAGiBuffer => xferColQAGi;
+		internal ComputeBuffer XferColQBGiBuffer => xferColQBGi;
+		internal ComputeBuffer XferColOAGiBuffer => xferColOAGi;
+		internal ComputeBuffer XferColOBGiBuffer => xferColOBGi;
 		internal int ClearCollisionEventCountKernel => kClearCollisionEventCount;
 		internal int BuildCollisionEventsL0Kernel => kBuildCollisionEventsL0;
 		internal int ClearTransferredCollisionKernel => kClearTransferredCollision;
@@ -77,12 +91,18 @@ namespace GPU.Solver {
 			lbvhLeafOffset = boundaryChunkSortCapacity - 1;
 			lbvhNodeCapacity = boundaryChunkSortCapacity * 2 - 1;
 
-			collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 2 + sizeof(float) * 4, ComputeBufferType.Structured);
+			collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 6 + sizeof(float) * 8, ComputeBufferType.Structured);
 			collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 			xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
 			xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
 			xferColNYBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
 			xferColPenBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColSBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColTBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColQAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColQBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColOAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColOBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
 			boundaryChunkCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 			boundaryChunkEdges = new ComputeBuffer(boundaryChunkCapacity, sizeof(uint) * 3 + sizeof(int), ComputeBufferType.Structured);
 			boundaryChunkAabbs = new ComputeBuffer(boundaryChunkCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -101,6 +121,12 @@ namespace GPU.Solver {
 			xferColNXBits?.Dispose(); xferColNXBits = null;
 			xferColNYBits?.Dispose(); xferColNYBits = null;
 			xferColPenBits?.Dispose(); xferColPenBits = null;
+			xferColSBits?.Dispose(); xferColSBits = null;
+			xferColTBits?.Dispose(); xferColTBits = null;
+			xferColQAGi?.Dispose(); xferColQAGi = null;
+			xferColQBGi?.Dispose(); xferColQBGi = null;
+			xferColOAGi?.Dispose(); xferColOAGi = null;
+			xferColOBGi?.Dispose(); xferColOBGi = null;
 			boundaryChunkCount?.Dispose(); boundaryChunkCount = null;
 			boundaryChunkEdges?.Dispose(); boundaryChunkEdges = null;
 			boundaryChunkAabbs?.Dispose(); boundaryChunkAabbs = null;
@@ -227,6 +253,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColSBits", xferColSBits);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColTBits", xferColTBits);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColQAGi", xferColQAGi);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColQBGi", xferColQBGi);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColOAGi", xferColOAGi);
+			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColOBGi", xferColOBGi);
 
             cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", solver.parentIndex);
             cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndices", solver.parentIndices);
@@ -239,6 +271,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColPenBits", xferColPenBits);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColSBits", xferColSBits);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColTBits", xferColTBits);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColQAGi", xferColQAGi);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColQBGi", xferColQBGi);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColOAGi", xferColOAGi);
+			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColOBGi", xferColOBGi);
 
 			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBuildBoundaryChunksL0, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kInitChunkSortKeys, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);

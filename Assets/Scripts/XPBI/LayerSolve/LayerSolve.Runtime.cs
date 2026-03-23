@@ -48,7 +48,6 @@ namespace GPU.Solver {
         internal int kCopyVelToPrev;
         internal int kApplyXsph;
         internal int kApplyPositionCorrection;
-        internal int kApplyCollisionEventsDirectL0;
 
         private ComputeBuffer pos => solver.pos;
         private ComputeBuffer vel => solver.vel;
@@ -64,6 +63,12 @@ namespace GPU.Solver {
         private ComputeBuffer xferColNXBits => solver.collisionEvent.XferColNXBitsBuffer;
         private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
         private ComputeBuffer xferColPenBits => solver.collisionEvent.XferColPenBitsBuffer;
+        private ComputeBuffer xferColSBits => solver.collisionEvent.XferColSBitsBuffer;
+        private ComputeBuffer xferColTBits => solver.collisionEvent.XferColTBitsBuffer;
+        private ComputeBuffer xferColQAGi => solver.collisionEvent.XferColQAGiBuffer;
+        private ComputeBuffer xferColQBGi => solver.collisionEvent.XferColQBGiBuffer;
+        private ComputeBuffer xferColOAGi => solver.collisionEvent.XferColOAGiBuffer;
+        private ComputeBuffer xferColOBGi => solver.collisionEvent.XferColOBGiBuffer;
         private ComputeBuffer defaultDtOwnerByLocal => solver.layerMappingCache.DefaultDtOwnerByLocal;
         private ComputeBuffer defaultDtCollisionOwnerByLocal => solver.layerMappingCache.DefaultDtCollisionOwnerByLocal;
 
@@ -155,7 +160,6 @@ namespace GPU.Solver {
         internal int KCopyVelToPrev => kCopyVelToPrev;
         internal int KApplyXsph => kApplyXsph;
         internal int KApplyPositionCorrection => kApplyPositionCorrection;
-        internal int KApplyCollisionEventsDirectL0 => kApplyCollisionEventsDirectL0;
 
         internal void AllocateRuntimeBuffers(int newCapacity) {
             currentVolumeBits = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -213,7 +217,6 @@ namespace GPU.Solver {
             kCopyVelToPrev = shader.FindKernel("CopyVelToPrev");
             kApplyXsph = shader.FindKernel("ApplyXsph");
             kApplyPositionCorrection = shader.FindKernel("ApplyPositionCorrection");
-            kApplyCollisionEventsDirectL0 = shader.FindKernel("ApplyCollisionEventsDirectL0");
         }
 
         internal void BindLayerColoringBuffers(CommandBuffer cb, NeighborColoring layerColoring) {
@@ -304,6 +307,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColPenBits", xferColPenBits);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColSBits", xferColSBits);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColTBits", xferColTBits);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColQAGi", xferColQAGi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColQBGi", xferColQBGi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColOAGi", xferColOAGi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColOBGi", xferColOBGi);
 
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Vel", vel);
@@ -323,6 +332,12 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNYBits", xferColNYBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColPenBits", xferColPenBits);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColSBits", xferColSBits);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColTBits", xferColTBits);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColQAGi", xferColQAGi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColQBGi", xferColQBGi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColOAGi", xferColOAGi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColOBGi", xferColOBGi);
 
             cb.SetComputeBufferParam(shader, kProlongate, "_InvMass", invMass);
             cb.SetComputeBufferParam(shader, kProlongate, "_Vel", vel);
@@ -461,16 +476,6 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CoarseFixed", coarseFixed);
             BindDtGlobalMappingParams(cb, kApplyPositionCorrection, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Pos", pos);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Vel", vel);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_InvMass", invMass);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_RestVolume", restVolume);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CurrentTotalMassBits", currentTotalMassBits);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CoarseFixed", coarseFixed);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CollisionEvents", solver.collisionEvent.CollisionEventsBuffer);
-            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CollisionEventCount", solver.collisionEvent.CollisionEventCountBuffer);
-            BindDtGlobalMappingParams(cb, kApplyCollisionEventsDirectL0, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             BindDtGlobalMappingParams(cb, kProlongate, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 

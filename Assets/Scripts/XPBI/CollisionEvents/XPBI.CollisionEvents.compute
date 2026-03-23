@@ -471,10 +471,21 @@ void TraverseLbvhEmitCollisionEvents(uint3 id : SV_DispatchThreadID)
             uint aGi = (sSeg <= 0.5) ? qaGi : qbGi;
             uint bGi = (tSeg <= 0.5) ? oaGi : obGi;
             float2 nrm = (cB - cA) / max(dist, EPS);
+            uint qaStore = qaGi;
+            uint qbStore = qbGi;
+            uint oaStore = oaGi;
+            uint obStore = obGi;
+            float sStore = sSeg;
+            float tStore = tSeg;
             if (aGi > bGi)
             {
                 uint tg = aGi; aGi = bGi; bGi = tg;
                 nrm = -nrm;
+
+                // Keep manifold orientation consistent with normal direction.
+                uint tq = qaStore; qaStore = oaStore; oaStore = tq;
+                tq = qbStore; qbStore = obStore; obStore = tq;
+                float ts = sStore; sStore = tStore; tStore = ts;
             }
 
             uint outIdx = 0u;
@@ -489,7 +500,13 @@ void TraverseLbvhEmitCollisionEvents(uint3 id : SV_DispatchThreadID)
             XPBI_CollisionEvent e;
             e.aGi = aGi;
             e.bGi = bGi;
+            e.qaGi = qaStore;
+            e.qbGi = qbStore;
+            e.oaGi = oaStore;
+            e.obGi = obStore;
             e.nPen = float4(nrm.x, nrm.y, pen, 0.0);
+            e.segST = float2(sStore, tStore);
+            e.pad = 0.0;
             _CollisionEvents[outIdx] = e;
             InterlockedAdd(_CollisionDebugStats[6], 1u);
             InterlockedAdd(_CollisionDebugStats[12], 1u);
@@ -535,6 +552,12 @@ void ClearTransferredCollision(uint3 id : SV_DispatchThreadID)
             _XferColNXBits[slot] = 0u;
             _XferColNYBits[slot] = 0u;
             _XferColPenBits[slot] = 0u;
+            _XferColSBits[slot] = 0u;
+            _XferColTBits[slot] = 0u;
+            _XferColQAGi[slot] = ~0u;
+            _XferColQBGi[slot] = ~0u;
+            _XferColOAGi[slot] = ~0u;
+            _XferColOBGi[slot] = ~0u;
         }
     }
 }
@@ -548,7 +571,7 @@ static uint DirectionalContactBin(float2 nrm)
     return (nrm.y >= 0.0) ? 3u : 4u;
 }
 
-static void MergeManifoldSlot(uint slot, float2 nrm, float pen)
+static void MergeManifoldSlot(uint slot, float2 nrm, float pen, float sSeg, float tSeg, uint qaGi, uint qbGi, uint oaGi, uint obGi)
 {
     if (!(pen > EPS))
         return;
@@ -560,6 +583,12 @@ static void MergeManifoldSlot(uint slot, float2 nrm, float pen)
     {
         _XferColNXBits[slot] = asuint(nrm.x);
         _XferColNYBits[slot] = asuint(nrm.y);
+        _XferColSBits[slot] = asuint(saturate(sSeg));
+        _XferColTBits[slot] = asuint(saturate(tSeg));
+        _XferColQAGi[slot] = qaGi;
+        _XferColQBGi[slot] = qbGi;
+        _XferColOAGi[slot] = oaGi;
+        _XferColOBGi[slot] = obGi;
     }
     InterlockedAdd(_XferColCount[slot], 1u);
 }
@@ -607,6 +636,12 @@ void RestrictCollisionEventsToActivePairs(uint3 id : SV_DispatchThreadID)
 
     float2 nrm = e.nPen.xy;
     float pen = e.nPen.z;
+    float sSeg = saturate(e.segST.x);
+    float tSeg = saturate(e.segST.y);
+    uint qaGi = e.qaGi;
+    uint qbGi = e.qbGi;
+    uint oaGi = e.oaGi;
+    uint obGi = e.obGi;
     if (!(pen > EPS))
         return;
 
@@ -621,6 +656,10 @@ void RestrictCollisionEventsToActivePairs(uint3 id : SV_DispatchThreadID)
         ownerGiI = ownerGiB;
         ownerGiJ = ownerGiA;
         nrm = -nrm;
+
+        uint tq = qaGi; qaGi = oaGi; oaGi = tq;
+        tq = qbGi; qbGi = obGi; obGi = tq;
+        float ts = sSeg; sSeg = tSeg; tSeg = ts;
     }
 
     uint dtLiI = (_UseDtGlobalNodeMap != 0u) ? ownerLiI : (_DtLocalBase + ownerLiI);
@@ -644,8 +683,8 @@ void RestrictCollisionEventsToActivePairs(uint3 id : SV_DispatchThreadID)
         return;
 
     uint pairBase = (dtLiI * _DtNeighborCount + kFound) * xferColManifoldSlots;
-    MergeManifoldSlot(pairBase + 0u, nrm, pen);
+    MergeManifoldSlot(pairBase + 0u, nrm, pen, sSeg, tSeg, qaGi, qbGi, oaGi, obGi);
 
     uint directionalSlot = pairBase + DirectionalContactBin(nrm);
-    MergeManifoldSlot(directionalSlot, nrm, pen);
+    MergeManifoldSlot(directionalSlot, nrm, pen, sSeg, tSeg, qaGi, qbGi, oaGi, obGi);
 }

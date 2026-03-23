@@ -19,6 +19,6 @@ MonoBehaviour:
   useHierarchicalSolver: 1
   neighborSearchMode: 0
   compliance: 0.1
-  collisionCompliance: 1
+  collisionCompliance: 0
   durabilityCompliance: 0.5
   positionCorrectionCompliance: 1

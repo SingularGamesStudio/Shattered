@@ -43,12 +43,16 @@ if (ownerICollision >= 0 && _ActiveCount == _FineCount)
 
         if (_UseTransferredCollisions != 0u)
         {
+            bool anySlotUsed = false;
+
             [unroll]
             for (uint slotOffset = 0u; slotOffset < xferColManifoldSlots; slotOffset++)
             {
                 uint slot = pairBase + slotOffset;
                 if (_XferColCount[slot] == 0u)
                     continue;
+
+                anySlotUsed = true;
 
                 float pen = asfloat(_XferColPenBits[slot]);
                 if (!(pen > EPS))
@@ -60,33 +64,83 @@ if (ownerICollision >= 0 && _ActiveCount == _FineCount)
                     continue;
                 nrm *= rsqrt(n2);
 
-                float2 xiCand = XPBI_POS(li, gi) + XPBI_VEL(li, gi) * dt;
-                float2 xjCand = XPBI_POS(gjLi, gj) + XPBI_VEL(gjLi, gj) * dt;
-                float Cn = dot(nrm, xjCand - xiCand) - targetSeparation;
-                Cn = min(Cn, -pen);
-                if (Cn >= 0.0)
+                uint qaGi = _XferColQAGi[slot];
+                uint qbGi = _XferColQBGi[slot];
+                uint oaGi = _XferColOAGi[slot];
+                uint obGi = _XferColOBGi[slot];
+                if (qaGi == ~0u || qbGi == ~0u || oaGi == ~0u || obGi == ~0u)
                     continue;
 
+                uint qaLi = LocalIndexFromGlobal(qaGi);
+                uint qbLi = LocalIndexFromGlobal(qbGi);
+                uint oaLi = LocalIndexFromGlobal(oaGi);
+                uint obLi = LocalIndexFromGlobal(obGi);
+                if (qaLi == ~0u || qbLi == ~0u || oaLi == ~0u || obLi == ~0u)
+                    continue;
+                if (qaLi >= active || qbLi >= active || oaLi >= active || obLi >= active)
+                    continue;
+
+                float sSeg = saturate(asfloat(_XferColSBits[slot]));
+                float tSeg = saturate(asfloat(_XferColTBits[slot]));
+
+                bool fixedA0 = XPBI_NEIGHBOR_FIXED(qaLi, qaGi);
+                bool fixedA1 = XPBI_NEIGHBOR_FIXED(qbLi, qbGi);
+                bool fixedB0 = XPBI_NEIGHBOR_FIXED(oaLi, oaGi);
+                bool fixedB1 = XPBI_NEIGHBOR_FIXED(obLi, obGi);
+
+                float invMassA0 = fixedA0 ? 0.0 : XPBI_INV_MASS(qaLi, qaGi);
+                float invMassA1 = fixedA1 ? 0.0 : XPBI_INV_MASS(qbLi, qbGi);
+                float invMassB0 = fixedB0 ? 0.0 : XPBI_INV_MASS(oaLi, oaGi);
+                float invMassB1 = fixedB1 ? 0.0 : XPBI_INV_MASS(obLi, obGi);
+
+                float wA0 = (1.0 - sSeg) * invMassA0;
+                float wA1 = sSeg * invMassA1;
+                float wB0 = (1.0 - tSeg) * invMassB0;
+                float wB1 = tSeg * invMassB1;
+                float wTermWeighted = dt2 * (wA0 + wA1 + wB0 + wB1);
+                if (wTermWeighted <= EPS && alphaCollision <= EPS)
+                    continue;
+
+                float2 qaCand = XPBI_POS(qaLi, qaGi) + XPBI_VEL(qaLi, qaGi) * dt;
+                float2 qbCand = XPBI_POS(qbLi, qbGi) + XPBI_VEL(qbLi, qbGi) * dt;
+                float2 oaCand = XPBI_POS(oaLi, oaGi) + XPBI_VEL(oaLi, oaGi) * dt;
+                float2 obCand = XPBI_POS(obLi, obGi) + XPBI_VEL(obLi, obGi) * dt;
+
+                float2 cA = lerp(qaCand, qbCand, sSeg);
+                float2 cB = lerp(oaCand, obCand, tSeg);
+                float Cn = dot(nrm, cB - cA) - targetSeparation;
+                if (Cn >= 0.0)
+                    continue;
+                Cn = min(Cn, -pen);
+
                 float lambdaPrev = _CollisionLambda[slot];
-                float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
+                float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTermWeighted + alphaCollision, EPS);
                 float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
                 float appliedDLambda = lambdaNew - lambdaPrev;
                 if (appliedDLambda <= 0.0)
                     continue;
 
-                float2 dVi = -invMassICol * dt * appliedDLambda * nrm;
-                float2 dVj = invMassJCol * dt * appliedDLambda * nrm;
-                if (!all(isfinite(dVi)) || !all(isfinite(dVj)))
+                float2 dVA0 = -wA0 * dt * appliedDLambda * nrm;
+                float2 dVA1 = -wA1 * dt * appliedDLambda * nrm;
+                float2 dVB0 = wB0 * dt * appliedDLambda * nrm;
+                float2 dVB1 = wB1 * dt * appliedDLambda * nrm;
+                if (!all(isfinite(dVA0)) || !all(isfinite(dVA1)) || !all(isfinite(dVB0)) || !all(isfinite(dVB1)))
                     continue;
 
-                if (!fixedI)
-                    XPBI_SET_VEL(li, gi, XPBI_VEL(li, gi) + dVi);
-                if (!fixedJ)
-                    XPBI_SET_VEL(gjLi, gj, XPBI_VEL(gjLi, gj) + dVj);
+                if (!fixedA0)
+                    XPBI_SET_VEL(qaLi, qaGi, XPBI_VEL(qaLi, qaGi) + dVA0);
+                if (!fixedA1)
+                    XPBI_SET_VEL(qbLi, qbGi, XPBI_VEL(qbLi, qbGi) + dVA1);
+                if (!fixedB0)
+                    XPBI_SET_VEL(oaLi, oaGi, XPBI_VEL(oaLi, oaGi) + dVB0);
+                if (!fixedB1)
+                    XPBI_SET_VEL(obLi, obGi, XPBI_VEL(obLi, obGi) + dVB1);
 
                 _CollisionLambda[slot] = lambdaNew;
             }
-            continue;
+
+            if (anySlotUsed)
+                continue;
         }
 
         float2 xiCandFine = XPBI_POS(li, gi) + XPBI_VEL(li, gi) * dt;
