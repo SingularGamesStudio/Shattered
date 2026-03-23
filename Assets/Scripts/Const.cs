@@ -12,6 +12,7 @@ public static class Const {
 
     // Neighbors
     public static int NeighborCount = 16;
+    public static int CollisionTransferManifoldSlots = 5;
     public static float LayerKernelHFromPoissonRadius => SimulationParamSource.Current.neighbors.layerKernelHFromPoissonRadius;
     public static float WendlandSupport => SimulationParamSource.Current.neighbors.wendlandSupport;
 

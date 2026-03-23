@@ -5,6 +5,8 @@
 
     #define targetNeighborCount 16
     #define targetParentCount 4
+    #define xferColDirectionalBins 4u
+    #define xferColManifoldSlots (1u + xferColDirectionalBins)
 
     // Core particle data
     RWStructuredBuffer<float2> _Pos;

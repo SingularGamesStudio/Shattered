@@ -519,19 +519,49 @@ void ClearTransferredCollision(uint3 id : SV_DispatchThreadID)
         return;
 
     uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
-    uint baseIdx = dtLi * _DtNeighborCount;
+    uint baseIdx = dtLi * _DtNeighborCount * xferColManifoldSlots;
 
     [unroll]
     for (uint k = 0u; k < targetNeighborCount; k++)
     {
         if (k >= _DtNeighborCount)
             break;
-        uint slot = baseIdx + k;
-        _XferColCount[slot] = 0u;
-        _XferColNXBits[slot] = 0u;
-        _XferColNYBits[slot] = 0u;
-        _XferColPenBits[slot] = 0u;
+        uint pairBase = baseIdx + k * xferColManifoldSlots;
+        [unroll]
+        for (uint s = 0u; s < xferColManifoldSlots; s++)
+        {
+            uint slot = pairBase + s;
+            _XferColCount[slot] = 0u;
+            _XferColNXBits[slot] = 0u;
+            _XferColNYBits[slot] = 0u;
+            _XferColPenBits[slot] = 0u;
+        }
     }
+}
+
+static uint DirectionalContactBin(float2 nrm)
+{
+    float ax = abs(nrm.x);
+    float ay = abs(nrm.y);
+    if (ax >= ay)
+        return (nrm.x >= 0.0) ? 1u : 2u;
+    return (nrm.y >= 0.0) ? 3u : 4u;
+}
+
+static void MergeManifoldSlot(uint slot, float2 nrm, float pen)
+{
+    if (!(pen > EPS))
+        return;
+
+    uint penBits = asuint(pen);
+    uint prevPenBits;
+    InterlockedMax(_XferColPenBits[slot], penBits, prevPenBits);
+    if (penBits >= prevPenBits)
+    {
+        _XferColNXBits[slot] = asuint(nrm.x);
+        _XferColNYBits[slot] = asuint(nrm.y);
+    }
+    InterlockedAdd(_XferColCount[slot], 1u);
 }
 
 static uint FindActiveOwnerLocalFromGlobal(uint leafGi)
@@ -613,10 +643,9 @@ void RestrictCollisionEventsToActivePairs(uint3 id : SV_DispatchThreadID)
     if (kFound == ~0u)
         return;
 
-    uint slot = baseIdx + kFound;
+    uint pairBase = (dtLiI * _DtNeighborCount + kFound) * xferColManifoldSlots;
+    MergeManifoldSlot(pairBase + 0u, nrm, pen);
 
-    AtomicAddFloatBits(_XferColNXBits, slot, nrm.x * pen);
-    AtomicAddFloatBits(_XferColNYBits, slot, nrm.y * pen);
-    AtomicAddFloatBits(_XferColPenBits, slot, pen);
-    InterlockedAdd(_XferColCount[slot], 1u);
+    uint directionalSlot = pairBase + DirectionalContactBin(nrm);
+    MergeManifoldSlot(directionalSlot, nrm, pen);
 }

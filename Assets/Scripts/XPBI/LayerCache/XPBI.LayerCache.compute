@@ -217,12 +217,16 @@ void ResetCollisionLambda(uint3 id : SV_DispatchThreadID)
 	uint li = id.x;
 	if (li >= _ActiveCount) return;
 	uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
-	uint baseIdx = dtLi * _DtNeighborCount;
+	uint baseIdx = dtLi * _DtNeighborCount * xferColManifoldSlots;
 	[unroll] for (uint k = 0u; k < targetNeighborCount; k++)
 	{
 		if (k >= _DtNeighborCount) break;
-		_DurabilityLambda[baseIdx + k] = 0.0;
-		_CollisionLambda[baseIdx + k] = 0.0;
+		uint pairBase = baseIdx + k * xferColManifoldSlots;
+		_DurabilityLambda[dtLi * _DtNeighborCount + k] = 0.0;
+		[unroll] for (uint s = 0u; s < xferColManifoldSlots; s++)
+		{
+			_CollisionLambda[pairBase + s] = 0.0;
+		}
 	}
 }
 

@@ -166,7 +166,7 @@ namespace GPU.Solver {
             F0 = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             durabilityLambda = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
-            collisionLambda = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
+            collisionLambda = new ComputeBuffer(newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots, sizeof(float), ComputeBufferType.Structured);
             savedVelPrefix = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             velPrev = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
@@ -441,6 +441,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyXsph, "_VelPrev", velPrev);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyXsph, "_RestVolume", restVolume);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_CurrentVolumeBits", currentVolumeBits);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kApplyXsph, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
@@ -452,6 +453,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_RestVolume", restVolume);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_CurrentTotalMassBits", currentTotalMassBits);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kApplyPositionCorrection, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
@@ -463,6 +465,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_RestVolume", restVolume);
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CurrentTotalMassBits", currentTotalMassBits);
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CoarseFixed", coarseFixed);
             cb.SetComputeBufferParam(shader, kApplyCollisionEventsDirectL0, "_CollisionEvents", solver.collisionEvent.CollisionEventsBuffer);

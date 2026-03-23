@@ -201,7 +201,7 @@ MonoBehaviour:
       useHierarchicalSolver: 1
       neighborSearchMode: 0
     solverCore:
-      gravity: -9.81
+      gravity: -1
       compliance: 1
     neighbors:
       layerKernelHFromPoissonRadius: 2

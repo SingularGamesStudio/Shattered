@@ -7,18 +7,16 @@ if (ownerICollision >= 0 && _ActiveCount == _FineCount)
 {
     float targetSeparation = max(EPS, _CollisionSupportScale * support);
     float targetSeparationSq = targetSeparation * targetSeparation;
-    float alphaCollision = _CollisionCompliance / max(_Dt * _Dt, EPS);
-    float invDtCollision = 1.0 / max(_Dt, EPS);
-    float maxDeltaVPerContact = targetSeparation * invDtCollision;
-    float maxSpeedCollision = 4.0 * targetSeparation * invDtCollision;
-    float maxSpeedCollision2 = maxSpeedCollision * maxSpeedCollision;
+    float dt = max(_Dt, EPS);
+    float dt2 = dt * dt;
+    float alphaCollision = max(_CollisionCompliance, 0.0);
 
     uint baseIdxCol = dtLi * _DtNeighborCount;
     uint rawCountCol = _DtNeighborCounts[dtLi];
     uint nCountCol = min(rawCountCol, _DtNeighborCount);
     nCountCol = min(nCountCol, targetNeighborCount);
 
-    uint contactBase = dtLi * _DtNeighborCount;
+    uint contactBase = dtLi * _DtNeighborCount * xferColManifoldSlots;
 
     bool fixedI = XPBI_NEIGHBOR_FIXED(li, gi);
     float invMassICol = fixedI ? 0.0 : XPBI_INV_MASS(li, gi);
@@ -37,159 +35,87 @@ if (ownerICollision >= 0 && _ActiveCount == _FineCount)
         bool fixedJ = XPBI_NEIGHBOR_FIXED(gjLi, gj);
         if (fixedI && fixedJ) continue;
 
-        uint lambdaIdx = contactBase + kCol;
-        float lambdaPrev = _CollisionLambda[lambdaIdx];
         float invMassJCol = fixedJ ? 0.0 : XPBI_INV_MASS(gjLi, gj);
+        float wTerm = dt2 * (invMassICol + invMassJCol);
+        if (wTerm <= EPS && alphaCollision <= EPS) continue;
+
+        uint pairBase = contactBase + kCol * xferColManifoldSlots;
 
         if (_UseTransferredCollisions != 0u)
         {
-            uint slot = contactBase + kCol;
-            uint c = _XferColCount[slot];
-            if (c == 0u) continue;
-
-            float penSum = asfloat(_XferColPenBits[slot]);
-            float pen = penSum / max((float)c, 1.0);
-            if (!(pen > EPS)) continue;
-
-            float2 nSum = float2(asfloat(_XferColNXBits[slot]), asfloat(_XferColNYBits[slot]));
-            float n2 = dot(nSum, nSum);
-            if (!(n2 > 1e-12)) continue;
-            float2 nrm = nSum * rsqrt(n2);
-
-            float Cn = max(-pen, -targetSeparation);
-            float denomCol = invMassICol + invMassJCol;
-            if (denomCol <= EPS) continue;
-
-            float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / (denomCol + alphaCollision);
-            float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
-            dLambdaCol = lambdaNew - lambdaPrev;
-            if (dLambdaCol <= 0.0) continue;
-
-            float2 velI = XPBI_VEL(li, gi);
-            float2 velJ = XPBI_VEL(gjLi, gj);
-
-            float2 relVelBefore = velJ - velI;
-            float relNormalBefore = dot(relVelBefore, nrm);
-
-            float impulseVel = dLambdaCol * invDtCollision;
-            float maxInvMassCol = max(invMassICol, invMassJCol);
-            float impulseCap = maxDeltaVPerContact / max(maxInvMassCol, EPS);
-            if (impulseVel > impulseCap) impulseVel = impulseCap;
-
-            if (!fixedI) velI -= invMassICol * impulseVel * nrm;
-            if (!fixedJ) velJ += invMassJCol * impulseVel * nrm;
-
-            if (_CollisionFriction > 0.0)
+            [unroll]
+            for (uint slotOffset = 0u; slotOffset < xferColManifoldSlots; slotOffset++)
             {
-                float2 relVel = velJ - velI;
-                float relNormal = dot(relVel, nrm);
-                float2 tangentVel = relVel - relNormal * nrm;
-                float tangentLen = length(tangentVel);
-                if (tangentLen > EPS)
-                {
-                    float2 tangentDir = tangentVel / tangentLen;
-                    float frictionImpulseVel = -tangentLen / max(denomCol, EPS);
-                    float frictionLimit = _CollisionFriction * impulseVel;
-                    frictionImpulseVel = clamp(frictionImpulseVel, -frictionLimit, frictionLimit);
+                uint slot = pairBase + slotOffset;
+                if (_XferColCount[slot] == 0u)
+                    continue;
 
-                    if (!fixedI) velI -= invMassICol * frictionImpulseVel * tangentDir;
-                    if (!fixedJ) velJ += invMassJCol * frictionImpulseVel * tangentDir;
-                }
+                float pen = asfloat(_XferColPenBits[slot]);
+                if (!(pen > EPS))
+                    continue;
+
+                float2 nrm = float2(asfloat(_XferColNXBits[slot]), asfloat(_XferColNYBits[slot]));
+                float n2 = dot(nrm, nrm);
+                if (!(n2 > 1e-12))
+                    continue;
+                nrm *= rsqrt(n2);
+
+                float2 xiCand = XPBI_POS(li, gi) + XPBI_VEL(li, gi) * dt;
+                float2 xjCand = XPBI_POS(gjLi, gj) + XPBI_VEL(gjLi, gj) * dt;
+                float Cn = dot(nrm, xjCand - xiCand) - targetSeparation;
+                Cn = min(Cn, -pen);
+                if (Cn >= 0.0)
+                    continue;
+
+                float lambdaPrev = _CollisionLambda[slot];
+                float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
+                float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
+                float appliedDLambda = lambdaNew - lambdaPrev;
+                if (appliedDLambda <= 0.0)
+                    continue;
+
+                float2 dVi = -invMassICol * dt * appliedDLambda * nrm;
+                float2 dVj = invMassJCol * dt * appliedDLambda * nrm;
+                if (!all(isfinite(dVi)) || !all(isfinite(dVj)))
+                    continue;
+
+                if (!fixedI)
+                    XPBI_SET_VEL(li, gi, XPBI_VEL(li, gi) + dVi);
+                if (!fixedJ)
+                    XPBI_SET_VEL(gjLi, gj, XPBI_VEL(gjLi, gj) + dVj);
+
+                _CollisionLambda[slot] = lambdaNew;
             }
-
-            if (_CollisionRestitution > 0.0 && relNormalBefore < -_CollisionRestitutionThreshold)
-            {
-                float restitutionImpulseVel =
-                (-(1.0 + _CollisionRestitution) * relNormalBefore) / max(denomCol, EPS);
-                restitutionImpulseVel = min(restitutionImpulseVel, impulseCap);
-
-                if (!fixedI) velI -= invMassICol * restitutionImpulseVel * nrm;
-                if (!fixedJ) velJ += invMassJCol * restitutionImpulseVel * nrm;
-            }
-
-            if (!all(isfinite(velI))) velI = 0.0;
-            if (!all(isfinite(velJ))) velJ = 0.0;
-
-            float vI2 = dot(velI, velI);
-            if (vI2 > maxSpeedCollision2) velI *= maxSpeedCollision * rsqrt(max(vI2, EPS * EPS));
-            float vJ2 = dot(velJ, velJ);
-            if (vJ2 > maxSpeedCollision2) velJ *= maxSpeedCollision * rsqrt(max(vJ2, EPS * EPS));
-
-            XPBI_SET_VEL(li, gi, velI);
-            XPBI_SET_VEL(gjLi, gj, velJ);
-            _CollisionLambda[lambdaIdx] = lambdaNew;
             continue;
         }
 
-        float2 dx = XPBI_POS(gjLi, gj) - XPBI_POS(li, gi);
+        float2 xiCandFine = XPBI_POS(li, gi) + XPBI_VEL(li, gi) * dt;
+        float2 xjCandFine = XPBI_POS(gjLi, gj) + XPBI_VEL(gjLi, gj) * dt;
+        float2 dx = xjCandFine - xiCandFine;
         float distSq = dot(dx, dx);
         if (distSq <= EPS * EPS || distSq > targetSeparationSq) continue;
 
         float dist = sqrt(distSq);
-        float Cn = max(dist - targetSeparation, -targetSeparation);
+        float Cn = dist - targetSeparation;
         if (Cn >= 0.0) continue;
 
         float2 nrm = dx / max(dist, EPS);
-        float denomCol = invMassICol + invMassJCol;
-        if (denomCol <= EPS) continue;
-
-        float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / (denomCol + alphaCollision);
+        uint lambdaIdx = pairBase;
+        float lambdaPrev = _CollisionLambda[lambdaIdx];
+        float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
         float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
-        dLambdaCol = lambdaNew - lambdaPrev;
-        if (dLambdaCol <= 0.0) continue;
+        float appliedDLambda = lambdaNew - lambdaPrev;
+        if (appliedDLambda <= 0.0) continue;
 
-        float2 velI = XPBI_VEL(li, gi);
-        float2 velJ = XPBI_VEL(gjLi, gj);
+        float2 dVi = -invMassICol * dt * appliedDLambda * nrm;
+        float2 dVj = invMassJCol * dt * appliedDLambda * nrm;
+        if (!all(isfinite(dVi)) || !all(isfinite(dVj))) continue;
 
-        float2 relVelBefore = velJ - velI;
-        float relNormalBefore = dot(relVelBefore, nrm);
+        if (!fixedI)
+            XPBI_SET_VEL(li, gi, XPBI_VEL(li, gi) + dVi);
+        if (!fixedJ)
+            XPBI_SET_VEL(gjLi, gj, XPBI_VEL(gjLi, gj) + dVj);
 
-        float impulseVel = dLambdaCol * invDtCollision;
-        float maxInvMassCol = max(invMassICol, invMassJCol);
-        float impulseCap = maxDeltaVPerContact / max(maxInvMassCol, EPS);
-        if (impulseVel > impulseCap) impulseVel = impulseCap;
-
-        if (!fixedI) velI -= invMassICol * impulseVel * nrm;
-        if (!fixedJ) velJ += invMassJCol * impulseVel * nrm;
-
-        if (_CollisionFriction > 0.0)
-        {
-            float2 relVel = velJ - velI;
-            float relNormal = dot(relVel, nrm);
-            float2 tangentVel = relVel - relNormal * nrm;
-            float tangentLen = length(tangentVel);
-            if (tangentLen > EPS)
-            {
-                float2 tangentDir = tangentVel / tangentLen;
-                float frictionImpulseVel = -tangentLen / max(denomCol, EPS);
-                float frictionLimit = _CollisionFriction * impulseVel;
-                frictionImpulseVel = clamp(frictionImpulseVel, -frictionLimit, frictionLimit);
-
-                if (!fixedI) velI -= invMassICol * frictionImpulseVel * tangentDir;
-                if (!fixedJ) velJ += invMassJCol * frictionImpulseVel * tangentDir;
-            }
-        }
-
-        if (_CollisionRestitution > 0.0 && relNormalBefore < -_CollisionRestitutionThreshold)
-        {
-            float restitutionImpulseVel =
-            (-(1.0 + _CollisionRestitution) * relNormalBefore) / max(denomCol, EPS);
-            restitutionImpulseVel = min(restitutionImpulseVel, impulseCap);
-
-            if (!fixedI) velI -= invMassICol * restitutionImpulseVel * nrm;
-            if (!fixedJ) velJ += invMassJCol * restitutionImpulseVel * nrm;
-        }
-
-        if (!all(isfinite(velI))) velI = 0.0;
-        if (!all(isfinite(velJ))) velJ = 0.0;
-
-        float vI2 = dot(velI, velI);
-        if (vI2 > maxSpeedCollision2) velI *= maxSpeedCollision * rsqrt(max(vI2, EPS * EPS));
-        float vJ2 = dot(velJ, velJ);
-        if (vJ2 > maxSpeedCollision2) velJ *= maxSpeedCollision * rsqrt(max(vJ2, EPS * EPS));
-
-        XPBI_SET_VEL(li, gi, velI);
-        XPBI_SET_VEL(gjLi, gj, velJ);
         _CollisionLambda[lambdaIdx] = lambdaNew;
     }
 }

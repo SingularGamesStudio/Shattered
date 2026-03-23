@@ -71,6 +71,7 @@ namespace GPU.Solver {
 
 		internal void AllocateRuntimeBuffers(int newCapacity) {
 			int collisionCapacity = math.max(4096, newCapacity * 32);
+			int transferCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
 			boundaryChunkCapacity = math.max(2048, newCapacity * 12);
 			boundaryChunkSortCapacity = NextPow2(boundaryChunkCapacity);
 			lbvhLeafOffset = boundaryChunkSortCapacity - 1;
@@ -78,10 +79,10 @@ namespace GPU.Solver {
 
 			collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 2 + sizeof(float) * 4, ComputeBufferType.Structured);
 			collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
-			xferColCount = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
-			xferColNXBits = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
-			xferColNYBits = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
-			xferColPenBits = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(uint), ComputeBufferType.Structured);
+			xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColNYBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+			xferColPenBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
 			boundaryChunkCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 			boundaryChunkEdges = new ComputeBuffer(boundaryChunkCapacity, sizeof(uint) * 3 + sizeof(int), ComputeBufferType.Structured);
 			boundaryChunkAabbs = new ComputeBuffer(boundaryChunkCapacity, sizeof(float) * 4, ComputeBufferType.Structured);

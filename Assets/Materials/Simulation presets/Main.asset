@@ -18,7 +18,7 @@ MonoBehaviour:
   jrIterationsLMax: 2
   useHierarchicalSolver: 1
   neighborSearchMode: 0
-  compliance: 1
-  collisionCompliance: 0
-  durabilityCompliance: 1
-  positionCorrectionCompliance: 0.01
+  compliance: 0.1
+  collisionCompliance: 1
+  durabilityCompliance: 0.5
+  positionCorrectionCompliance: 1

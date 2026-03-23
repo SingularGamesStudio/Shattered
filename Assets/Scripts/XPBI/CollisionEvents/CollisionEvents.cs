@@ -10,14 +10,9 @@ using TickContext = GPU.Solver.XPBISolver.TickContext;
 namespace GPU.Solver {
     internal sealed partial class CollisionEvents {
         private const int UseTransferredCollisionsDisabled = 0;
-        private const float DebugReadbackIntervalSeconds = 0.5f;
-        private const int CollisionDebugStatsCount = 16;
 
         private readonly XPBISolver solver;
         private readonly ComputeShader shader;
-        private float nextDebugReadbackTime;
-        private readonly uint[] collisionDebugStatsCpu = new uint[CollisionDebugStatsCount];
-        private readonly uint[] collisionEventCountCpu = new uint[1];
 
         public CollisionEvents(XPBISolver solver) {
             this.solver = solver;
@@ -55,43 +50,6 @@ namespace GPU.Solver {
                 layer0.GlobalNodeMap,
                 layer0.GlobalToLocalMap,
                 layer0.CollisionOwnerByLocalBuffer);
-        }
-
-        internal void RecordDebugReadbackAndFence(GraphicsFence fence) {
-            if (Time.unscaledTime < nextDebugReadbackTime)
-                return;
-
-            if (CollisionDebugStatsBuffer == null || CollisionEventCountBuffer == null)
-                return;
-
-            // Keep debug stats coherent with the current solve batch by waiting for async compute completion.
-            Graphics.WaitOnAsyncGraphicsFence(fence);
-            nextDebugReadbackTime = Time.unscaledTime + DebugReadbackIntervalSeconds;
-            CollisionDebugStatsBuffer.GetData(collisionDebugStatsCpu, 0, 0, CollisionDebugStatsCount);
-            CollisionEventCountBuffer.GetData(collisionEventCountCpu, 0, 0, 1);
-
-            uint pairTests = collisionDebugStatsCpu[2];
-            uint ownerReject = collisionDebugStatsCpu[3];
-            uint invalidEndpoints = collisionDebugStatsCpu[4];
-            uint narrowReject = collisionDebugStatsCpu[5];
-            uint events = collisionDebugStatsCpu[6];
-            uint capacityReject = collisionDebugStatsCpu[7];
-
-            uint nonOwnerPairs = pairTests > ownerReject ? pairTests - ownerReject : 0u;
-            uint resolvedPairs = invalidEndpoints + narrowReject + events + capacityReject;
-            uint unresolvedPairs = nonOwnerPairs > resolvedPairs ? nonOwnerPairs - resolvedPairs : 0u;
-
-            uint passOwnerFilter = collisionDebugStatsCpu[8];
-            uint passEndpoints = collisionDebugStatsCpu[9];
-            uint passNarrow = collisionDebugStatsCpu[10];
-            uint eventCountAtomicAttempts = collisionDebugStatsCpu[11];
-            uint eventWrites = collisionDebugStatsCpu[12];
-            uint bestNanReject = collisionDebugStatsCpu[13];
-            uint penNanReject = collisionDebugStatsCpu[14];
-            uint eventCountBufferValue = collisionEventCountCpu[0];
-
-            Debug.LogError(
-                $"CollisionDebug chunksBuilt={collisionDebugStatsCpu[0]} chunksAccepted={collisionDebugStatsCpu[1]} pairTests={pairTests} ownerReject={ownerReject} invalidEndpoints={invalidEndpoints} narrowReject={narrowReject} events={events} capacityReject={capacityReject} nonOwnerPairs={nonOwnerPairs} resolvedPairs={resolvedPairs} unresolvedPairs={unresolvedPairs} passOwnerFilter={passOwnerFilter} passEndpoints={passEndpoints} passNarrow={passNarrow} eventCountAttempts={eventCountAtomicAttempts} eventWrites={eventWrites} eventCountBuffer={eventCountBufferValue} bestNanReject={bestNanReject} penNanReject={penNanReject}");
         }
 
         /// <summary>
@@ -136,7 +94,6 @@ namespace GPU.Solver {
             session.AsyncCb.SetComputeIntParam(shader, "_UseTransferredCollisions", UseTransferredCollisionsDisabled);
             Dispatch(session.AsyncCb, "XPBI.ClearCollisionEventCount", shader, kClearCollisionEventCount, 1, 1, 1);
             Dispatch(session.AsyncCb, "XPBI.ClearBoundaryChunkCount", shader, kClearBoundaryChunkCount, 1, 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.ClearCollisionDebugStats", shader, kClearCollisionDebugStats, 1, 1, 1);
             Dispatch(session.AsyncCb, "XPBI.BuildBoundaryChunksL0", shader, kBuildBoundaryChunksL0, XPBISolver.Groups256(layer0Dt.HalfEdgeCount), 1, 1);
             Dispatch(session.AsyncCb, "XPBI.InitChunkSortKeys", shader, kInitChunkSortKeys, XPBISolver.Groups256(BoundaryChunkSortCapacity), 1, 1);
 

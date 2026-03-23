@@ -164,7 +164,6 @@ namespace GPU.Solver {
             Graphics.ExecuteCommandBufferAsync(asyncCb, ComputeQueueType.Urgent);
 
             solverDebug.RecordReadbacksAndFence(session, fence);
-            collisionEvent.RecordDebugReadbackAndFence(fence);
             return fence;
         }
 
