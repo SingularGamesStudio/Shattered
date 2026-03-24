@@ -1,9 +1,7 @@
 static const uint INVALID_U32 = 0xFFFFFFFFu;
-static const uint QUERY_VERTEX_CONTACT_CAP = 64u;
 static const uint SEG_HIT_NONE = 0u;
 static const uint SEG_HIT_POINT = 1u;
 static const uint SEG_HIT_COLLINEAR = 2u;
-static const uint COLLISION_DEBUG_STAT_COUNT = 64u;
 
 struct DT_HalfEdge
 {
@@ -117,4 +115,3 @@ RWStructuredBuffer<uint> _SdfFeatId;
 
 RWStructuredBuffer<Contact> _Contacts;
 RWStructuredBuffer<uint> _ContactCount;
-RWStructuredBuffer<uint> _CollisionDebugStats;

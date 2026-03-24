@@ -108,7 +108,8 @@ namespace GPU.Solver {
             Dispatch(session.AsyncCb, "XPBI.BinBoundaryEdges", shader, kBinBoundaryEdges, Groups64(edgeDispatchCount), 1, 1);
             Dispatch(session.AsyncCb, "XPBI.BinBoundaryVertices", shader, kBinBoundaryVertices, Groups64(edgeDispatchCount), 1, 1);
 
-            // Field build is currently not consumed by narrow phase in this path.
+            int sdfGroups = (SdfResolution + 7) / 8;
+            Dispatch(session.AsyncCb, "XPBI.BuildOwnerFeatureField", shader, kBuildOwnerFeatureField, sdfGroups, sdfGroups, collisionOwnerCount);
 
             session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
             int queryWorkItems = math.max(1, MaxBoundaryEdgesPerOwner * pairDispatchCount);

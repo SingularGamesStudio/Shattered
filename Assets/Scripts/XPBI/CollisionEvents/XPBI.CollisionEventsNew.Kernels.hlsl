@@ -1,76 +1,7 @@
-// Collision debug stat slots.
-// 0..15 keep the original panel-compatible indices; 16+ are detailed rejects.
-static const uint STAT_BOUNDARY_FLAGS = 0u;
-static const uint STAT_BOUNDARY_EDGES = 1u;
-static const uint STAT_OWNER_EDGE_OVERFLOW = 2u;
-static const uint STAT_MAX_EDGE_BIN_LOAD = 3u;
-static const uint STAT_MAX_VERT_BIN_LOAD = 4u;
-static const uint STAT_EDGE_BIN_OVERFLOWS = 5u;
-static const uint STAT_VERT_BIN_OVERFLOWS = 6u;
-static const uint STAT_VERTEX_CANDIDATES = 7u;
-static const uint STAT_VERTEX_FEATURE_HITS = 8u;
-static const uint STAT_VERTEX_WITHIN_SUPPORT = 9u;
-static const uint STAT_VERTEX_CONTACTS_WRITTEN = 10u;
-static const uint STAT_EDGE_PAIR_CANDIDATES = 11u;
-static const uint STAT_EDGE_WITHIN_SUPPORT = 12u;
-static const uint STAT_EDGE_CONTACTS_EMITTED = 13u;
-static const uint STAT_OWNER_AABB_REJECTS = 14u;
-static const uint STAT_VERTEX_STAGE_OVERFLOW = 15u;
-
-static const uint STAT_BUILD_HALFEDGE_THREADS = 16u;
-static const uint STAT_BUILD_REJECT_NON_BOUNDARY_FLAG = 17u;
-static const uint STAT_BUILD_REJECT_INVALID_FACE = 18u;
-static const uint STAT_BUILD_REJECT_NOT_INTERNAL_BOUNDARY = 19u;
-static const uint STAT_BUILD_REJECT_INVALID_GLOBAL_VERTEX = 20u;
-static const uint STAT_BUILD_REJECT_INVALID_OWNER = 21u;
-static const uint STAT_BUILD_OWNER_EDGE_REF_WRITES = 22u;
-static const uint STAT_BUILD_OWNER_EDGE_REF_OVERFLOW = 23u;
-
-static const uint STAT_VERTEX_WORK_ITEMS = 24u;
-static const uint STAT_VERTEX_REJECT_PAIR_OOB = 25u;
-static const uint STAT_VERTEX_REJECT_SAME_OWNER = 26u;
-static const uint STAT_VERTEX_REJECT_OWNER_OVERFLOW = 27u;
-static const uint STAT_VERTEX_REJECT_NO_OWNER_EDGE_REF = 28u;
-static const uint STAT_VERTEX_REJECT_INVALID_VGI = 29u;
-static const uint STAT_VERTEX_REJECT_NO_BOUNDARY_HIT = 30u;
-static const uint STAT_VERTEX_REJECT_SUPPORT = 31u;
-static const uint STAT_VERTEX_REJECT_DEGENERATE_NORMAL = 32u;
-static const uint STAT_VERTEX_COMPACT_REJECT_INVALID = 33u;
-static const uint STAT_VERTEX_COMPACT_VALID = 34u;
-static const uint STAT_VERTEX_REJECT_AABB = 35u;
-
-static const uint STAT_EDGE_WORK_ITEMS = 36u;
-static const uint STAT_EDGE_REJECT_PAIR_OOB = 37u;
-static const uint STAT_EDGE_REJECT_SWAP = 38u;
-static const uint STAT_EDGE_REJECT_SAME_OWNER = 39u;
-static const uint STAT_EDGE_REJECT_OWNER_OVERFLOW = 40u;
-static const uint STAT_EDGE_REJECT_NO_OWNER_EDGE_REF = 41u;
-static const uint STAT_EDGE_REJECT_INVALID_EDGE_A = 42u;
-static const uint STAT_EDGE_BIN_CELLS_VISITED = 43u;
-static const uint STAT_EDGE_BIN_EDGE_REFS_SCANNED = 44u;
-static const uint STAT_EDGE_REJECT_OWNER_MISMATCH_B = 45u;
-static const uint STAT_EDGE_REJECT_INVALID_EDGE_B = 46u;
-static const uint STAT_EDGE_REJECT_EDGE_BBOX = 47u;
-static const uint STAT_EDGE_REJECT_NO_INTERSECTION = 48u;
-static const uint STAT_EDGE_POINT_INTERSECTIONS = 49u;
-static const uint STAT_EDGE_REJECT_NON_POINT_HIT = 50u;
-static const uint STAT_EDGE_REJECT_ENDPOINT_INTERSECTION = 51u;
-static const uint STAT_EDGE_REJECT_NON_CANONICAL_BIN = 52u;
-static const uint STAT_EDGE_REJECT_DEGENERATE_NORMAL = 53u;
-static const uint STAT_EDGE_REJECT_NO_PENETRATION = 54u;
-static const uint STAT_EDGE_REJECT_AABB = 55u;
-static const uint STAT_BUILD_REJECT_INVALID_LOCAL_VERTEX = 56u;
-static const uint STAT_BUILD_REJECT_DEGENERATE_ENDPOINTS = 57u;
-
 [numthreads(64, 1, 1)]
 void ClearState(uint3 tid : SV_DispatchThreadID)
 {
     uint i = tid.x;
-
-    if (i < COLLISION_DEBUG_STAT_COUNT)
-    {
-        _CollisionDebugStats[i] = 0u;
-    }
 
     if (i < _OwnerCount)
     {
@@ -121,18 +52,14 @@ void BuildBoundaryFeatures(uint3 tid : SV_DispatchThreadID)
 {
     uint heId = tid.x;
     if (heId >= _DtHalfEdgeCount) return;
-    InterlockedAdd(_CollisionDebugStats[STAT_BUILD_HALFEDGE_THREADS], 1u);
     if (_DtBoundaryEdgeFlags[heId] == 0u)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_NON_BOUNDARY_FLAG], 1u);
         return;
     }
-    InterlockedAdd(_CollisionDebugStats[STAT_BOUNDARY_FLAGS], 1u);
 
     DT_HalfEdge he = _DtHalfEdges[heId];
     if (he.t < 0 || he.next < 0 || (uint)he.next >= _DtHalfEdgeCount)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_FACE], 1u);
         return;
     }
 
@@ -145,28 +72,23 @@ void BuildBoundaryFeatures(uint3 tid : SV_DispatchThreadID)
 
     if (!(heInternal && !twInternal))
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_NOT_INTERNAL_BOUNDARY], 1u);
         return;
     }
-    InterlockedAdd(_CollisionDebugStats[STAT_BOUNDARY_EDGES], 1u);
 
     DT_HalfEdge heNext = _DtHalfEdges[(uint)he.next];
     if (heNext.next < 0 || (uint)heNext.next >= _DtHalfEdgeCount)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_FACE], 1u);
         return;
     }
     DT_HalfEdge heNextNext = _DtHalfEdges[(uint)heNext.next];
 
     if (he.v < 0 || heNext.v < 0 || heNextNext.v < 0)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_GLOBAL_VERTEX], 1u);
         return;
     }
 
     if ((uint)he.v >= _DtLocalVertexCount || (uint)heNext.v >= _DtLocalVertexCount || (uint)heNextNext.v >= _DtLocalVertexCount)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_LOCAL_VERTEX], 1u);
         return;
     }
 
@@ -179,20 +101,17 @@ void BuildBoundaryFeatures(uint3 tid : SV_DispatchThreadID)
     uint vOppGi = _DtGlobalVertexByLocal[vOppLocal];
     if (v0Gi == INVALID_U32 || v1Gi == INVALID_U32 || vOppGi == INVALID_U32)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_GLOBAL_VERTEX], 1u);
         return;
     }
 
     if (v0Gi == v1Gi)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_DEGENERATE_ENDPOINTS], 1u);
         return;
     }
 
     int ownerI = _DtCollisionOwnerByLocal[v0Local];
     if (ownerI < 0)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_REJECT_INVALID_OWNER], 1u);
         return;
     }
     uint owner = (uint)ownerI;
@@ -230,13 +149,10 @@ void BuildBoundaryFeatures(uint3 tid : SV_DispatchThreadID)
     if (slot < _MaxBoundaryEdgesPerOwner)
     {
         _OwnerBoundaryEdgeRefs[OwnerEdgeRefIndex(owner, slot)] = heId;
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_OWNER_EDGE_REF_WRITES], 1u);
     }
     else
     {
         _OwnerBoundaryOverflow[owner] = 1;
-        InterlockedAdd(_CollisionDebugStats[STAT_OWNER_EDGE_OVERFLOW], 1u);
-        InterlockedAdd(_CollisionDebugStats[STAT_BUILD_OWNER_EDGE_REF_OVERFLOW], 1u);
     }
 }
 
@@ -275,14 +191,12 @@ void BinBoundaryEdges(uint3 tid : SV_DispatchThreadID)
 
             uint slot;
             InterlockedAdd(_EdgeBinCounts[binIndex], 1, slot);
-            InterlockedMax(_CollisionDebugStats[STAT_MAX_EDGE_BIN_LOAD], slot + 1u);
 
             if (slot < _MaxEdgesPerBin)
                 _EdgeBinRefs[EdgeBinRefIndex(binIndex, slot)] = heId;
             else
             {
                 _EdgeBinOverflow[binIndex] = 1;
-                InterlockedAdd(_CollisionDebugStats[STAT_EDGE_BIN_OVERFLOWS], 1u);
             }
         }
     }
@@ -321,14 +235,12 @@ void BinBoundaryVertices(uint3 tid : SV_DispatchThreadID)
 
             uint slot;
             InterlockedAdd(_VertBinCounts[binIndex], 1, slot);
-            InterlockedMax(_CollisionDebugStats[STAT_MAX_VERT_BIN_LOAD], slot + 1u);
 
             if (slot < _MaxVertsPerBin)
                 _VertBinRefs[VertBinRefIndex(binIndex, slot)] = heId;
             else
             {
                 _VertBinOverflow[binIndex] = 1;
-                InterlockedAdd(_CollisionDebugStats[STAT_VERT_BIN_OVERFLOWS], 1u);
             }
         }
     }
@@ -375,197 +287,112 @@ void BuildOwnerFeatureField(uint3 tid : SV_DispatchThreadID)
     _SdfFeatId[gi] = hit.id;
 }
 
-[numthreads(64, 1, 1)]
-void QueryVertexContacts(uint3 tid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+bool SampleOwnerFieldLinear(uint owner, float2 x, out float phi, out float2 grad)
 {
-    if (groupIndex == 0u)
-        gQueryVertexContactCount = 0u;
-    GroupMemoryBarrierWithGroupSync();
+    uint2 dim = _OwnerGridDim[owner];
+    if (dim.x == 0u || dim.y == 0u)
+    {
+        phi = _SdfFar;
+        grad = 0.0;
+        return false;
+    }
 
+    float texel = _OwnerGridTexel[owner];
+    float2 origin = _OwnerGridOrigin[owner];
+    float2 g = (x - origin) / texel - 0.5;
+
+    float2 maxG = float2((float)(dim.x - 1u), (float)(dim.y - 1u));
+    if (g.x < 0.0 || g.y < 0.0 || g.x > maxG.x || g.y > maxG.y)
+    {
+        phi = _SdfFar;
+        grad = 0.0;
+        return false;
+    }
+
+    int2 i0 = (int2)floor(g);
+    int2 i1 = min(i0 + 1, (int2)dim - 1);
+    float2 f = frac(g);
+
+    uint idx00 = GridIndex(owner, (uint2)i0);
+    uint idx10 = GridIndex(owner, uint2((uint)i1.x, (uint)i0.y));
+    uint idx01 = GridIndex(owner, uint2((uint)i0.x, (uint)i1.y));
+    uint idx11 = GridIndex(owner, (uint2)i1);
+
+    float phi00 = _SdfPhi[idx00];
+    float phi10 = _SdfPhi[idx10];
+    float phi01 = _SdfPhi[idx01];
+    float phi11 = _SdfPhi[idx11];
+
+    float2 g00 = _SdfGrad[idx00];
+    float2 g10 = _SdfGrad[idx10];
+    float2 g01 = _SdfGrad[idx01];
+    float2 g11 = _SdfGrad[idx11];
+
+    float phi0 = lerp(phi00, phi10, f.x);
+    float phi1 = lerp(phi01, phi11, f.x);
+    phi = lerp(phi0, phi1, f.y);
+
+    float2 grad0 = lerp(g00, g10, f.x);
+    float2 grad1 = lerp(g01, g11, f.x);
+    grad = lerp(grad0, grad1, f.y);
+
+    float gl2 = dot(grad, grad);
+    if (gl2 > 1e-20)
+        grad *= rsqrt(gl2);
+    else
+        grad = 0.0;
+
+    return true;
+}
+
+[numthreads(64, 1, 1)]
+void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
+{
     uint workPerPair = _MaxBoundaryEdgesPerOwner;
     if (workPerPair == 0u) return;
 
     uint workItem = tid.x;
     uint pairIndex = workItem / workPerPair;
     uint k = workItem - pairIndex * workPerPair;
-    bool laneActive = (pairIndex < _QueryPairCount);
-    InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_WORK_ITEMS], 1u);
-    if (!laneActive)
-    {
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_PAIR_OOB], 1u);
-    }
+    if (pairIndex >= _QueryPairCount) return;
 
-    uint ownerA = 0u;
-    uint ownerB = 0u;
-    if (laneActive)
-    {
-        uint2 pair = _OwnerPairs[pairIndex];
-        ownerA = (_QuerySwap != 0u) ? pair.y : pair.x;
-        ownerB = (_QuerySwap != 0u) ? pair.x : pair.y;
-        laneActive = (ownerA != ownerB);
-        if (!laneActive)
-            InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_SAME_OWNER], 1u);
-    }
+    uint2 pair = _OwnerPairs[pairIndex];
+    uint ownerA = (_QuerySwap != 0u) ? pair.y : pair.x;
+    uint ownerB = (_QuerySwap != 0u) ? pair.x : pair.y;
+    if (ownerA == ownerB) return;
 
     float support = _LayerKernelH * _CollisionSupportScale;
-    if (laneActive && !OwnerPairAabbOverlap(ownerA, ownerB, support))
-    {
-        InterlockedAdd(_CollisionDebugStats[STAT_OWNER_AABB_REJECTS], 1u);
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_AABB], 1u);
-        laneActive = false;
-    }
+    if (!OwnerPairAabbOverlap(ownerA, ownerB, support)) return;
 
-    if (laneActive && (_OwnerBoundaryOverflow[ownerA] != 0u || _OwnerBoundaryOverflow[ownerB] != 0u))
-    {
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_OWNER_OVERFLOW], 1u);
-        laneActive = false;
-    }
+    if (_OwnerBoundaryOverflow[ownerA] != 0u) return;
+    if (_OwnerBoundaryOverflow[ownerB] != 0u) return;
 
-    uint heA = INVALID_U32;
-    uint vGi = INVALID_U32;
-    if (laneActive)
-    {
-        uint countA = min(_OwnerBoundaryEdgeCounts[ownerA], _MaxBoundaryEdgesPerOwner);
-        if (k < countA)
-        {
-            heA = _OwnerBoundaryEdgeRefs[OwnerEdgeRefIndex(ownerA, k)];
-            vGi = _BoundaryEdgeV0Gi[heA];
-            laneActive = (vGi != INVALID_U32);
-            if (!laneActive)
-                InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_INVALID_VGI], 1u);
-        }
-        else
-        {
-            InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_NO_OWNER_EDGE_REF], 1u);
-            laneActive = false;
-        }
-    }
-    if (laneActive)
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_CANDIDATES], 1u);
+    uint countA = min(_OwnerBoundaryEdgeCounts[ownerA], _MaxBoundaryEdgesPerOwner);
+    if (k >= countA) return;
 
-    float2 x = 0.0;
-    if (laneActive)
-        x = PredPos(vGi);
+    uint heA = _OwnerBoundaryEdgeRefs[OwnerEdgeRefIndex(ownerA, k)];
+    uint vGi = _BoundaryEdgeV0Gi[heA];
+    if (vGi == INVALID_U32) return;
 
-    FeatureHit hitB;
-    if (laneActive)
-    {
-        laneActive = QueryOwnerBoundaryExactWide(ownerB, x, 2, hitB);
-        if (!laneActive)
-            InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_NO_BOUNDARY_HIT], 1u);
-    }
-    if (laneActive)
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_FEATURE_HITS], 1u);
+    float2 x = PredPos(vGi);
 
-    float distToB = 0.0;
-    if (laneActive)
-        distToB = abs(hitB.phi);
+    float phiField;
+    float2 nField;
+    if (!SampleOwnerFieldLinear(ownerB, x, phiField, nField)) return;
+    if (phiField >= support) return;
 
-    if (laneActive && distToB >= support)
-    {
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_SUPPORT], 1u);
-        laneActive = false;
-    }
-    if (laneActive)
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_WITHIN_SUPPORT], 1u);
+    FeatureHit hit;
+    if (!QueryOwnerBoundaryExact(ownerB, x, hit)) return;
+    if (hit.valid == 0u) return;
+    if (hit.phi >= support) return;
 
-    float2 n = 0.0;
-    float2 pB = 0.0;
-    if (laneActive)
-    {
-        pB = hitB.cp;
+    float2 n = SafeNormalize(hit.grad);
+    if (dot(n, n) <= 1e-20) return;
 
-        // Use geometric contact direction first; fall back to feature gradient
-        // only if query point lands exactly on closest point.
-        float2 nGeom = x - pB;
-        float nGeomL2 = dot(nGeom, nGeom);
-        if (nGeomL2 > 1e-20)
-            n = nGeom * rsqrt(nGeomL2);
-        else
-        {
-            float2 nFeat = FeatureNormalFromOwnerB(hitB.id, hitB.u);
-            if (dot(nFeat, nFeat) > 1e-20)
-                n = SafeNormalize(nFeat);
-            else
-                n = SafeNormalize(hitB.grad);
-        }
+    float pen = support - hit.phi;
+    if (pen <= 0.0) return;
 
-        if (dot(n, x - pB) < 0.0)
-            n = -n;
-
-        if (dot(n, n) <= 1e-20)
-        {
-            InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_REJECT_DEGENERATE_NORMAL], 1u);
-            laneActive = false;
-        }
-    }
-
-    float pen = 0.0;
-    uint heB = INVALID_U32;
-    if (laneActive)
-    {
-        pen = support - distToB;
-        heB = hitB.id;
-    }
-
-    if (laneActive)
-    {
-        Contact c;
-        c.ownerA = ownerA;
-        c.ownerB = ownerB;
-        c.vGi = vGi;
-        c.heA = heA;
-        c.heB = heB;
-        c.n = n;
-        c.pen = pen;
-        c.pA = x;
-        c.pB = pB;
-
-        uint localIdx;
-        InterlockedAdd(gQueryVertexContactCount, 1u, localIdx);
-        if (localIdx < QUERY_VERTEX_CONTACT_CAP)
-            gQueryVertexContacts[localIdx] = c;
-        else
-            InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_STAGE_OVERFLOW], 1u);
-    }
-
-    GroupMemoryBarrierWithGroupSync();
-
-    if (groupIndex == 0u)
-    {
-        uint flushCount = min(gQueryVertexContactCount, QUERY_VERTEX_CONTACT_CAP);
-
-        // Compact valid contacts in-place before touching the global counter
-        uint validCount = 0;
-        for (uint i = 0u; i < flushCount; ++i)
-        {
-            Contact wc = gQueryVertexContacts[i];
-            float nl2 = dot(wc.n, wc.n);
-            if (nl2 <= 1e-20 || wc.pen <= 0.0)
-            {
-                InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_COMPACT_REJECT_INVALID], 1u);
-                continue;
-            }
-            wc.n *= rsqrt(nl2);
-            gQueryVertexContacts[validCount++] = wc; // compact in-place
-        }
-        InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_COMPACT_VALID], validCount);
-
-        if (validCount > 0u)
-        {
-            uint base;
-            InterlockedAdd(_ContactCount[0], validCount, base); // exact count now
-
-            uint writable = (base < _MaxContacts)
-                ? min(validCount, _MaxContacts - base) : 0u;
-
-            for (uint i = 0u; i < writable; ++i)
-            {
-                _Contacts[base + i] = gQueryVertexContacts[i];
-                InterlockedAdd(_CollisionDebugStats[STAT_VERTEX_CONTACTS_WRITTEN], 1u);
-            }
-        }
-    }
+    EmitContact(ownerA, ownerB, vGi, heA, hit.id, n, pen, x, hit.cp);
 }
 
 [numthreads(64, 1, 1)]
@@ -577,16 +404,13 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
     uint workItem = tid.x;
     uint pairIndex = workItem / workPerPair;
     uint k = workItem - pairIndex * workPerPair;
-    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_WORK_ITEMS], 1u);
     if (pairIndex >= _QueryPairCount)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_PAIR_OOB], 1u);
         return;
     }
 
     if (_QuerySwap != 0u)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_SWAP], 1u);
         return;
     }
 
@@ -595,28 +419,23 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
     uint ownerB = pair.y;
     if (ownerA == ownerB)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_SAME_OWNER], 1u);
         return;
     }
 
     float support = _LayerKernelH * _CollisionSupportScale;
     if (!OwnerPairAabbOverlap(ownerA, ownerB, support))
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_OWNER_AABB_REJECTS], 1u);
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_AABB], 1u);
         return;
     }
 
     if (_OwnerBoundaryOverflow[ownerA] != 0u || _OwnerBoundaryOverflow[ownerB] != 0u)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_OWNER_OVERFLOW], 1u);
         return;
     }
 
     uint countA = min(_OwnerBoundaryEdgeCounts[ownerA], _MaxBoundaryEdgesPerOwner);
     if (k >= countA)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_NO_OWNER_EDGE_REF], 1u);
         return;
     }
 
@@ -625,7 +444,6 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
     uint aV1Gi = _BoundaryEdgeV1Gi[heA];
     if (aV0Gi == INVALID_U32 || aV1Gi == INVALID_U32)
     {
-        InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_INVALID_EDGE_A], 1u);
         return;
     }
 
@@ -648,25 +466,20 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
         for (int x = c0.x; x <= c1.x; ++x)
         {
             uint binIndex = baseB + (uint)y * dimB.x + (uint)x;
-            InterlockedAdd(_CollisionDebugStats[STAT_EDGE_BIN_CELLS_VISITED], 1u);
             uint ec = min(_EdgeBinCounts[binIndex], _MaxEdgesPerBin);
-            InterlockedAdd(_CollisionDebugStats[STAT_EDGE_BIN_EDGE_REFS_SCANNED], ec);
 
             for (uint i = 0u; i < ec; ++i)
             {
                 uint heB = _EdgeBinRefs[EdgeBinRefIndex(binIndex, i)];
                 if (_BoundaryEdgeOwner[heB] != ownerB)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_OWNER_MISMATCH_B], 1u);
                     continue;
                 }
-                InterlockedAdd(_CollisionDebugStats[STAT_EDGE_PAIR_CANDIDATES], 1u);
 
                 uint bV0Gi = _BoundaryEdgeV0Gi[heB];
                 uint bV1Gi = _BoundaryEdgeV1Gi[heB];
                 if (bV0Gi == INVALID_U32 || bV1Gi == INVALID_U32)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_INVALID_EDGE_B], 1u);
                     continue;
                 }
 
@@ -677,7 +490,6 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
                 float2 bmax = max(b0, b1) + support;
                 if (!BBoxOverlap(amin, amax, bmin, bmax))
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_EDGE_BBOX], 1u);
                     continue;
                 }
 
@@ -687,33 +499,25 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
                 bool intersects = SegmentIntersection2D(a0, a1, b0, b1, sI, tI, xI, hitKind);
                 if (!intersects)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_NO_INTERSECTION], 1u);
                     continue;
                 }
                 if (hitKind != SEG_HIT_POINT)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_NON_POINT_HIT], 1u);
                     continue;
                 }
-                InterlockedAdd(_CollisionDebugStats[STAT_EDGE_POINT_INTERSECTIONS], 1u);
                 if (!IsInteriorParam(sI) || !IsInteriorParam(tI))
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_ENDPOINT_INTERSECTION], 1u);
                     continue;
                 }
                 if (!IsCanonicalBinForPoint(ownerB, binIndex, xI))
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_NON_CANONICAL_BIN], 1u);
                     continue;
                 }
-
-                InterlockedAdd(_CollisionDebugStats[STAT_EDGE_WITHIN_SUPPORT], 1u);
 
                 float2 n = FeatureNormalFromOwnerB(heB, tI);
                 float nl2 = dot(n, n);
                 if (nl2 <= 1e-20)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_DEGENERATE_NORMAL], 1u);
                     continue;
                 }
                 n *= rsqrt(nl2);
@@ -727,12 +531,10 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
                 float pen = support - sep;
                 if (pen <= 0.0)
                 {
-                    InterlockedAdd(_CollisionDebugStats[STAT_EDGE_REJECT_NO_PENETRATION], 1u);
                     continue;
                 }
 
                 EmitContact(ownerA, ownerB, INVALID_U32, heA, heB, n, pen, xI, xI);
-                InterlockedAdd(_CollisionDebugStats[STAT_EDGE_CONTACTS_EMITTED], 1u);
             }
         }
     }

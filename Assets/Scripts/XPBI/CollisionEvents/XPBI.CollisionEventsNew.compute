@@ -10,8 +10,5 @@
 
 #include "XPBI.CollisionEventsNew.Shared.hlsl"
 
-groupshared uint  gQueryVertexContactCount;
-groupshared Contact gQueryVertexContacts[QUERY_VERTEX_CONTACT_CAP];
-
 #include "XPBI.CollisionEventsNew.Helpers.hlsl"
 #include "XPBI.CollisionEventsNew.Kernels.hlsl"

@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Runtime.InteropServices;
-using System.IO;
 using GPU.Delaunay;
 using GPU.Solver;
 using Unity.Mathematics;
@@ -91,7 +89,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public ComputeBuffer BoundaryEdgeP1;
         public ComputeBuffer CollisionEventCount;
         public ComputeBuffer CollisionEvents;
-        public ComputeBuffer CollisionDebugStats;
         public int ActiveCount;
         public int TotalCount;
         public int BoundaryChunkCapacity;
@@ -121,7 +118,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public bool BoundaryP1Ready;
         public bool CollisionCountReady;
         public bool CollisionDataReady;
-        public bool CollisionStatsReady;
 
         public int BoundaryCount;
         public int BoundaryRawCount;
@@ -135,7 +131,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public float[] InvMass = Array.Empty<float>();
         public BoundaryChunkGpu[] Boundaries = Array.Empty<BoundaryChunkGpu>();
         public CollisionEventGpu[] Collisions = Array.Empty<CollisionEventGpu>();
-        public uint[] CollisionStats = new uint[CollisionDebugStatCount];
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -189,18 +184,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     public Color intersectionColor = new Color(1f, 0.95f, 0.2f, 1f);
     [Min(1f)] public float intersectionMarkerPixels = 8f;
 
-    [Header("Detailed Logging")]
-    public bool logDetailedStatsToConsole = true;
-    [Min(0.1f)] public float detailedLogInterval = 0.5f;
-
-    [Header("Collision Event Dump")]
-    public bool dumpFirstCollisionListToFile = true;
-    public string collisionDumpFileName = "collision_events_first_dump.csv";
-
     [Header("Overlay")]
     [Min(1f)] public float lineThickness = 2f;
-    public bool showCollisionStatsPanel = true;
-    public Vector2 statsPanelPosition = new Vector2(12f, 12f);
 
     [Header("Camera")]
     [Tooltip("Optional explicit camera used for projection. Leave null to auto-resolve.")]
@@ -215,10 +200,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     int lastActiveCount;
     int lastTotalCount;
     int lastBoundaryCount;
-    int lastBoundaryRawCount;
-    int lastBoundaryReadCount;
-    int lastBoundaryOwnerValidCount;
-    int lastBoundarySegmentValidCount;
     int lastCollisionCount;
     float2 lastNormCenter;
     float lastNormInvHalfExtent;
@@ -228,11 +209,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     float[] invMass = Array.Empty<float>();
     BoundaryChunkGpu[] boundaryChunks = Array.Empty<BoundaryChunkGpu>();
     CollisionEventGpu[] collisionEvents = Array.Empty<CollisionEventGpu>();
-    readonly uint[] collisionStats = new uint[CollisionDebugStatCount];
 
     readonly uint[] oneUintScratch = new uint[1];
-    readonly uint[] collisionStatsScratch = new uint[CollisionDebugStatCount];
-    readonly StringBuilder statsSb = new StringBuilder(1024);
 
     int asyncRequestId;
     PendingAsyncReadback pending;
@@ -246,8 +224,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     int lastArrowClipped;
     int lastArrowOverlapInstances;
     int lastIntersectionMarkers;
-    float nextDetailedLogTime;
-    bool hasDumpedFirstCollisionList;
     readonly Dictionary<int, int> arrowOverlapCounts = new Dictionary<int, int>(2048);
 
     int GetBoundaryReadCount(int requestedCount, int capacity) {
@@ -267,7 +243,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
     void OnDisable() {
         pending = null;
-        hasDumpedFirstCollisionList = false;
     }
 
     void Update() {
@@ -354,8 +329,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         ComputeBuffer boundaryP1Buffer = solver.collisionEvent.BoundaryEdgeP1Buffer;
         ComputeBuffer collisionCountBuffer = solver.collisionEvent.CollisionEventCountBuffer;
         ComputeBuffer collisionBuffer = solver.collisionEvent.CollisionEventsBuffer;
-        ComputeBuffer collisionStatsBuffer = solver.collisionEvent.CollisionDebugStatsBuffer;
-
         if (boundaryCountBuffer == null || boundaryOwnerBuffer == null || boundaryV0Buffer == null || boundaryV1Buffer == null || boundaryNormalBuffer == null || boundaryP0Buffer == null || boundaryP1Buffer == null || collisionCountBuffer == null || collisionBuffer == null)
             return false;
 
@@ -385,7 +358,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             BoundaryEdgeP1 = boundaryP1Buffer,
             CollisionEventCount = collisionCountBuffer,
             CollisionEvents = collisionBuffer,
-            CollisionDebugStats = collisionStatsBuffer,
             ActiveCount = Mathf.Min(activeCount, dtPositionsBuffer.count),
             TotalCount = Mathf.Min(totalCount, globalPositionsBuffer.count),
             BoundaryChunkCapacity = boundaryOwnerBuffer.count,
@@ -402,10 +374,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         snapshot.BoundaryChunkCount.GetData(oneUintScratch, 0, 0, 1);
         int boundaryRawCount = (int)oneUintScratch[0];
         int boundaryCount = GetBoundaryReadCount(boundaryRawCount, snapshot.BoundaryChunkCapacity);
-        int boundaryReadCount = boundaryCount;
-        int boundaryOwnerValidCount = 0;
-        int boundarySegmentValidCount = 0;
-
         oneUintScratch[0] = 0;
         snapshot.CollisionEventCount.GetData(oneUintScratch, 0, 0, 1);
         int collisionCount = Mathf.Clamp((int)oneUintScratch[0], 0, snapshot.CollisionEventCapacity);
@@ -441,12 +409,10 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     continue;
                 if ((int)owners[i] < 0)
                     continue;
-                boundaryOwnerValidCount++;
 
                 float2 seg = p1[i] - p0[i];
                 if (math.lengthsq(seg) <= 1e-12f)
                     continue;
-                boundarySegmentValidCount++;
 
                 boundaryChunks[emitted] = new BoundaryChunkGpu {
                     va = (int)v0[i],
@@ -466,25 +432,12 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (collisionCount > 0)
             snapshot.CollisionEvents.GetData(collisionEvents, 0, 0, collisionCount);
 
-        Array.Clear(collisionStats, 0, collisionStats.Length);
-        if (snapshot.CollisionDebugStats != null) {
-            snapshot.CollisionDebugStats.GetData(collisionStatsScratch, 0, 0, collisionStatsScratch.Length);
-            Array.Copy(collisionStatsScratch, collisionStats, collisionStats.Length);
-        }
-
         lastActiveCount = snapshot.ActiveCount;
         lastTotalCount = snapshot.TotalCount;
         lastBoundaryCount = boundaryCount;
-        lastBoundaryRawCount = boundaryRawCount;
-        lastBoundaryReadCount = boundaryReadCount;
-        lastBoundaryOwnerValidCount = boundaryOwnerValidCount;
-        lastBoundarySegmentValidCount = boundarySegmentValidCount;
         lastCollisionCount = collisionCount;
         lastNormCenter = snapshot.NormCenter;
         lastNormInvHalfExtent = snapshot.NormInvHalfExtent;
-
-        TryDumpFirstCollisionEvents();
-        TryLogDetailedStats();
     }
 
     void StartAsyncReadback(in ReadbackSnapshot snapshot) {
@@ -516,35 +469,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         int boundaryChunkCapacity = snapshot.BoundaryChunkCapacity;
         ComputeBuffer collisionEventsBuffer = snapshot.CollisionEvents;
         int collisionEventCapacity = snapshot.CollisionEventCapacity;
-        ComputeBuffer collisionStatsBuffer = snapshot.CollisionDebugStats;
 
         AsyncGPUReadback.Request(snapshot.BoundaryChunkCount, req => OnAsyncBoundaryCount(req, state.RequestId, boundaryOwnerBuffer, boundaryV0Buffer, boundaryV1Buffer, boundaryNormalBuffer, boundaryP0Buffer, boundaryP1Buffer, boundaryChunkCapacity));
         AsyncGPUReadback.Request(snapshot.CollisionEventCount, req => OnAsyncCollisionCount(req, state.RequestId, collisionEventsBuffer, collisionEventCapacity));
-        if (collisionStatsBuffer != null)
-            AsyncGPUReadback.Request(collisionStatsBuffer, req => OnAsyncCollisionStats(req, state.RequestId));
-        else
-            state.CollisionStatsReady = true;
-    }
-
-    void OnAsyncCollisionStats(AsyncGPUReadbackRequest request, int requestId) {
-        if (!TryGetPending(requestId, out PendingAsyncReadback state))
-            return;
-
-        if (request.hasError) {
-            state.Failed = true;
-            TryFinalizeAsync(state);
-            return;
-        }
-
-        var data = request.GetData<uint>();
-        int count = Mathf.Min(state.CollisionStats.Length, data.Length);
-        for (int i = 0; i < count; i++)
-            state.CollisionStats[i] = data[i];
-        for (int i = count; i < state.CollisionStats.Length; i++)
-            state.CollisionStats[i] = 0u;
-
-        state.CollisionStatsReady = true;
-        TryFinalizeAsync(state);
     }
 
     void OnAsyncDtPositions(AsyncGPUReadbackRequest request, int requestId) {
@@ -829,7 +756,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             return;
         }
 
-        if (!state.DtReady || !state.GlobalReady || !state.InvMassReady || !state.BoundaryCountReady || !state.BoundaryOwnerReady || !state.BoundaryV0Ready || !state.BoundaryV1Ready || !state.BoundaryNormalReady || !state.BoundaryP0Ready || !state.BoundaryP1Ready || !state.CollisionCountReady || !state.CollisionDataReady || !state.CollisionStatsReady)
+        if (!state.DtReady || !state.GlobalReady || !state.InvMassReady || !state.BoundaryCountReady || !state.BoundaryOwnerReady || !state.BoundaryV0Ready || !state.BoundaryV1Ready || !state.BoundaryNormalReady || !state.BoundaryP0Ready || !state.BoundaryP1Ready || !state.CollisionCountReady || !state.CollisionDataReady)
             return;
 
         int emittedBoundaryCount = 0;
@@ -855,21 +782,13 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         invMass = state.InvMass;
         boundaryChunks = state.Boundaries;
         collisionEvents = state.Collisions;
-        Array.Copy(state.CollisionStats, collisionStats, collisionStats.Length);
 
         lastActiveCount = Mathf.Min(state.ActiveCount, dtPositions.Length);
         lastTotalCount = Mathf.Min(state.TotalCount, globalPositions.Length);
         lastBoundaryCount = Mathf.Min(emittedBoundaryCount, boundaryChunks.Length);
-        lastBoundaryRawCount = state.BoundaryRawCount;
-        lastBoundaryReadCount = state.BoundaryReadCount;
-        lastBoundaryOwnerValidCount = state.BoundaryOwnerValidCount;
-        lastBoundarySegmentValidCount = state.BoundarySegmentValidCount;
         lastCollisionCount = Mathf.Min(state.CollisionCount, collisionEvents.Length);
         lastNormCenter = state.NormCenter;
         lastNormInvHalfExtent = state.NormInvHalfExtent;
-
-        TryDumpFirstCollisionEvents();
-        TryLogDetailedStats();
 
         pending = null;
     }
@@ -983,125 +902,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             }
         }
 
-        if (showCollisionStatsPanel)
-            DrawStatsPanel();
-    }
-
-    void DrawStatsPanel() {
-        statsSb.Clear();
-        statsSb.AppendLine("Collision Debug Stats");
-        statsSb.Append("active=").Append(lastActiveCount)
-            .Append("  boundary=").Append(lastBoundaryCount)
-            .Append("  events=").Append(lastCollisionCount).AppendLine();
-        statsSb.Append("boundary raw=").Append(lastBoundaryRawCount)
-            .Append("  read=").Append(lastBoundaryReadCount)
-            .Append("  owner-valid=").Append(lastBoundaryOwnerValidCount)
-            .Append("  seg-valid=").Append(lastBoundarySegmentValidCount).AppendLine();
-        statsSb.Append("arrows attempted=").Append(lastArrowAttempted)
-            .Append("  drawn=").Append(lastArrowDrawn)
-            .Append("  degenerate=").Append(lastArrowSkippedDegenerate)
-            .Append("  projection=").Append(lastArrowSkippedProjection).AppendLine();
-        statsSb.Append("arrows clipped=").Append(lastArrowClipped)
-            .Append("  overlap-fanout=").Append(lastArrowOverlapInstances).AppendLine();
-        statsSb.Append("edge intersections highlighted=").Append(lastIntersectionMarkers).AppendLine();
-        AppendStatLine(StatBoundaryFlags, "boundary flags");
-        AppendStatLine(StatBoundaryEdges, "boundary edges");
-        AppendStatLine(StatOwnerEdgeOverflow, "owner edge overflow");
-        AppendStatLine(StatMaxEdgeBinLoad, "max edge bin load");
-        AppendStatLine(StatMaxVertBinLoad, "max vert bin load");
-        AppendStatLine(StatEdgeBinOverflows, "edge bin overflows");
-        AppendStatLine(StatVertBinOverflows, "vert bin overflows");
-
-        AppendRatioLine("build reject: non-boundary flag", StatBuildRejectNonBoundaryFlag, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: invalid face", StatBuildRejectInvalidFace, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: non-interface edge", StatBuildRejectNotInternalBoundary, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: invalid global vertex", StatBuildRejectInvalidGlobalVertex, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: invalid local vertex", StatBuildRejectInvalidLocalVertex, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: degenerate mapped endpoints", StatBuildRejectDegenerateEndpoints, StatBuildHalfedgeThreads);
-        AppendRatioLine("build reject: invalid owner", StatBuildRejectInvalidOwner, StatBuildHalfedgeThreads);
-
-        AppendStatLine(StatVertexWorkItems, "vertex work items");
-        AppendStatLine(StatVertexCandidates, "vertex candidates");
-        AppendRatioLine("vertex reject: pair OOB", StatVertexRejectPairOob, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: same owner", StatVertexRejectSameOwner, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: AABB", StatVertexRejectAabb, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: owner overflow", StatVertexRejectOwnerOverflow, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: no owner edge ref", StatVertexRejectNoOwnerEdgeRef, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: invalid vertex gi", StatVertexRejectInvalidVgi, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: no boundary hit", StatVertexRejectNoBoundaryHit, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: support", StatVertexRejectSupport, StatVertexWorkItems);
-        AppendRatioLine("vertex reject: degenerate normal", StatVertexRejectDegenerateNormal, StatVertexWorkItems);
-        AppendStatLine(StatVertexCompactRejectInvalid, "vertex compact rejects");
-        AppendStatLine(StatVertexCompactValid, "vertex compact valid");
-        AppendStatLine(StatVertexFeatureHits, "vertex feature hits");
-        AppendStatLine(StatVertexWithinSupport, "vertex within support");
-        AppendStatLine(StatVertexContactsWritten, "vertex contacts written");
-        AppendStatLine(StatVertexStageOverflow, "vertex staged overflow");
-
-        AppendStatLine(StatEdgeWorkItems, "edge work items");
-        AppendStatLine(StatEdgePairCandidates, "edge pair candidates");
-        AppendStatLine(StatEdgePointIntersections, "edge point intersections");
-        AppendRatioLine("edge reject: pair OOB", StatEdgeRejectPairOob, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: swap pass", StatEdgeRejectSwap, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: same owner", StatEdgeRejectSameOwner, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: AABB", StatEdgeRejectAabb, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: owner overflow", StatEdgeRejectOwnerOverflow, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: no owner edge ref", StatEdgeRejectNoOwnerEdgeRef, StatEdgeWorkItems);
-        AppendRatioLine("edge reject: invalid edge A", StatEdgeRejectInvalidEdgeA, StatEdgeWorkItems);
-        AppendStatLine(StatEdgeBinCellsVisited, "edge bins visited");
-        AppendStatLine(StatEdgeBinEdgeRefsScanned, "edge bin refs scanned");
-        AppendStatLine(StatEdgeRejectOwnerMismatchB, "edge reject owner mismatch B");
-        AppendStatLine(StatEdgeRejectInvalidEdgeB, "edge reject invalid edge B");
-        AppendStatLine(StatEdgeRejectEdgeBbox, "edge reject edge bbox");
-        AppendStatLine(StatEdgeRejectNoIntersection, "edge reject no intersection");
-        AppendStatLine(StatEdgeRejectNonPointHit, "edge reject non-point");
-        AppendStatLine(StatEdgeRejectEndpointIntersection, "edge reject endpoint");
-        AppendStatLine(StatEdgeRejectNonCanonicalBin, "edge reject non-canonical bin");
-        AppendStatLine(StatEdgeRejectDegenerateNormal, "edge reject degenerate normal");
-        AppendStatLine(StatEdgeRejectNoPenetration, "edge reject no penetration");
-        AppendStatLine(StatEdgeWithinSupport, "edge within support");
-        AppendStatLine(StatEdgeContactsEmitted, "edge contacts emitted");
-        AppendStatLine(StatOwnerAabbRejects, "owner AABB rejects (all)");
-
-        GUI.color = new Color(0f, 0f, 0f, 0.6f);
-        Rect panel = new Rect(statsPanelPosition.x, statsPanelPosition.y, 560f, 1500f);
-        GUI.DrawTexture(panel, Texture2D.whiteTexture);
-        GUI.color = Color.white;
-        GUI.Label(new Rect(panel.x + 8f, panel.y + 8f, panel.width - 16f, panel.height - 16f), statsSb.ToString());
-    }
-
-    void AppendStatLine(int idx, string label) {
-        if (idx < 0 || idx >= collisionStats.Length)
-            return;
-
-        statsSb.Append(idx.ToString("00"))
-            .Append(": ")
-            .Append(label)
-            .Append(" = ")
-            .Append(collisionStats[idx])
-            .AppendLine();
-    }
-
-    void AppendRatioLine(string label, int valueIdx, int totalIdx) {
-        uint value = GetStat(valueIdx);
-        uint total = GetStat(totalIdx);
-        float pct = (total > 0u) ? (100f * value / total) : 0f;
-
-        statsSb.Append(label)
-            .Append(" = ")
-            .Append(value)
-            .Append(" / ")
-            .Append(total)
-            .Append(" (")
-            .Append(pct.ToString("F2"))
-            .Append("%)")
-            .AppendLine();
-    }
-
-    uint GetStat(int idx) {
-        if (idx < 0 || idx >= collisionStats.Length)
-            return 0u;
-        return collisionStats[idx];
     }
 
     Camera ResolveDebugCamera() {
@@ -1271,127 +1071,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             h = (h ^ b) * 16777619u;
             float hue = (h & 0x00FFFFFFu) / 16777215f;
             return Color.HSVToRGB(hue, 0.82f, 1f);
-        }
-    }
-
-    void TryLogDetailedStats() {
-        if (!logDetailedStatsToConsole)
-            return;
-        if (Time.unscaledTime < nextDetailedLogTime)
-            return;
-
-        nextDetailedLogTime = Time.unscaledTime + Mathf.Max(0.1f, detailedLogInterval);
-
-        uint vertexWork = GetStat(StatVertexWorkItems);
-        uint edgeWork = GetStat(StatEdgeWorkItems);
-
-        StringBuilder sb = new StringBuilder(1024);
-        sb.Append("[CollisionDebug] ")
-            .Append("boundary=").Append(lastBoundaryCount)
-            .Append(" events=").Append(lastCollisionCount)
-            .Append(" buildHalfEdges=").Append(GetStat(StatBuildHalfedgeThreads))
-            .Append(" vertexWork=").Append(vertexWork)
-            .Append(" edgeWork=").Append(edgeWork)
-            .AppendLine();
-
-        AppendLogRatio(sb, "build.nonBoundaryFlag", StatBuildRejectNonBoundaryFlag, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.invalidFace", StatBuildRejectInvalidFace, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.notInterface", StatBuildRejectNotInternalBoundary, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.invalidGlobalVertex", StatBuildRejectInvalidGlobalVertex, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.invalidLocalVertex", StatBuildRejectInvalidLocalVertex, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.degenerateMappedEndpoints", StatBuildRejectDegenerateEndpoints, StatBuildHalfedgeThreads);
-        AppendLogRatio(sb, "build.invalidOwner", StatBuildRejectInvalidOwner, StatBuildHalfedgeThreads);
-
-        AppendLogRatio(sb, "vertex.pairOob", StatVertexRejectPairOob, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.sameOwner", StatVertexRejectSameOwner, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.aabb", StatVertexRejectAabb, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.ownerOverflow", StatVertexRejectOwnerOverflow, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.noOwnerEdgeRef", StatVertexRejectNoOwnerEdgeRef, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.invalidVgi", StatVertexRejectInvalidVgi, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.noBoundaryHit", StatVertexRejectNoBoundaryHit, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.support", StatVertexRejectSupport, StatVertexWorkItems);
-        AppendLogRatio(sb, "vertex.degenerateNormal", StatVertexRejectDegenerateNormal, StatVertexWorkItems);
-        AppendLogRaw(sb, "vertex.compactRejectInvalid", StatVertexCompactRejectInvalid);
-        AppendLogRaw(sb, "vertex.compactValid", StatVertexCompactValid);
-        AppendLogRaw(sb, "vertex.contactsWritten", StatVertexContactsWritten);
-
-        AppendLogRatio(sb, "edge.pairOob", StatEdgeRejectPairOob, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.swap", StatEdgeRejectSwap, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.sameOwner", StatEdgeRejectSameOwner, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.aabb", StatEdgeRejectAabb, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.ownerOverflow", StatEdgeRejectOwnerOverflow, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.noOwnerEdgeRef", StatEdgeRejectNoOwnerEdgeRef, StatEdgeWorkItems);
-        AppendLogRatio(sb, "edge.invalidEdgeA", StatEdgeRejectInvalidEdgeA, StatEdgeWorkItems);
-        AppendLogRaw(sb, "edge.binCellsVisited", StatEdgeBinCellsVisited);
-        AppendLogRaw(sb, "edge.binEdgeRefsScanned", StatEdgeBinEdgeRefsScanned);
-        AppendLogRaw(sb, "edge.ownerMismatchB", StatEdgeRejectOwnerMismatchB);
-        AppendLogRaw(sb, "edge.invalidEdgeB", StatEdgeRejectInvalidEdgeB);
-        AppendLogRaw(sb, "edge.edgeBboxReject", StatEdgeRejectEdgeBbox);
-        AppendLogRaw(sb, "edge.noIntersection", StatEdgeRejectNoIntersection);
-        AppendLogRaw(sb, "edge.pointIntersections", StatEdgePointIntersections);
-        AppendLogRaw(sb, "edge.nonPointHit", StatEdgeRejectNonPointHit);
-        AppendLogRaw(sb, "edge.endpointReject", StatEdgeRejectEndpointIntersection);
-        AppendLogRaw(sb, "edge.nonCanonicalBin", StatEdgeRejectNonCanonicalBin);
-        AppendLogRaw(sb, "edge.degenerateNormal", StatEdgeRejectDegenerateNormal);
-        AppendLogRaw(sb, "edge.noPenetration", StatEdgeRejectNoPenetration);
-        AppendLogRaw(sb, "edge.contactsEmitted", StatEdgeContactsEmitted);
-        AppendLogRaw(sb, "ownerAabbRejectsAll", StatOwnerAabbRejects);
-
-        Debug.Log(sb.ToString());
-    }
-
-    void AppendLogRatio(StringBuilder sb, string label, int valueIdx, int totalIdx) {
-        uint value = GetStat(valueIdx);
-        uint total = GetStat(totalIdx);
-        float pct = (total > 0u) ? (100f * value / total) : 0f;
-        sb.Append("  ").Append(label).Append('=').Append(value).Append('/').Append(total).Append(" (").Append(pct.ToString("F2")).Append("%)").AppendLine();
-    }
-
-    void AppendLogRaw(StringBuilder sb, string label, int valueIdx) {
-        sb.Append("  ").Append(label).Append('=').Append(GetStat(valueIdx)).AppendLine();
-    }
-
-    void TryDumpFirstCollisionEvents() {
-        if (!dumpFirstCollisionListToFile || hasDumpedFirstCollisionList)
-            return;
-
-        int count = Mathf.Min(lastCollisionCount, collisionEvents != null ? collisionEvents.Length : 0);
-        if (count <= 0)
-            return;
-
-        try {
-            string fileName = string.IsNullOrWhiteSpace(collisionDumpFileName) ? "collision_events_first_dump.csv" : collisionDumpFileName.Trim();
-            string root = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            string outputDir = Path.Combine(root, "Build");
-            Directory.CreateDirectory(outputDir);
-            string outputPath = Path.Combine(outputDir, fileName);
-
-            StringBuilder sb = new StringBuilder(math.max(256, count * 96));
-            sb.AppendLine("index,ownerA,ownerB,vGi,heA,heB,nx,ny,penetration,pAx,pAy,pBx,pBy");
-            for (int i = 0; i < count; i++) {
-                CollisionEventGpu e = collisionEvents[i];
-                sb.Append(i).Append(',')
-                    .Append(e.ownerA).Append(',')
-                    .Append(e.ownerB).Append(',')
-                    .Append(e.vGi).Append(',')
-                    .Append(e.heA).Append(',')
-                    .Append(e.heB).Append(',')
-                    .Append(e.normal.x.ToString("R")).Append(',')
-                    .Append(e.normal.y.ToString("R")).Append(',')
-                    .Append(e.penetration.ToString("R")).Append(',')
-                    .Append(e.pA.x.ToString("R")).Append(',')
-                    .Append(e.pA.y.ToString("R")).Append(',')
-                    .Append(e.pB.x.ToString("R")).Append(',')
-                    .Append(e.pB.y.ToString("R"))
-                    .AppendLine();
-            }
-
-            File.WriteAllText(outputPath, sb.ToString(), Encoding.UTF8);
-            hasDumpedFirstCollisionList = true;
-            Debug.Log($"CollisionDebugRenderer wrote first collision list to: {outputPath} ({count} events)");
-        }
-        catch (Exception ex) {
-            Debug.LogWarning($"CollisionDebugRenderer failed to dump collision events: {ex.Message}");
         }
     }
 

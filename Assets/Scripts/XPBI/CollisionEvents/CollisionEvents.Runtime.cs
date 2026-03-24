@@ -11,7 +11,6 @@ namespace GPU.Solver {
         private const int DefaultBinResolution = 32;
         private const int DefaultMaxEdgesPerBin = 96;
         private const int DefaultMaxVertsPerBin = 96;
-        private const int CollisionDebugStatCount = 64;
 
         internal ComputeBuffer collisionEvents;
         private ComputeBuffer collisionEventCount;
@@ -73,8 +72,6 @@ namespace GPU.Solver {
         private ComputeBuffer sdfFeatType;
         private ComputeBuffer sdfFeatId;
 
-        private ComputeBuffer collisionDebugStats;
-
         private int boundaryEdgeCapacity;
         private int ownerCapacity;
         private int pairCapacity;
@@ -96,7 +93,6 @@ namespace GPU.Solver {
 
         private uint2[] ownerPairsCpu = Array.Empty<uint2>();
         private readonly uint[] oneUint = new uint[1];
-        private readonly uint[] statsScratch = new uint[CollisionDebugStatCount];
         private int[] identityGlobalNodeMapCpu = Array.Empty<int>();
         private ComputeBuffer identityGlobalNodeMap;
 
@@ -118,7 +114,6 @@ namespace GPU.Solver {
         internal ComputeBuffer BoundaryEdgeNormalBuffer => boundaryEdgeNOut;
         internal ComputeBuffer BoundaryEdgeP0Buffer => boundaryEdgeP0;
         internal ComputeBuffer BoundaryEdgeP1Buffer => boundaryEdgeP1;
-        internal ComputeBuffer CollisionDebugStatsBuffer => collisionDebugStats;
 
         internal ComputeBuffer XferColCountBuffer => xferColCount;
         internal ComputeBuffer XferColNXBitsBuffer => xferColNXBits;
@@ -298,8 +293,6 @@ namespace GPU.Solver {
             if (ownerPairsCpu.Length < pairCapacity)
                 ownerPairsCpu = new uint2[pairCapacity];
 
-            collisionDebugStats = new ComputeBuffer(CollisionDebugStatCount, sizeof(uint), ComputeBufferType.Structured);
-
             ownerCapacity = 0;
             totalGridCellCapacity = 0;
             totalBinCapacity = 0;
@@ -363,7 +356,6 @@ namespace GPU.Solver {
             ReleaseBuffer(ref sdfGrad);
             ReleaseBuffer(ref sdfFeatType);
             ReleaseBuffer(ref sdfFeatId);
-            ReleaseBuffer(ref collisionDebugStats);
             ReleaseBuffer(ref identityGlobalNodeMap);
             identityGlobalNodeMapCpu = Array.Empty<int>();
 
@@ -507,7 +499,6 @@ namespace GPU.Solver {
 
             cb.SetComputeBufferParam(shader, kernel, "_Contacts", collisionEvents);
             cb.SetComputeBufferParam(shader, kernel, "_ContactCount", collisionEventCount);
-            cb.SetComputeBufferParam(shader, kernel, "_CollisionDebugStats", collisionDebugStats);
         }
 
         private void PrepareLayer0BuildBuffers(
@@ -537,9 +528,6 @@ namespace GPU.Solver {
             if (resetForPrepass) {
                 oneUint[0] = (uint)layer0Dt.HalfEdgeCount;
                 cb.SetBufferData(boundaryEdgeCount, oneUint);
-
-                Array.Clear(statsScratch, 0, statsScratch.Length);
-                cb.SetBufferData(collisionDebugStats, statsScratch);
             }
 
             if (collisionOwnerCount > 0) {
