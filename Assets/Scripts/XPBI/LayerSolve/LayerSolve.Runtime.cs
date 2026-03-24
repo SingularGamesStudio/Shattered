@@ -1,3 +1,4 @@
+using System;
 using GPU.Delaunay;
 using GPU.Neighbors;
 using UnityEngine;
@@ -59,6 +60,13 @@ namespace GPU.Solver {
         private ComputeBuffer parentWeights => solver.parentWeights;
         private ComputeBuffer F => solver.F;
         private ComputeBuffer Fp => solver.Fp;
+        private ComputeBuffer fineContacts => solver.collisionEvent.CollisionEventsBuffer;
+        private ComputeBuffer fineContactCount => solver.collisionEvent.CollisionEventCountBuffer;
+        private ComputeBuffer coarseContacts => solver.collisionEvent.CoarseContactsBuffer;
+        private ComputeBuffer coarseContactCount => solver.collisionEvent.CoarseContactCountBuffer;
+        private ComputeBuffer boundaryEdgeV0Gi => solver.collisionEvent.BoundaryEdgeV0Buffer;
+        private ComputeBuffer boundaryEdgeV1Gi => solver.collisionEvent.BoundaryEdgeV1Buffer;
+        private ComputeBuffer boundaryVertexGi => solver.collisionEvent.BoundaryVertexGiBuffer;
         private ComputeBuffer xferColCount => solver.collisionEvent.XferColCountBuffer;
         private ComputeBuffer xferColNXBits => solver.collisionEvent.XferColNXBitsBuffer;
         private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
@@ -162,6 +170,10 @@ namespace GPU.Solver {
         internal int KApplyPositionCorrection => kApplyPositionCorrection;
 
         internal void AllocateRuntimeBuffers(int newCapacity) {
+            int collisionEventCapacity = Math.Max(4096, newCapacity * 32);
+            int coarseContactCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
+            int collisionLambdaCapacity = collisionEventCapacity + coarseContactCapacity;
+
             currentVolumeBits = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
             currentTotalMassBits = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
             fixedChildPosBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
@@ -170,7 +182,7 @@ namespace GPU.Solver {
             F0 = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             durabilityLambda = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
-            collisionLambda = new ComputeBuffer(newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots, sizeof(float), ComputeBufferType.Structured);
+            collisionLambda = new ComputeBuffer(collisionLambdaCapacity, sizeof(float), ComputeBufferType.Structured);
             savedVelPrefix = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             velPrev = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
@@ -282,6 +294,7 @@ namespace GPU.Solver {
             cb.SetComputeFloatParam(shader, "_LayerKernelH", layerKernelH);
             cb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
             cb.SetComputeIntParam(shader, "_CollisionEventCapacity", solver.collisionEvent.CollisionEventsBuffer != null ? solver.collisionEvent.CollisionEventsBuffer.count : 0);
+            cb.SetComputeIntParam(shader, "_CoarseContactCapacity", solver.collisionEvent.CoarseContactsBuffer != null ? solver.collisionEvent.CoarseContactsBuffer.count : 0);
 
             ComputeBuffer convergenceDebugBinding = solver.solverDebug.ConvergenceDebug ?? solver.solverDebug.ProlongationConstraintDebug ?? solver.solverDebug.ConvergenceDebugFallback;
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebugBinding);
@@ -303,6 +316,13 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_DurabilityLambda", durabilityLambda);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_FineContacts", fineContacts);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_FineContactCountBuffer", fineContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_CoarseContactCountBuffer", coarseContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryVertexGi", boundaryVertexGi);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColCount", xferColCount);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNYBits", xferColNYBits);
@@ -328,6 +348,13 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DurabilityLambda", durabilityLambda);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FineContacts", fineContacts);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FineContactCountBuffer", fineContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CoarseContactCountBuffer", coarseContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryVertexGi", boundaryVertexGi);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColCount", xferColCount);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNYBits", xferColNYBits);
@@ -402,6 +429,14 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_VelPrev", velPrev);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaPrev", lambdaPrev);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DurabilityLambda", durabilityLambda);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CollisionLambda", collisionLambda);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FineContacts", fineContacts);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FineContactCountBuffer", fineContactCount);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CoarseContactCountBuffer", coarseContactCount);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryVertexGi", boundaryVertexGi);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRLambdaDelta", jrLambdaDelta);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);

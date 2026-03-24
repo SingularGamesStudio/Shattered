@@ -14,6 +14,8 @@ namespace GPU.Solver {
 
         internal ComputeBuffer collisionEvents;
         private ComputeBuffer collisionEventCount;
+        private ComputeBuffer coarseContacts;
+        private ComputeBuffer coarseContactCount;
 
         private ComputeBuffer xferColCount;
         private ComputeBuffer xferColNXBits;
@@ -103,14 +105,20 @@ namespace GPU.Solver {
         internal int kBuildOwnerFeatureField;
         internal int kQueryVertexContacts;
         internal int kQueryEdgeEdgeContacts;
+        internal int kClearCoarseContacts;
+        internal int kPropagateVertexContacts;
+        internal int kPropagateEdgeContacts;
 
         internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
         internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
+        internal ComputeBuffer CoarseContactsBuffer => coarseContacts;
+        internal ComputeBuffer CoarseContactCountBuffer => coarseContactCount;
         internal ComputeBuffer BoundaryChunkCountBuffer => boundaryEdgeCount;
         internal ComputeBuffer BoundaryChunksBuffer => boundaryEdgeV0Gi;
         internal ComputeBuffer BoundaryEdgeOwnerBuffer => boundaryEdgeOwner;
         internal ComputeBuffer BoundaryEdgeV0Buffer => boundaryEdgeV0Gi;
         internal ComputeBuffer BoundaryEdgeV1Buffer => boundaryEdgeV1Gi;
+        internal ComputeBuffer BoundaryVertexGiBuffer => boundaryVertexGi;
         internal ComputeBuffer BoundaryEdgeNormalBuffer => boundaryEdgeNOut;
         internal ComputeBuffer BoundaryEdgeP0Buffer => boundaryEdgeP0;
         internal ComputeBuffer BoundaryEdgeP1Buffer => boundaryEdgeP1;
@@ -127,7 +135,7 @@ namespace GPU.Solver {
         internal ComputeBuffer XferColOBGiBuffer => xferColOBGi;
 
         internal int ClearCollisionEventCountKernel => -1;
-        internal int ClearTransferredCollisionKernel => -1;
+        internal int ClearTransferredCollisionKernel => kClearCoarseContacts;
         internal int RestrictCollisionEventsToActivePairsKernel => -1;
 
         internal int BoundaryChunkSortCapacity => 1;
@@ -260,6 +268,10 @@ namespace GPU.Solver {
             collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 5 + sizeof(float) * 7, ComputeBufferType.Structured);
             collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
+            // CoarseContact in XPBI.CollisionEventsNew.Transfer.hlsl is 40 bytes.
+            coarseContacts = new ComputeBuffer(transferCapacity, sizeof(uint) * 4 + sizeof(float) * 6, ComputeBufferType.Structured);
+            coarseContactCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+
             xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
             xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
             xferColNYBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -307,6 +319,8 @@ namespace GPU.Solver {
         internal void ReleaseRuntimeBuffers() {
             ReleaseBuffer(ref collisionEvents);
             ReleaseBuffer(ref collisionEventCount);
+            ReleaseBuffer(ref coarseContacts);
+            ReleaseBuffer(ref coarseContactCount);
 
             ReleaseBuffer(ref xferColCount);
             ReleaseBuffer(ref xferColNXBits);
@@ -387,6 +401,21 @@ namespace GPU.Solver {
             kBuildOwnerFeatureField = shader.FindKernel("BuildOwnerFeatureField");
             kQueryVertexContacts = shader.FindKernel("QueryVertexContacts");
             kQueryEdgeEdgeContacts = shader.FindKernel("QueryEdgeEdgeContacts");
+            kClearCoarseContacts = shader.FindKernel("ClearCoarseContacts");
+            kPropagateVertexContacts = shader.FindKernel("PropagateVertexContacts");
+            kPropagateEdgeContacts = shader.FindKernel("PropagateEdgeContacts");
+        }
+
+        private void BindTransferKernelBuffers(CommandBuffer cb, int kernel) {
+            cb.SetComputeBufferParam(shader, kernel, "_FineContacts", collisionEvents);
+            cb.SetComputeBufferParam(shader, kernel, "_FineContactCountBuffer", collisionEventCount);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexGi", boundaryVertexGi);
+            cb.SetComputeBufferParam(shader, kernel, "_LayerParentIndices", solver.parentIndices);
+            cb.SetComputeBufferParam(shader, kernel, "_LayerParentWeights", solver.parentWeights);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContactCount", coarseContactCount);
         }
 
         private int BuildOwnerPairs(int ownerCount) {
@@ -556,6 +585,8 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_MaxGridDimY", SdfResolution);
             cb.SetComputeIntParam(shader, "_QueryPairCount", queryPairCount);
             cb.SetComputeIntParam(shader, "_QuerySwap", 0);
+            cb.SetComputeIntParam(shader, "_MaxCoarseContacts", coarseContacts != null ? coarseContacts.count : 0);
+            cb.SetComputeIntParam(shader, "_CoarseParentsPerNode", math.clamp(Const.ParentKNearest, 1, 4));
 
             cb.SetComputeFloatParam(shader, "_LayerKernelH", layer0KernelH);
             cb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);
@@ -579,6 +610,10 @@ namespace GPU.Solver {
                 globalVertexByLocal = EnsureIdentityGlobalNodeMap(layer0ActiveCount);
             for (int i = 0; i < kernels.Length; i++)
                 BindKernelBuffers(cb, kernels[i], layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal);
+
+            BindTransferKernelBuffers(cb, kClearCoarseContacts);
+            BindTransferKernelBuffers(cb, kPropagateVertexContacts);
+            BindTransferKernelBuffers(cb, kPropagateEdgeContacts);
 
             _ = layer0NeighborSearch;
             _ = dtGlobalToLayerLocalMap;

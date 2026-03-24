@@ -102,7 +102,10 @@ namespace GPU.Solver {
             int edgeDispatchCount = math.max(1, layer0Dt.HalfEdgeCount);
             int pairDispatchCount = math.max(1, QueryPairCount);
 
-            Dispatch(session.AsyncCb, "XPBI.ClearState", shader, kClearState, Groups64(math.max(math.max(collisionOwnerCount, layer0Dt.HalfEdgeCount), TotalBinCapacity)), 1, 1);
+            int clearStateWork = math.max(
+                math.max(collisionOwnerCount, layer0Dt.HalfEdgeCount),
+                math.max(TotalBinCapacity, collisionEvents != null ? collisionEvents.count : 0));
+            Dispatch(session.AsyncCb, "XPBI.ClearState", shader, kClearState, Groups64(clearStateWork), 1, 1);
 
             Dispatch(session.AsyncCb, "XPBI.BuildBoundaryFeatures", shader, kBuildBoundaryFeatures, Groups64(edgeDispatchCount), 1, 1);
             Dispatch(session.AsyncCb, "XPBI.BinBoundaryEdges", shader, kBinBoundaryEdges, Groups64(edgeDispatchCount), 1, 1);
@@ -122,8 +125,40 @@ namespace GPU.Solver {
         }
 
         internal void RecordTransferredRestriction(SolveSession session, LayerContext layerContext) {
-            // Upward transfer is not implemented yet, so keep transferred collisions disabled.
-            _ = layerContext;
+            if (layerContext == null || layerContext.Layer <= 0) {
+                solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, false);
+                return;
+            }
+
+            if (kClearCoarseContacts < 0 || kPropagateVertexContacts < 0 || kPropagateEdgeContacts < 0) {
+                solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, false);
+                return;
+            }
+
+            if (collisionEvents == null || coarseContacts == null) {
+                solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, false);
+                return;
+            }
+
+            int coarseParentsPerNode = math.clamp(Const.ParentKNearest, 1, 4);
+            int fineContactCapacity = collisionEvents.count;
+
+            session.AsyncCb.SetComputeIntParam(shader, "_FineContactCount", fineContactCapacity);
+            session.AsyncCb.SetComputeIntParam(shader, "_MaxCoarseContacts", coarseContacts.count);
+            session.AsyncCb.SetComputeIntParam(shader, "_CoarseParentsPerNode", coarseParentsPerNode);
+
+            Dispatch(session.AsyncCb, "XPBI.ClearCoarseContacts", shader, kClearCoarseContacts, Groups64(coarseContacts.count), 1, 1);
+
+            int vertexWork = (int)math.min((long)fineContactCapacity * coarseParentsPerNode, int.MaxValue);
+            if (vertexWork > 0)
+                Dispatch(session.AsyncCb, "XPBI.PropagateVertexContacts", shader, kPropagateVertexContacts, Groups64(vertexWork), 1, 1);
+
+            int edgeWork = (int)math.min((long)fineContactCapacity * 4L, int.MaxValue);
+            if (edgeWork > 0)
+                Dispatch(session.AsyncCb, "XPBI.PropagateEdgeContacts", shader, kPropagateEdgeContacts, Groups64(edgeWork), 1, 1);
+
+            // Layer solve still consumes legacy _XferCol* manifold slots.
+            // Keep this disabled until coarse-contact outputs are bridged into that layout.
             solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, false);
         }
     }

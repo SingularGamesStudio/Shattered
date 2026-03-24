@@ -89,10 +89,13 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public ComputeBuffer BoundaryEdgeP1;
         public ComputeBuffer CollisionEventCount;
         public ComputeBuffer CollisionEvents;
+        public ComputeBuffer CoarseContactCount;
+        public ComputeBuffer CoarseContacts;
         public int ActiveCount;
         public int TotalCount;
         public int BoundaryChunkCapacity;
         public int CollisionEventCapacity;
+        public int CoarseContactCapacity;
         public float2 NormCenter;
         public float NormInvHalfExtent;
     }
@@ -118,6 +121,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public bool BoundaryP1Ready;
         public bool CollisionCountReady;
         public bool CollisionDataReady;
+        public bool CoarseCollisionCountReady;
+        public bool CoarseCollisionDataReady;
 
         public int BoundaryCount;
         public int BoundaryRawCount;
@@ -125,12 +130,14 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public int BoundaryOwnerValidCount;
         public int BoundarySegmentValidCount;
         public int CollisionCount;
+        public int CoarseCollisionCount;
 
         public float2[] DtPositions = Array.Empty<float2>();
         public float2[] GlobalPositions = Array.Empty<float2>();
         public float[] InvMass = Array.Empty<float>();
         public BoundaryChunkGpu[] Boundaries = Array.Empty<BoundaryChunkGpu>();
         public CollisionEventGpu[] Collisions = Array.Empty<CollisionEventGpu>();
+        public CoarseContactGpu[] CoarseCollisions = Array.Empty<CoarseContactGpu>();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -156,6 +163,18 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         public float2 pB;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct CoarseContactGpu {
+        public uint ownerA;
+        public uint ownerB;
+        public uint coarseGiA;
+        public uint coarseGiB;
+        public float2 normal;
+        public float penetration;
+        public float weight;
+        public float2 point;
+    }
+
     [Header("Readback")]
     public bool enableOverlay = true;
     public ReadbackMode readbackMode = ReadbackMode.SyncGetData;
@@ -173,6 +192,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     [Header("Collision Arrows")]
     public bool drawCollisionArrows = true;
     public Color collisionArrowColor = new Color(1f, 0.35f, 0.15f, 1f);
+    public bool drawCoarseCollisionArrows = true;
+    public Color coarseCollisionArrowColor = new Color(0.1f, 0.75f, 1f, 1f);
     public bool colorArrowsByOwnerPair = true;
     [Min(0)] public int maxCollisionArrows = 7000;
     [Min(0.01f)] public float arrowScale = 1f;
@@ -201,6 +222,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     int lastTotalCount;
     int lastBoundaryCount;
     int lastCollisionCount;
+    int lastCoarseCollisionCount;
     float2 lastNormCenter;
     float lastNormInvHalfExtent;
 
@@ -209,6 +231,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     float[] invMass = Array.Empty<float>();
     BoundaryChunkGpu[] boundaryChunks = Array.Empty<BoundaryChunkGpu>();
     CollisionEventGpu[] collisionEvents = Array.Empty<CollisionEventGpu>();
+    CoarseContactGpu[] coarseCollisionEvents = Array.Empty<CoarseContactGpu>();
 
     readonly uint[] oneUintScratch = new uint[1];
 
@@ -329,7 +352,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         ComputeBuffer boundaryP1Buffer = solver.collisionEvent.BoundaryEdgeP1Buffer;
         ComputeBuffer collisionCountBuffer = solver.collisionEvent.CollisionEventCountBuffer;
         ComputeBuffer collisionBuffer = solver.collisionEvent.CollisionEventsBuffer;
-        if (boundaryCountBuffer == null || boundaryOwnerBuffer == null || boundaryV0Buffer == null || boundaryV1Buffer == null || boundaryNormalBuffer == null || boundaryP0Buffer == null || boundaryP1Buffer == null || collisionCountBuffer == null || collisionBuffer == null)
+        ComputeBuffer coarseCollisionCountBuffer = solver.collisionEvent.CoarseContactCountBuffer;
+        ComputeBuffer coarseCollisionBuffer = solver.collisionEvent.CoarseContactsBuffer;
+        if (boundaryCountBuffer == null || boundaryOwnerBuffer == null || boundaryV0Buffer == null || boundaryV1Buffer == null || boundaryNormalBuffer == null || boundaryP0Buffer == null || boundaryP1Buffer == null || collisionCountBuffer == null || collisionBuffer == null || coarseCollisionCountBuffer == null || coarseCollisionBuffer == null)
             return false;
 
         int totalCount = 0;
@@ -358,10 +383,13 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             BoundaryEdgeP1 = boundaryP1Buffer,
             CollisionEventCount = collisionCountBuffer,
             CollisionEvents = collisionBuffer,
+            CoarseContactCount = coarseCollisionCountBuffer,
+            CoarseContacts = coarseCollisionBuffer,
             ActiveCount = Mathf.Min(activeCount, dtPositionsBuffer.count),
             TotalCount = Mathf.Min(totalCount, globalPositionsBuffer.count),
             BoundaryChunkCapacity = boundaryOwnerBuffer.count,
             CollisionEventCapacity = collisionBuffer.count,
+            CoarseContactCapacity = coarseCollisionBuffer.count,
             NormCenter = hierarchy.NormCenter,
             NormInvHalfExtent = hierarchy.NormInvHalfExtent,
         };
@@ -377,6 +405,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         oneUintScratch[0] = 0;
         snapshot.CollisionEventCount.GetData(oneUintScratch, 0, 0, 1);
         int collisionCount = Mathf.Clamp((int)oneUintScratch[0], 0, snapshot.CollisionEventCapacity);
+        oneUintScratch[0] = 0;
+        snapshot.CoarseContactCount.GetData(oneUintScratch, 0, 0, 1);
+        int coarseCollisionCount = Mathf.Clamp((int)oneUintScratch[0], 0, snapshot.CoarseContactCapacity);
 
         EnsureCapacity(ref dtPositions, snapshot.ActiveCount);
         snapshot.DtPositions.GetData(dtPositions, 0, 0, snapshot.ActiveCount);
@@ -432,10 +463,15 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (collisionCount > 0)
             snapshot.CollisionEvents.GetData(collisionEvents, 0, 0, collisionCount);
 
+        EnsureCapacity(ref coarseCollisionEvents, coarseCollisionCount);
+        if (coarseCollisionCount > 0)
+            snapshot.CoarseContacts.GetData(coarseCollisionEvents, 0, 0, coarseCollisionCount);
+
         lastActiveCount = snapshot.ActiveCount;
         lastTotalCount = snapshot.TotalCount;
         lastBoundaryCount = boundaryCount;
         lastCollisionCount = collisionCount;
+        lastCoarseCollisionCount = coarseCollisionCount;
         lastNormCenter = snapshot.NormCenter;
         lastNormInvHalfExtent = snapshot.NormInvHalfExtent;
     }
@@ -469,9 +505,12 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         int boundaryChunkCapacity = snapshot.BoundaryChunkCapacity;
         ComputeBuffer collisionEventsBuffer = snapshot.CollisionEvents;
         int collisionEventCapacity = snapshot.CollisionEventCapacity;
+        ComputeBuffer coarseCollisionBuffer = snapshot.CoarseContacts;
+        int coarseCollisionCapacity = snapshot.CoarseContactCapacity;
 
         AsyncGPUReadback.Request(snapshot.BoundaryChunkCount, req => OnAsyncBoundaryCount(req, state.RequestId, boundaryOwnerBuffer, boundaryV0Buffer, boundaryV1Buffer, boundaryNormalBuffer, boundaryP0Buffer, boundaryP1Buffer, boundaryChunkCapacity));
         AsyncGPUReadback.Request(snapshot.CollisionEventCount, req => OnAsyncCollisionCount(req, state.RequestId, collisionEventsBuffer, collisionEventCapacity));
+        AsyncGPUReadback.Request(snapshot.CoarseContactCount, req => OnAsyncCoarseCollisionCount(req, state.RequestId, coarseCollisionBuffer, coarseCollisionCapacity));
     }
 
     void OnAsyncDtPositions(AsyncGPUReadbackRequest request, int requestId) {
@@ -738,6 +777,51 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         TryFinalizeAsync(state);
     }
 
+    void OnAsyncCoarseCollisionCount(AsyncGPUReadbackRequest request, int requestId, ComputeBuffer coarseCollisionBuffer, int coarseCollisionCapacity) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<uint>();
+        int count = (data.Length > 0) ? Mathf.Clamp((int)data[0], 0, coarseCollisionCapacity) : 0;
+
+        state.CoarseCollisionCount = count;
+        state.CoarseCollisionCountReady = true;
+
+        if (count <= 0) {
+            state.CoarseCollisions = Array.Empty<CoarseContactGpu>();
+            state.CoarseCollisionDataReady = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        int bytes = count * Marshal.SizeOf<CoarseContactGpu>();
+        AsyncGPUReadback.Request(coarseCollisionBuffer, bytes, 0, req => OnAsyncCoarseCollisionData(req, requestId));
+    }
+
+    void OnAsyncCoarseCollisionData(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<CoarseContactGpu>();
+        state.CoarseCollisions = new CoarseContactGpu[data.Length];
+        data.CopyTo(state.CoarseCollisions);
+        state.CoarseCollisionDataReady = true;
+
+        TryFinalizeAsync(state);
+    }
+
     bool TryGetPending(int requestId, out PendingAsyncReadback state) {
         state = pending;
         if (state == null)
@@ -756,7 +840,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             return;
         }
 
-        if (!state.DtReady || !state.GlobalReady || !state.InvMassReady || !state.BoundaryCountReady || !state.BoundaryOwnerReady || !state.BoundaryV0Ready || !state.BoundaryV1Ready || !state.BoundaryNormalReady || !state.BoundaryP0Ready || !state.BoundaryP1Ready || !state.CollisionCountReady || !state.CollisionDataReady)
+        if (!state.DtReady || !state.GlobalReady || !state.InvMassReady || !state.BoundaryCountReady || !state.BoundaryOwnerReady || !state.BoundaryV0Ready || !state.BoundaryV1Ready || !state.BoundaryNormalReady || !state.BoundaryP0Ready || !state.BoundaryP1Ready || !state.CollisionCountReady || !state.CollisionDataReady || !state.CoarseCollisionCountReady || !state.CoarseCollisionDataReady)
             return;
 
         int emittedBoundaryCount = 0;
@@ -782,11 +866,13 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         invMass = state.InvMass;
         boundaryChunks = state.Boundaries;
         collisionEvents = state.Collisions;
+        coarseCollisionEvents = state.CoarseCollisions;
 
         lastActiveCount = Mathf.Min(state.ActiveCount, dtPositions.Length);
         lastTotalCount = Mathf.Min(state.TotalCount, globalPositions.Length);
         lastBoundaryCount = Mathf.Min(emittedBoundaryCount, boundaryChunks.Length);
         lastCollisionCount = Mathf.Min(state.CollisionCount, collisionEvents.Length);
+        lastCoarseCollisionCount = Mathf.Min(state.CoarseCollisionCount, coarseCollisionEvents.Length);
         lastNormCenter = state.NormCenter;
         lastNormInvHalfExtent = state.NormInvHalfExtent;
 
@@ -899,6 +985,32 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                         lastIntersectionMarkers++;
                     }
                 }
+            }
+        }
+
+        if (drawCoarseCollisionArrows && lastCoarseCollisionCount > 0) {
+            int drawCount = maxCollisionArrows > 0 ? Mathf.Min(lastCoarseCollisionCount, maxCollisionArrows) : lastCoarseCollisionCount;
+            for (int i = 0; i < drawCount; i++) {
+                int sourceIndex = (drawCount < lastCoarseCollisionCount)
+                    ? Mathf.Clamp((int)((long)i * (long)lastCoarseCollisionCount / (long)drawCount), 0, lastCoarseCollisionCount - 1)
+                    : i;
+
+                CoarseContactGpu evt = coarseCollisionEvents[sourceIndex];
+                float2 n = evt.normal;
+                float nLen = math.length(n);
+                if (!(nLen > 1e-6f))
+                    continue;
+                n /= nLen;
+
+                float2 c = evt.point;
+                float shaftLength = math.max(minArrowLength, evt.penetration * arrowScale);
+                if (cam != null && cam.orthographic) {
+                    float worldPerPixel = (2f * cam.orthographicSize) / math.max(1f, Screen.height);
+                    float minVisibleLen = 6f * worldPerPixel;
+                    shaftLength = math.max(shaftLength, minVisibleLen);
+                }
+
+                DrawCollisionArrow(cam, c, n, shaftLength, thickness, coarseCollisionArrowColor);
             }
         }
 

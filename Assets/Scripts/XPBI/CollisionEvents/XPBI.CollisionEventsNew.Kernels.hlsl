@@ -41,6 +41,17 @@ void ClearState(uint3 tid : SV_DispatchThreadID)
         _BoundaryVertexPseudoN[i] = 0.0;
     }
 
+    if (i < _MaxContacts)
+    {
+        Contact c = (Contact)0;
+        c.ownerA = INVALID_U32;
+        c.ownerB = INVALID_U32;
+        c.vGi = INVALID_U32;
+        c.heA = INVALID_U32;
+        c.heB = INVALID_U32;
+        _Contacts[i] = c;
+    }
+
     if (i == 0u)
     {
         _ContactCount[0] = 0;

@@ -282,8 +282,14 @@ MonoBehaviour:
   drawBoundaries: 1
   boundaryColor: {r: 0.2, g: 1, b: 0.35, a: 1}
   maxBoundarySegments: 6000
+  fallbackBoundaryScanLimit: 0
+  drawBoundaryNormals: 1
+  boundaryNormalColor: {r: 0.12, g: 0.85, b: 1, a: 1}
+  boundaryNormalLength: 0.02
   drawCollisionArrows: 1
   collisionArrowColor: {r: 1, g: 0.35, b: 0.15, a: 1}
+  drawCoarseCollisionArrows: 1
+  coarseCollisionArrowColor: {r: 0.1, g: 0.75, b: 1, a: 1}
   colorArrowsByOwnerPair: 1
   maxCollisionArrows: 7000
   arrowScale: 1
@@ -291,11 +297,10 @@ MonoBehaviour:
   arrowHeadLength: 0.02
   arrowHeadWidthScale: 0.55
   overlapFanoutWorld: 0.002
-  dumpFirstCollisionListToFile: 1
-  collisionDumpFileName: collision_events_first_dump.csv
+  highlightEdgeIntersections: 1
+  intersectionColor: {r: 1, g: 0.95, b: 0.2, a: 1}
+  intersectionMarkerPixels: 8
   lineThickness: 2
-  showCollisionStatsPanel: 1
-  statsPanelPosition: {x: 12, y: 12}
   targetCamera: {fileID: 0}
   projectOnCameraFrontPlane: 1
   cameraFrontPlaneDistance: 1
@@ -447,7 +452,7 @@ MonoBehaviour:
   - 0.074496254
   layerKernelH:
   - 0.14899251
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:
@@ -460,7 +465,7 @@ MonoBehaviour:
   generatedLayerCount: 1
   layerNodeCounts: 0b000000
   spriteRenderer: {fileID: 1054705960}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!114 &970776230
 MonoBehaviour:
@@ -480,7 +485,7 @@ MonoBehaviour:
   - 0.07587231
   layerKernelH:
   - 0.15174462
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:
@@ -493,7 +498,7 @@ MonoBehaviour:
   generatedLayerCount: 1
   layerNodeCounts: 0a000000
   spriteRenderer: {fileID: 1054705962}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!1001 &1054705958
 PrefabInstance:
@@ -653,7 +658,7 @@ MonoBehaviour:
   - 0.054392867
   layerKernelH:
   - 0.10878573
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:
@@ -666,7 +671,7 @@ MonoBehaviour:
   generatedLayerCount: 1
   layerNodeCounts: 0a000000
   spriteRenderer: {fileID: 1054705970}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!114 &1054705976
 MonoBehaviour:
@@ -688,7 +693,7 @@ MonoBehaviour:
   layerKernelH:
   - 0.13527517
   - 0.44248813
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:
@@ -701,7 +706,7 @@ MonoBehaviour:
   generatedLayerCount: 2
   layerNodeCounts: 820000000f000000
   spriteRenderer: {fileID: 1054705972}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!114 &1178169789
 MonoBehaviour:
@@ -721,7 +726,7 @@ MonoBehaviour:
   - 0.075099945
   layerKernelH:
   - 0.15019989
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:
@@ -734,7 +739,7 @@ MonoBehaviour:
   generatedLayerCount: 1
   layerNodeCounts: 0b000000
   spriteRenderer: {fileID: 1054705966}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!1 &1458040635
 GameObject:

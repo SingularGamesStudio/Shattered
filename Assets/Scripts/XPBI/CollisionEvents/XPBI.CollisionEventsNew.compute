@@ -7,8 +7,12 @@
 #pragma kernel BuildOwnerFeatureField
 #pragma kernel QueryVertexContacts
 #pragma kernel QueryEdgeEdgeContacts
+#pragma kernel ClearCoarseContacts
+#pragma kernel PropagateVertexContacts
+#pragma kernel PropagateEdgeContacts
 
 #include "XPBI.CollisionEventsNew.Shared.hlsl"
 
 #include "XPBI.CollisionEventsNew.Helpers.hlsl"
 #include "XPBI.CollisionEventsNew.Kernels.hlsl"
+#include "XPBI.CollisionEventsNew.Transfer.hlsl"
