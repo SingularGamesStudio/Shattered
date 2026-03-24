@@ -1,3 +1,4 @@
+using System;
 using GPU.Neighbors;
 using GPU.Delaunay;
 using Unity.Mathematics;
@@ -9,8 +10,6 @@ using TickContext = GPU.Solver.XPBISolver.TickContext;
 
 namespace GPU.Solver {
     internal sealed partial class CollisionEvents {
-        private const int UseTransferredCollisionsDisabled = 0;
-
         private readonly XPBISolver solver;
         private readonly ComputeShader shader;
 
@@ -23,6 +22,12 @@ namespace GPU.Solver {
             cb.BeginSample(marker);
             cb.DispatchCompute(dispatchShader, kernel, groupsX, groupsY, groupsZ);
             cb.EndSample(marker);
+        }
+
+        private static int Groups64(int count) {
+            if (count <= 0)
+                return 0;
+            return (count + 63) / 64;
         }
 
         /// <summary>
@@ -90,45 +95,35 @@ namespace GPU.Solver {
                 useDtGlobalNodeMap,
                 dtGlobalNodeMap,
                 dtGlobalToLayerLocalMap,
-                dtOwnerByLocal);
-            session.AsyncCb.SetComputeIntParam(shader, "_UseTransferredCollisions", UseTransferredCollisionsDisabled);
-            Dispatch(session.AsyncCb, "XPBI.ClearCollisionEventCount", shader, kClearCollisionEventCount, 1, 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.ClearBoundaryChunkCount", shader, kClearBoundaryChunkCount, 1, 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.BuildBoundaryChunksL0", shader, kBuildBoundaryChunksL0, XPBISolver.Groups256(layer0Dt.HalfEdgeCount), 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.InitChunkSortKeys", shader, kInitChunkSortKeys, XPBISolver.Groups256(BoundaryChunkSortCapacity), 1, 1);
+                dtOwnerByLocal,
+                true);
 
-            for (int k = 2; k <= BoundaryChunkSortCapacity; k <<= 1) {
-                for (int j = k >> 1; j > 0; j >>= 1) {
-                    session.AsyncCb.SetComputeIntParam(shader, "_BitonicK", k);
-                    session.AsyncCb.SetComputeIntParam(shader, "_BitonicJ", j);
-                    Dispatch(session.AsyncCb, "XPBI.BitonicSortChunkKeys", shader, kBitonicSortChunkKeys, XPBISolver.Groups256(BoundaryChunkSortCapacity), 1, 1);
-                }
-            }
+            int collisionOwnerCount = math.max(1, session.SolveRanges != null ? session.SolveRanges.Count : 0);
+            int edgeDispatchCount = math.max(1, layer0Dt.HalfEdgeCount);
+            int pairDispatchCount = math.max(1, QueryPairCount);
 
-            Dispatch(session.AsyncCb, "XPBI.BuildLbvhLeaves", shader, kBuildLbvhLeaves, XPBISolver.Groups256(BoundaryChunkSortCapacity), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ClearState", shader, kClearState, Groups64(math.max(math.max(collisionOwnerCount, layer0Dt.HalfEdgeCount), TotalBinCapacity)), 1, 1);
 
-            int levelCount = BoundaryChunkSortCapacity >> 1;
-            int levelStart = LbvhLeafOffset - levelCount;
-            while (levelCount > 0) {
-                session.AsyncCb.SetComputeIntParam(shader, "_LbvhLevelStart", levelStart);
-                session.AsyncCb.SetComputeIntParam(shader, "_LbvhLevelCount", levelCount);
-                Dispatch(session.AsyncCb, "XPBI.BuildLbvhInternalLevel", shader, kBuildLbvhInternalLevel, XPBISolver.Groups256(levelCount), 1, 1);
-                levelCount >>= 1;
-                levelStart -= levelCount;
-            }
+            Dispatch(session.AsyncCb, "XPBI.BuildBoundaryFeatures", shader, kBuildBoundaryFeatures, Groups64(edgeDispatchCount), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.BinBoundaryEdges", shader, kBinBoundaryEdges, Groups64(edgeDispatchCount), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.BinBoundaryVertices", shader, kBinBoundaryVertices, Groups64(edgeDispatchCount), 1, 1);
 
-            Dispatch(session.AsyncCb, "XPBI.TraverseLbvhEmitCollisionEvents", shader, kTraverseLbvhEmitCollisionEvents, XPBISolver.Groups256(BoundaryChunkCapacity), 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.BuildCollisionEventsL0", shader, kBuildCollisionEventsL0, 1, 1, 1);
+            // Field build is currently not consumed by narrow phase in this path.
+
+            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
+            int queryWorkItems = math.max(1, MaxBoundaryEdgesPerOwner * pairDispatchCount);
+            int queryGroupsX = Groups64(queryWorkItems);
+
+            Dispatch(session.AsyncCb, "XPBI.QueryVertexContactsAB", shader, kQueryVertexContacts, queryGroupsX, 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.QueryEdgeEdgeContacts", shader, kQueryEdgeEdgeContacts, queryGroupsX, 1, 1);
+
+            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
         }
 
         internal void RecordTransferredRestriction(SolveSession session, LayerContext layerContext) {
-            bool useTransferredCollisions = layerContext.Layer > 0;
-            solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, useTransferredCollisions);
-            if (!useTransferredCollisions)
-                return;
-
-            Dispatch(session.AsyncCb, "XPBI.ClearTransferredCollision", shader, kClearTransferredCollision, XPBISolver.Groups256(layerContext.ActiveCount), 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.RestrictCollisionEventsToActivePairs", shader, kRestrictCollisionEventsToActivePairs, XPBISolver.Groups256(collisionEvents != null ? collisionEvents.count : 0), 1, 1);
+            // Upward transfer is not implemented yet, so keep transferred collisions disabled.
+            _ = layerContext;
+            solver.LayerCacheRuntime.SetUseTransferredCollisionsParam(session.AsyncCb, false);
         }
     }
 }

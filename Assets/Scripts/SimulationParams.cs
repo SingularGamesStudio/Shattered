@@ -127,6 +127,10 @@ public sealed class SimulationParams {
         [Range(0f, 1f)] public float collisionFriction = 0.2f;
         [Range(0f, 1f)] public float collisionRestitution = 0f;
         [Min(0f)] public float collisionRestitutionThreshold = 0.005f;
+        [Min(0.5f)] public float collisionSdfBandHalfWidthScale = 4f;
+        [Min(0.5f)] public float collisionSdfVertexMarginScale = 1.5f;
+        [Min(0.5f)] public float collisionSdfFallbackDepthScale = 2.5f;
+        [Range(1, 12)] public int collisionSdfEdgeRefineIterations = 6;
     }
 
     [Serializable]

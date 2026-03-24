@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Text;
 using System.Runtime.InteropServices;
+using System.IO;
 using GPU.Delaunay;
 using GPU.Solver;
 using Unity.Mathematics;
@@ -8,6 +11,67 @@ using UnityEngine.Rendering;
 
 [DefaultExecutionOrder(1200)]
 public sealed class CollisionDebugRenderer : MonoBehaviour {
+    const int CollisionDebugStatCount = 64;
+    const uint InvalidU32 = 0xFFFFFFFFu;
+    const int StatBoundaryFlags = 0;
+    const int StatBoundaryEdges = 1;
+    const int StatOwnerEdgeOverflow = 2;
+    const int StatMaxEdgeBinLoad = 3;
+    const int StatMaxVertBinLoad = 4;
+    const int StatEdgeBinOverflows = 5;
+    const int StatVertBinOverflows = 6;
+    const int StatVertexCandidates = 7;
+    const int StatVertexFeatureHits = 8;
+    const int StatVertexWithinSupport = 9;
+    const int StatVertexContactsWritten = 10;
+    const int StatEdgePairCandidates = 11;
+    const int StatEdgeWithinSupport = 12;
+    const int StatEdgeContactsEmitted = 13;
+    const int StatOwnerAabbRejects = 14;
+    const int StatVertexStageOverflow = 15;
+    const int StatBuildHalfedgeThreads = 16;
+    const int StatBuildRejectNonBoundaryFlag = 17;
+    const int StatBuildRejectInvalidFace = 18;
+    const int StatBuildRejectNotInternalBoundary = 19;
+    const int StatBuildRejectInvalidGlobalVertex = 20;
+    const int StatBuildRejectInvalidOwner = 21;
+    const int StatBuildOwnerEdgeRefWrites = 22;
+    const int StatBuildOwnerEdgeRefOverflow = 23;
+    const int StatVertexWorkItems = 24;
+    const int StatVertexRejectPairOob = 25;
+    const int StatVertexRejectSameOwner = 26;
+    const int StatVertexRejectOwnerOverflow = 27;
+    const int StatVertexRejectNoOwnerEdgeRef = 28;
+    const int StatVertexRejectInvalidVgi = 29;
+    const int StatVertexRejectNoBoundaryHit = 30;
+    const int StatVertexRejectSupport = 31;
+    const int StatVertexRejectDegenerateNormal = 32;
+    const int StatVertexCompactRejectInvalid = 33;
+    const int StatVertexCompactValid = 34;
+    const int StatVertexRejectAabb = 35;
+    const int StatEdgeWorkItems = 36;
+    const int StatEdgeRejectPairOob = 37;
+    const int StatEdgeRejectSwap = 38;
+    const int StatEdgeRejectSameOwner = 39;
+    const int StatEdgeRejectOwnerOverflow = 40;
+    const int StatEdgeRejectNoOwnerEdgeRef = 41;
+    const int StatEdgeRejectInvalidEdgeA = 42;
+    const int StatEdgeBinCellsVisited = 43;
+    const int StatEdgeBinEdgeRefsScanned = 44;
+    const int StatEdgeRejectOwnerMismatchB = 45;
+    const int StatEdgeRejectInvalidEdgeB = 46;
+    const int StatEdgeRejectEdgeBbox = 47;
+    const int StatEdgeRejectNoIntersection = 48;
+    const int StatEdgePointIntersections = 49;
+    const int StatEdgeRejectNonPointHit = 50;
+    const int StatEdgeRejectEndpointIntersection = 51;
+    const int StatEdgeRejectNonCanonicalBin = 52;
+    const int StatEdgeRejectDegenerateNormal = 53;
+    const int StatEdgeRejectNoPenetration = 54;
+    const int StatEdgeRejectAabb = 55;
+    const int StatBuildRejectInvalidLocalVertex = 56;
+    const int StatBuildRejectDegenerateEndpoints = 57;
+
     public enum ReadbackMode {
         AsyncGpuReadback = 0,
         SyncGetData = 1,
@@ -17,10 +81,17 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     struct ReadbackSnapshot {
         public ComputeBuffer DtPositions;
         public ComputeBuffer GlobalPositions;
+        public ComputeBuffer InvMass;
         public ComputeBuffer BoundaryChunkCount;
-        public ComputeBuffer BoundaryChunks;
+        public ComputeBuffer BoundaryEdgeOwner;
+        public ComputeBuffer BoundaryEdgeV0;
+        public ComputeBuffer BoundaryEdgeV1;
+        public ComputeBuffer BoundaryEdgeNormal;
+        public ComputeBuffer BoundaryEdgeP0;
+        public ComputeBuffer BoundaryEdgeP1;
         public ComputeBuffer CollisionEventCount;
         public ComputeBuffer CollisionEvents;
+        public ComputeBuffer CollisionDebugStats;
         public int ActiveCount;
         public int TotalCount;
         public int BoundaryChunkCapacity;
@@ -40,39 +111,54 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
         public bool DtReady;
         public bool GlobalReady;
+        public bool InvMassReady;
         public bool BoundaryCountReady;
-        public bool BoundaryDataReady;
+        public bool BoundaryOwnerReady;
+        public bool BoundaryV0Ready;
+        public bool BoundaryV1Ready;
+        public bool BoundaryNormalReady;
+        public bool BoundaryP0Ready;
+        public bool BoundaryP1Ready;
         public bool CollisionCountReady;
         public bool CollisionDataReady;
+        public bool CollisionStatsReady;
 
         public int BoundaryCount;
+        public int BoundaryRawCount;
+        public int BoundaryReadCount;
+        public int BoundaryOwnerValidCount;
+        public int BoundarySegmentValidCount;
         public int CollisionCount;
 
         public float2[] DtPositions = Array.Empty<float2>();
         public float2[] GlobalPositions = Array.Empty<float2>();
+        public float[] InvMass = Array.Empty<float>();
         public BoundaryChunkGpu[] Boundaries = Array.Empty<BoundaryChunkGpu>();
         public CollisionEventGpu[] Collisions = Array.Empty<CollisionEventGpu>();
+        public uint[] CollisionStats = new uint[CollisionDebugStatCount];
     }
 
     [StructLayout(LayoutKind.Sequential)]
     struct BoundaryChunkGpu {
-        public uint aLi;
-        public uint bLi;
-        public int owner;
-        public uint pad;
+        public int va;
+        public int vb;
+        public int ownerID;
+        public float2 outNormal;
+        public float2 p0;
+        public float2 p1;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     struct CollisionEventGpu {
-        public uint aGi;
-        public uint bGi;
-        public uint qaGi;
-        public uint qbGi;
-        public uint oaGi;
-        public uint obGi;
-        public float4 nPen;
-        public float2 segST;
-        public float2 pad;
+        public uint ownerA;
+        public uint ownerB;
+        public uint vGi;
+        public uint heA;
+        public uint heB;
+        public float2 normal;
+        public float penetration;
+        public float2 pA;
+        public float2 pB;
     }
 
     [Header("Readback")]
@@ -84,18 +170,37 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     public bool drawBoundaries = true;
     public Color boundaryColor = new Color(0.2f, 1f, 0.35f, 1f);
     [Min(0)] public int maxBoundarySegments = 6000;
+    [Min(0)] public int fallbackBoundaryScanLimit = 0;
+    public bool drawBoundaryNormals = true;
+    public Color boundaryNormalColor = new Color(0.12f, 0.85f, 1f, 1f);
+    [Min(0.001f)] public float boundaryNormalLength = 0.02f;
 
     [Header("Collision Arrows")]
     public bool drawCollisionArrows = true;
     public Color collisionArrowColor = new Color(1f, 0.35f, 0.15f, 1f);
-    [Min(0)] public int maxCollisionArrows = 2000;
+    public bool colorArrowsByOwnerPair = true;
+    [Min(0)] public int maxCollisionArrows = 7000;
     [Min(0.01f)] public float arrowScale = 1f;
     [Min(0f)] public float minArrowLength = 0.015f;
     [Min(0.002f)] public float arrowHeadLength = 0.02f;
     [Range(0.1f, 1f)] public float arrowHeadWidthScale = 0.55f;
+    [Min(0f)] public float overlapFanoutWorld = 0.002f;
+    public bool highlightEdgeIntersections = true;
+    public Color intersectionColor = new Color(1f, 0.95f, 0.2f, 1f);
+    [Min(1f)] public float intersectionMarkerPixels = 8f;
+
+    [Header("Detailed Logging")]
+    public bool logDetailedStatsToConsole = true;
+    [Min(0.1f)] public float detailedLogInterval = 0.5f;
+
+    [Header("Collision Event Dump")]
+    public bool dumpFirstCollisionListToFile = true;
+    public string collisionDumpFileName = "collision_events_first_dump.csv";
 
     [Header("Overlay")]
     [Min(1f)] public float lineThickness = 2f;
+    public bool showCollisionStatsPanel = true;
+    public Vector2 statsPanelPosition = new Vector2(12f, 12f);
 
     [Header("Camera")]
     [Tooltip("Optional explicit camera used for projection. Leave null to auto-resolve.")]
@@ -110,25 +215,59 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     int lastActiveCount;
     int lastTotalCount;
     int lastBoundaryCount;
+    int lastBoundaryRawCount;
+    int lastBoundaryReadCount;
+    int lastBoundaryOwnerValidCount;
+    int lastBoundarySegmentValidCount;
     int lastCollisionCount;
     float2 lastNormCenter;
     float lastNormInvHalfExtent;
 
     float2[] dtPositions = Array.Empty<float2>();
     float2[] globalPositions = Array.Empty<float2>();
+    float[] invMass = Array.Empty<float>();
     BoundaryChunkGpu[] boundaryChunks = Array.Empty<BoundaryChunkGpu>();
     CollisionEventGpu[] collisionEvents = Array.Empty<CollisionEventGpu>();
+    readonly uint[] collisionStats = new uint[CollisionDebugStatCount];
 
     readonly uint[] oneUintScratch = new uint[1];
+    readonly uint[] collisionStatsScratch = new uint[CollisionDebugStatCount];
+    readonly StringBuilder statsSb = new StringBuilder(1024);
 
     int asyncRequestId;
     PendingAsyncReadback pending;
 
     bool lastDtLooksNormalized = true;
     bool lastGlobalLooksNormalized;
+    int lastArrowAttempted;
+    int lastArrowDrawn;
+    int lastArrowSkippedDegenerate;
+    int lastArrowSkippedProjection;
+    int lastArrowClipped;
+    int lastArrowOverlapInstances;
+    int lastIntersectionMarkers;
+    float nextDetailedLogTime;
+    bool hasDumpedFirstCollisionList;
+    readonly Dictionary<int, int> arrowOverlapCounts = new Dictionary<int, int>(2048);
+
+    int GetBoundaryReadCount(int requestedCount, int capacity) {
+        int boundedCapacity = Mathf.Max(0, capacity);
+        if (boundedCapacity == 0)
+            return 0;
+
+        int count = Mathf.Clamp(requestedCount, 0, boundedCapacity);
+        if (count > 0)
+            return count;
+
+        int fallback = fallbackBoundaryScanLimit > 0
+            ? Mathf.Clamp(fallbackBoundaryScanLimit, 1, boundedCapacity)
+            : boundedCapacity;
+        return fallback;
+    }
 
     void OnDisable() {
         pending = null;
+        hasDumpedFirstCollisionList = false;
     }
 
     void Update() {
@@ -202,15 +341,22 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             return false;
 
         ComputeBuffer globalPositionsBuffer = solver.pos;
-        if (globalPositionsBuffer == null)
+        ComputeBuffer invMassBuffer = solver.invMass;
+        if (globalPositionsBuffer == null || invMassBuffer == null)
             return false;
 
         ComputeBuffer boundaryCountBuffer = solver.collisionEvent.BoundaryChunkCountBuffer;
-        ComputeBuffer boundaryBuffer = solver.collisionEvent.BoundaryChunksBuffer;
+        ComputeBuffer boundaryOwnerBuffer = solver.collisionEvent.BoundaryEdgeOwnerBuffer;
+        ComputeBuffer boundaryV0Buffer = solver.collisionEvent.BoundaryEdgeV0Buffer;
+        ComputeBuffer boundaryV1Buffer = solver.collisionEvent.BoundaryEdgeV1Buffer;
+        ComputeBuffer boundaryNormalBuffer = solver.collisionEvent.BoundaryEdgeNormalBuffer;
+        ComputeBuffer boundaryP0Buffer = solver.collisionEvent.BoundaryEdgeP0Buffer;
+        ComputeBuffer boundaryP1Buffer = solver.collisionEvent.BoundaryEdgeP1Buffer;
         ComputeBuffer collisionCountBuffer = solver.collisionEvent.CollisionEventCountBuffer;
         ComputeBuffer collisionBuffer = solver.collisionEvent.CollisionEventsBuffer;
+        ComputeBuffer collisionStatsBuffer = solver.collisionEvent.CollisionDebugStatsBuffer;
 
-        if (boundaryCountBuffer == null || boundaryBuffer == null || collisionCountBuffer == null || collisionBuffer == null)
+        if (boundaryCountBuffer == null || boundaryOwnerBuffer == null || boundaryV0Buffer == null || boundaryV1Buffer == null || boundaryNormalBuffer == null || boundaryP0Buffer == null || boundaryP1Buffer == null || collisionCountBuffer == null || collisionBuffer == null)
             return false;
 
         int totalCount = 0;
@@ -229,13 +375,20 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         snapshot = new ReadbackSnapshot {
             DtPositions = dtPositionsBuffer,
             GlobalPositions = globalPositionsBuffer,
+            InvMass = invMassBuffer,
             BoundaryChunkCount = boundaryCountBuffer,
-            BoundaryChunks = boundaryBuffer,
+            BoundaryEdgeOwner = boundaryOwnerBuffer,
+            BoundaryEdgeV0 = boundaryV0Buffer,
+            BoundaryEdgeV1 = boundaryV1Buffer,
+            BoundaryEdgeNormal = boundaryNormalBuffer,
+            BoundaryEdgeP0 = boundaryP0Buffer,
+            BoundaryEdgeP1 = boundaryP1Buffer,
             CollisionEventCount = collisionCountBuffer,
             CollisionEvents = collisionBuffer,
+            CollisionDebugStats = collisionStatsBuffer,
             ActiveCount = Mathf.Min(activeCount, dtPositionsBuffer.count),
             TotalCount = Mathf.Min(totalCount, globalPositionsBuffer.count),
-            BoundaryChunkCapacity = boundaryBuffer.count,
+            BoundaryChunkCapacity = boundaryOwnerBuffer.count,
             CollisionEventCapacity = collisionBuffer.count,
             NormCenter = hierarchy.NormCenter,
             NormInvHalfExtent = hierarchy.NormInvHalfExtent,
@@ -247,7 +400,11 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     void RunSyncReadback(in ReadbackSnapshot snapshot) {
         oneUintScratch[0] = 0;
         snapshot.BoundaryChunkCount.GetData(oneUintScratch, 0, 0, 1);
-        int boundaryCount = Mathf.Clamp((int)oneUintScratch[0], 0, snapshot.BoundaryChunkCapacity);
+        int boundaryRawCount = (int)oneUintScratch[0];
+        int boundaryCount = GetBoundaryReadCount(boundaryRawCount, snapshot.BoundaryChunkCapacity);
+        int boundaryReadCount = boundaryCount;
+        int boundaryOwnerValidCount = 0;
+        int boundarySegmentValidCount = 0;
 
         oneUintScratch[0] = 0;
         snapshot.CollisionEventCount.GetData(oneUintScratch, 0, 0, 1);
@@ -259,20 +416,75 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         EnsureCapacity(ref globalPositions, snapshot.TotalCount);
         snapshot.GlobalPositions.GetData(globalPositions, 0, 0, snapshot.TotalCount);
 
+        EnsureCapacity(ref invMass, snapshot.TotalCount);
+        snapshot.InvMass.GetData(invMass, 0, 0, snapshot.TotalCount);
+
         EnsureCapacity(ref boundaryChunks, boundaryCount);
-        if (boundaryCount > 0)
-            snapshot.BoundaryChunks.GetData(boundaryChunks, 0, 0, boundaryCount);
+        if (boundaryCount > 0) {
+            uint[] owners = new uint[boundaryCount];
+            uint[] v0 = new uint[boundaryCount];
+            uint[] v1 = new uint[boundaryCount];
+            float2[] normals = new float2[boundaryCount];
+            float2[] p0 = new float2[boundaryCount];
+            float2[] p1 = new float2[boundaryCount];
+
+            snapshot.BoundaryEdgeOwner.GetData(owners, 0, 0, boundaryCount);
+            snapshot.BoundaryEdgeV0.GetData(v0, 0, 0, boundaryCount);
+            snapshot.BoundaryEdgeV1.GetData(v1, 0, 0, boundaryCount);
+            snapshot.BoundaryEdgeNormal.GetData(normals, 0, 0, boundaryCount);
+            snapshot.BoundaryEdgeP0.GetData(p0, 0, 0, boundaryCount);
+            snapshot.BoundaryEdgeP1.GetData(p1, 0, 0, boundaryCount);
+
+            int emitted = 0;
+            for (int i = 0; i < boundaryCount; i++) {
+                if (owners[i] == uint.MaxValue)
+                    continue;
+                if ((int)owners[i] < 0)
+                    continue;
+                boundaryOwnerValidCount++;
+
+                float2 seg = p1[i] - p0[i];
+                if (math.lengthsq(seg) <= 1e-12f)
+                    continue;
+                boundarySegmentValidCount++;
+
+                boundaryChunks[emitted] = new BoundaryChunkGpu {
+                    va = (int)v0[i],
+                    vb = (int)v1[i],
+                    ownerID = (int)owners[i],
+                    outNormal = normals[i],
+                    p0 = p0[i],
+                    p1 = p1[i],
+                };
+                emitted++;
+            }
+
+            boundaryCount = emitted;
+        }
 
         EnsureCapacity(ref collisionEvents, collisionCount);
         if (collisionCount > 0)
             snapshot.CollisionEvents.GetData(collisionEvents, 0, 0, collisionCount);
 
+        Array.Clear(collisionStats, 0, collisionStats.Length);
+        if (snapshot.CollisionDebugStats != null) {
+            snapshot.CollisionDebugStats.GetData(collisionStatsScratch, 0, 0, collisionStatsScratch.Length);
+            Array.Copy(collisionStatsScratch, collisionStats, collisionStats.Length);
+        }
+
         lastActiveCount = snapshot.ActiveCount;
         lastTotalCount = snapshot.TotalCount;
         lastBoundaryCount = boundaryCount;
+        lastBoundaryRawCount = boundaryRawCount;
+        lastBoundaryReadCount = boundaryReadCount;
+        lastBoundaryOwnerValidCount = boundaryOwnerValidCount;
+        lastBoundarySegmentValidCount = boundarySegmentValidCount;
         lastCollisionCount = collisionCount;
         lastNormCenter = snapshot.NormCenter;
         lastNormInvHalfExtent = snapshot.NormInvHalfExtent;
+
+        TryDumpFirstCollisionEvents();
+        TryLogDetailedStats();
     }
 
     void StartAsyncReadback(in ReadbackSnapshot snapshot) {
@@ -292,13 +504,47 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         int globalBytes = snapshot.TotalCount * sizeof(float) * 2;
         AsyncGPUReadback.Request(snapshot.GlobalPositions, globalBytes, 0, req => OnAsyncGlobalPositions(req, state.RequestId));
 
-        ComputeBuffer boundaryChunksBuffer = snapshot.BoundaryChunks;
+        int invMassBytes = snapshot.TotalCount * sizeof(float);
+        AsyncGPUReadback.Request(snapshot.InvMass, invMassBytes, 0, req => OnAsyncInvMass(req, state.RequestId));
+
+        ComputeBuffer boundaryOwnerBuffer = snapshot.BoundaryEdgeOwner;
+        ComputeBuffer boundaryV0Buffer = snapshot.BoundaryEdgeV0;
+        ComputeBuffer boundaryV1Buffer = snapshot.BoundaryEdgeV1;
+        ComputeBuffer boundaryNormalBuffer = snapshot.BoundaryEdgeNormal;
+        ComputeBuffer boundaryP0Buffer = snapshot.BoundaryEdgeP0;
+        ComputeBuffer boundaryP1Buffer = snapshot.BoundaryEdgeP1;
         int boundaryChunkCapacity = snapshot.BoundaryChunkCapacity;
         ComputeBuffer collisionEventsBuffer = snapshot.CollisionEvents;
         int collisionEventCapacity = snapshot.CollisionEventCapacity;
+        ComputeBuffer collisionStatsBuffer = snapshot.CollisionDebugStats;
 
-        AsyncGPUReadback.Request(snapshot.BoundaryChunkCount, req => OnAsyncBoundaryCount(req, state.RequestId, boundaryChunksBuffer, boundaryChunkCapacity));
+        AsyncGPUReadback.Request(snapshot.BoundaryChunkCount, req => OnAsyncBoundaryCount(req, state.RequestId, boundaryOwnerBuffer, boundaryV0Buffer, boundaryV1Buffer, boundaryNormalBuffer, boundaryP0Buffer, boundaryP1Buffer, boundaryChunkCapacity));
         AsyncGPUReadback.Request(snapshot.CollisionEventCount, req => OnAsyncCollisionCount(req, state.RequestId, collisionEventsBuffer, collisionEventCapacity));
+        if (collisionStatsBuffer != null)
+            AsyncGPUReadback.Request(collisionStatsBuffer, req => OnAsyncCollisionStats(req, state.RequestId));
+        else
+            state.CollisionStatsReady = true;
+    }
+
+    void OnAsyncCollisionStats(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<uint>();
+        int count = Mathf.Min(state.CollisionStats.Length, data.Length);
+        for (int i = 0; i < count; i++)
+            state.CollisionStats[i] = data[i];
+        for (int i = count; i < state.CollisionStats.Length; i++)
+            state.CollisionStats[i] = 0u;
+
+        state.CollisionStatsReady = true;
+        TryFinalizeAsync(state);
     }
 
     void OnAsyncDtPositions(AsyncGPUReadbackRequest request, int requestId) {
@@ -337,7 +583,35 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         TryFinalizeAsync(state);
     }
 
-    void OnAsyncBoundaryCount(AsyncGPUReadbackRequest request, int requestId, ComputeBuffer boundaryBuffer, int boundaryCapacity) {
+    void OnAsyncInvMass(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<float>();
+        state.InvMass = new float[data.Length];
+        data.CopyTo(state.InvMass);
+        state.InvMassReady = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryCount(
+        AsyncGPUReadbackRequest request,
+        int requestId,
+        ComputeBuffer boundaryOwnerBuffer,
+        ComputeBuffer boundaryV0Buffer,
+        ComputeBuffer boundaryV1Buffer,
+        ComputeBuffer boundaryNormalBuffer,
+        ComputeBuffer boundaryP0Buffer,
+        ComputeBuffer boundaryP1Buffer,
+        int boundaryCapacity
+    ) {
         if (!TryGetPending(requestId, out PendingAsyncReadback state))
             return;
 
@@ -348,23 +622,37 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         }
 
         var data = request.GetData<uint>();
-        int count = (data.Length > 0) ? Mathf.Clamp((int)data[0], 0, boundaryCapacity) : 0;
+        int rawCount = (data.Length > 0) ? (int)data[0] : 0;
+        int count = GetBoundaryReadCount(rawCount, boundaryCapacity);
 
         state.BoundaryCount = count;
+        state.BoundaryRawCount = rawCount;
+        state.BoundaryReadCount = count;
         state.BoundaryCountReady = true;
 
         if (count <= 0) {
             state.Boundaries = Array.Empty<BoundaryChunkGpu>();
-            state.BoundaryDataReady = true;
+            state.BoundaryOwnerReady = true;
+            state.BoundaryV0Ready = true;
+            state.BoundaryV1Ready = true;
+            state.BoundaryNormalReady = true;
+            state.BoundaryP0Ready = true;
+            state.BoundaryP1Ready = true;
             TryFinalizeAsync(state);
             return;
         }
 
-        int bytes = count * (sizeof(uint) + sizeof(uint) + sizeof(int) + sizeof(uint));
-        AsyncGPUReadback.Request(boundaryBuffer, bytes, 0, req => OnAsyncBoundaryData(req, requestId));
+        int bytesUint = count * sizeof(uint);
+        int bytesFloat2 = count * sizeof(float) * 2;
+        AsyncGPUReadback.Request(boundaryOwnerBuffer, bytesUint, 0, req => OnAsyncBoundaryOwnerData(req, requestId));
+        AsyncGPUReadback.Request(boundaryV0Buffer, bytesUint, 0, req => OnAsyncBoundaryV0Data(req, requestId));
+        AsyncGPUReadback.Request(boundaryV1Buffer, bytesUint, 0, req => OnAsyncBoundaryV1Data(req, requestId));
+        AsyncGPUReadback.Request(boundaryNormalBuffer, bytesFloat2, 0, req => OnAsyncBoundaryNormalData(req, requestId));
+        AsyncGPUReadback.Request(boundaryP0Buffer, bytesFloat2, 0, req => OnAsyncBoundaryP0Data(req, requestId));
+        AsyncGPUReadback.Request(boundaryP1Buffer, bytesFloat2, 0, req => OnAsyncBoundaryP1Data(req, requestId));
     }
 
-    void OnAsyncBoundaryData(AsyncGPUReadbackRequest request, int requestId) {
+    void OnAsyncBoundaryOwnerData(AsyncGPUReadbackRequest request, int requestId) {
         if (!TryGetPending(requestId, out PendingAsyncReadback state))
             return;
 
@@ -374,10 +662,106 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             return;
         }
 
-        var data = request.GetData<BoundaryChunkGpu>();
-        state.Boundaries = new BoundaryChunkGpu[data.Length];
-        data.CopyTo(state.Boundaries);
-        state.BoundaryDataReady = true;
+        var data = request.GetData<uint>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].ownerID = (int)data[i];
+        state.BoundaryOwnerReady = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryV0Data(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<uint>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].va = (int)data[i];
+        state.BoundaryV0Ready = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryV1Data(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<uint>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].vb = (int)data[i];
+        state.BoundaryV1Ready = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryNormalData(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<float2>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].outNormal = data[i];
+        state.BoundaryNormalReady = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryP0Data(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<float2>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].p0 = data[i];
+        state.BoundaryP0Ready = true;
+
+        TryFinalizeAsync(state);
+    }
+
+    void OnAsyncBoundaryP1Data(AsyncGPUReadbackRequest request, int requestId) {
+        if (!TryGetPending(requestId, out PendingAsyncReadback state))
+            return;
+
+        if (request.hasError) {
+            state.Failed = true;
+            TryFinalizeAsync(state);
+            return;
+        }
+
+        var data = request.GetData<float2>();
+        EnsureCapacity(ref state.Boundaries, state.BoundaryCount);
+        for (int i = 0; i < state.BoundaryCount && i < data.Length; i++)
+            state.Boundaries[i].p1 = data[i];
+        state.BoundaryP1Ready = true;
 
         TryFinalizeAsync(state);
     }
@@ -445,89 +829,279 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
             return;
         }
 
-        if (!state.DtReady || !state.GlobalReady || !state.BoundaryCountReady || !state.BoundaryDataReady || !state.CollisionCountReady || !state.CollisionDataReady)
+        if (!state.DtReady || !state.GlobalReady || !state.InvMassReady || !state.BoundaryCountReady || !state.BoundaryOwnerReady || !state.BoundaryV0Ready || !state.BoundaryV1Ready || !state.BoundaryNormalReady || !state.BoundaryP0Ready || !state.BoundaryP1Ready || !state.CollisionCountReady || !state.CollisionDataReady || !state.CollisionStatsReady)
             return;
+
+        int emittedBoundaryCount = 0;
+        int ownerValidCount = 0;
+        int segmentValidCount = 0;
+        for (int i = 0; i < state.BoundaryCount && i < state.Boundaries.Length; i++) {
+            if (state.Boundaries[i].ownerID < 0)
+                continue;
+            ownerValidCount++;
+
+            float2 seg = state.Boundaries[i].p1 - state.Boundaries[i].p0;
+            if (math.lengthsq(seg) <= 1e-12f)
+                continue;
+            segmentValidCount++;
+
+            state.Boundaries[emittedBoundaryCount++] = state.Boundaries[i];
+        }
+        state.BoundaryOwnerValidCount = ownerValidCount;
+        state.BoundarySegmentValidCount = segmentValidCount;
 
         dtPositions = state.DtPositions;
         globalPositions = state.GlobalPositions;
+        invMass = state.InvMass;
         boundaryChunks = state.Boundaries;
         collisionEvents = state.Collisions;
+        Array.Copy(state.CollisionStats, collisionStats, collisionStats.Length);
 
         lastActiveCount = Mathf.Min(state.ActiveCount, dtPositions.Length);
         lastTotalCount = Mathf.Min(state.TotalCount, globalPositions.Length);
-        lastBoundaryCount = Mathf.Min(state.BoundaryCount, boundaryChunks.Length);
+        lastBoundaryCount = Mathf.Min(emittedBoundaryCount, boundaryChunks.Length);
+        lastBoundaryRawCount = state.BoundaryRawCount;
+        lastBoundaryReadCount = state.BoundaryReadCount;
+        lastBoundaryOwnerValidCount = state.BoundaryOwnerValidCount;
+        lastBoundarySegmentValidCount = state.BoundarySegmentValidCount;
         lastCollisionCount = Mathf.Min(state.CollisionCount, collisionEvents.Length);
         lastNormCenter = state.NormCenter;
         lastNormInvHalfExtent = state.NormInvHalfExtent;
+
+        TryDumpFirstCollisionEvents();
+        TryLogDetailedStats();
 
         pending = null;
     }
 
     void DrawOverlayInGui(Camera cam) {
         float invHalfExtent = lastNormInvHalfExtent > 0f ? (1f / lastNormInvHalfExtent) : 0f;
-        lastDtLooksNormalized = LooksNormalized(dtPositions, lastActiveCount);
-        lastGlobalLooksNormalized = LooksNormalized(globalPositions, lastTotalCount);
+        // Space contract in this pipeline:
+        // - DT positions are normalized by hierarchy sync.
+        // - Solver/global positions and emitted collision points are world-space.
+        // Using value-range heuristics here can misclassify small world coordinates as normalized.
+        lastDtLooksNormalized = true;
+        lastGlobalLooksNormalized = false;
+        lastArrowAttempted = 0;
+        lastArrowDrawn = 0;
+        lastArrowSkippedDegenerate = 0;
+        lastArrowSkippedProjection = 0;
+        lastArrowClipped = 0;
+        lastArrowOverlapInstances = 0;
+        lastIntersectionMarkers = 0;
+        arrowOverlapCounts.Clear();
 
         float thickness = Mathf.Max(1f, lineThickness);
 
-        if (drawBoundaries && lastBoundaryCount > 0 && lastActiveCount > 0 && dtPositions != null) {
+        if (drawBoundaries && lastBoundaryCount > 0 && lastTotalCount > 0 && globalPositions != null) {
             int drawCount = maxBoundarySegments > 0 ? Mathf.Min(lastBoundaryCount, maxBoundarySegments) : lastBoundaryCount;
             for (int i = 0; i < drawCount; i++) {
                 BoundaryChunkGpu edge = boundaryChunks[i];
-                int a = (int)edge.aLi;
-                int b = (int)edge.bLi;
-                if (a < 0 || b < 0 || a >= lastActiveCount || b >= lastActiveCount)
+                float2 wa = ToWorld(edge.p0, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
+                float2 wb = ToWorld(edge.p1, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
+
+                float edgeLen2 = math.lengthsq(wb - wa);
+                if (edgeLen2 <= 1e-12f)
                     continue;
 
-                float2 wa = ToWorld(dtPositions[a], lastDtLooksNormalized, invHalfExtent, lastNormCenter);
-                float2 wb = ToWorld(dtPositions[b], lastDtLooksNormalized, invHalfExtent, lastNormCenter);
                 if (!TryWorldToGuiPoint(cam, wa, out Vector2 ga) || !TryWorldToGuiPoint(cam, wb, out Vector2 gb))
                     continue;
 
                 DrawGuiLine(ga, gb, boundaryColor, thickness);
+
+                if (drawBoundaryNormals) {
+                    float2 mid = 0.5f * (wa + wb);
+                    float2 n = edge.outNormal;
+                    float nLen = math.length(n);
+                    if (nLen > 1e-6f) {
+                        n /= nLen;
+                        float2 tip = mid + n * boundaryNormalLength;
+                        if (TryWorldToGuiPoint(cam, mid, out Vector2 gMid) && TryWorldToGuiPoint(cam, tip, out Vector2 gTip))
+                            DrawGuiLine(gMid, gTip, boundaryNormalColor, Mathf.Max(1f, thickness * 0.8f));
+                    }
+                }
             }
         }
 
         if (drawCollisionArrows && lastCollisionCount > 0 && lastTotalCount > 0 && globalPositions != null) {
             int drawCount = maxCollisionArrows > 0 ? Mathf.Min(lastCollisionCount, maxCollisionArrows) : lastCollisionCount;
+            lastArrowAttempted = drawCount;
+            lastArrowClipped = Mathf.Max(0, lastCollisionCount - drawCount);
             for (int i = 0; i < drawCount; i++) {
-                CollisionEventGpu evt = collisionEvents[i];
-                int a = (int)evt.aGi;
-                int b = (int)evt.bGi;
-                if (a < 0 || b < 0 || a >= lastTotalCount || b >= lastTotalCount)
-                    continue;
+                int sourceIndex = (drawCount < lastCollisionCount)
+                    ? Mathf.Clamp((int)((long)i * (long)lastCollisionCount / (long)drawCount), 0, lastCollisionCount - 1)
+                    : i;
 
-                float2 pa = ToWorld(globalPositions[a], lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
-                float2 pb = ToWorld(globalPositions[b], lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
-                float2 mid = 0.5f * (pa + pb);
+                CollisionEventGpu evt = collisionEvents[sourceIndex];
+                float2 worldPA = ToWorld(evt.pA, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
+                float2 worldPB = ToWorld(evt.pB, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
 
-                float2 n = evt.nPen.xy;
+                // Use contact-space point directly to avoid index-space mismatches in debug rendering.
+                float2 c = worldPA;
+
+                float2 n = evt.normal;
                 float nLen = math.length(n);
-                if (!(nLen > 1e-6f))
-                    continue;
+                if (!(nLen > 1e-6f)) {
+                    n = worldPA - worldPB;
+                    nLen = math.length(n);
+                    if (!(nLen > 1e-6f)) {
+                        lastArrowSkippedDegenerate++;
+                        continue;
+                    }
+                }
                 n /= nLen;
 
-                float shaftLength = math.max(minArrowLength, evt.nPen.z * arrowScale);
-                float2 tip = mid + n * shaftLength;
+                int overlapKey = BuildArrowOverlapKey(c, n);
+                if (!arrowOverlapCounts.TryGetValue(overlapKey, out int overlapCount))
+                    overlapCount = 0;
+                arrowOverlapCounts[overlapKey] = overlapCount + 1;
+                if (overlapCount > 0) {
+                    lastArrowOverlapInstances++;
+                    float2 side = new float2(-n.y, n.x);
+                    c += side * (overlapCount * overlapFanoutWorld);
+                }
 
-                float headLen = math.max(0.001f, arrowHeadLength);
-                float headWidth = headLen * math.clamp(arrowHeadWidthScale, 0.1f, 1f);
-                float2 side = new float2(-n.y, n.x);
-                float2 back = tip - n * headLen;
-                float2 left = back + side * headWidth;
-                float2 right = back - side * headWidth;
+                float shaftLength = math.max(minArrowLength, evt.penetration * arrowScale);
+                if (cam != null && cam.orthographic) {
+                    float worldPerPixel = (2f * cam.orthographicSize) / math.max(1f, Screen.height);
+                    float minVisibleLen = 6f * worldPerPixel;
+                    shaftLength = math.max(shaftLength, minVisibleLen);
+                }
 
-                if (!TryWorldToGuiPoint(cam, mid, out Vector2 gMid) ||
-                    !TryWorldToGuiPoint(cam, tip, out Vector2 gTip) ||
-                    !TryWorldToGuiPoint(cam, left, out Vector2 gLeft) ||
-                    !TryWorldToGuiPoint(cam, right, out Vector2 gRight))
-                    continue;
+                Color arrowColor = GetCollisionArrowColor(evt);
+                if (DrawCollisionArrow(cam, c, n, shaftLength, thickness, arrowColor))
+                    lastArrowDrawn++;
+                else
+                    lastArrowSkippedProjection++;
 
-                DrawGuiLine(gMid, gTip, collisionArrowColor, thickness);
-                DrawGuiLine(gTip, gLeft, collisionArrowColor, thickness);
-                DrawGuiLine(gTip, gRight, collisionArrowColor, thickness);
+                if (highlightEdgeIntersections && evt.vGi == InvalidU32 && evt.heA != InvalidU32 && evt.heB != InvalidU32) {
+                    if (TryWorldToGuiPoint(cam, c, out Vector2 gC)) {
+                        DrawCrossMarker(gC, intersectionMarkerPixels, intersectionColor, thickness);
+                        lastIntersectionMarkers++;
+                    }
+                }
             }
         }
+
+        if (showCollisionStatsPanel)
+            DrawStatsPanel();
+    }
+
+    void DrawStatsPanel() {
+        statsSb.Clear();
+        statsSb.AppendLine("Collision Debug Stats");
+        statsSb.Append("active=").Append(lastActiveCount)
+            .Append("  boundary=").Append(lastBoundaryCount)
+            .Append("  events=").Append(lastCollisionCount).AppendLine();
+        statsSb.Append("boundary raw=").Append(lastBoundaryRawCount)
+            .Append("  read=").Append(lastBoundaryReadCount)
+            .Append("  owner-valid=").Append(lastBoundaryOwnerValidCount)
+            .Append("  seg-valid=").Append(lastBoundarySegmentValidCount).AppendLine();
+        statsSb.Append("arrows attempted=").Append(lastArrowAttempted)
+            .Append("  drawn=").Append(lastArrowDrawn)
+            .Append("  degenerate=").Append(lastArrowSkippedDegenerate)
+            .Append("  projection=").Append(lastArrowSkippedProjection).AppendLine();
+        statsSb.Append("arrows clipped=").Append(lastArrowClipped)
+            .Append("  overlap-fanout=").Append(lastArrowOverlapInstances).AppendLine();
+        statsSb.Append("edge intersections highlighted=").Append(lastIntersectionMarkers).AppendLine();
+        AppendStatLine(StatBoundaryFlags, "boundary flags");
+        AppendStatLine(StatBoundaryEdges, "boundary edges");
+        AppendStatLine(StatOwnerEdgeOverflow, "owner edge overflow");
+        AppendStatLine(StatMaxEdgeBinLoad, "max edge bin load");
+        AppendStatLine(StatMaxVertBinLoad, "max vert bin load");
+        AppendStatLine(StatEdgeBinOverflows, "edge bin overflows");
+        AppendStatLine(StatVertBinOverflows, "vert bin overflows");
+
+        AppendRatioLine("build reject: non-boundary flag", StatBuildRejectNonBoundaryFlag, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: invalid face", StatBuildRejectInvalidFace, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: non-interface edge", StatBuildRejectNotInternalBoundary, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: invalid global vertex", StatBuildRejectInvalidGlobalVertex, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: invalid local vertex", StatBuildRejectInvalidLocalVertex, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: degenerate mapped endpoints", StatBuildRejectDegenerateEndpoints, StatBuildHalfedgeThreads);
+        AppendRatioLine("build reject: invalid owner", StatBuildRejectInvalidOwner, StatBuildHalfedgeThreads);
+
+        AppendStatLine(StatVertexWorkItems, "vertex work items");
+        AppendStatLine(StatVertexCandidates, "vertex candidates");
+        AppendRatioLine("vertex reject: pair OOB", StatVertexRejectPairOob, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: same owner", StatVertexRejectSameOwner, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: AABB", StatVertexRejectAabb, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: owner overflow", StatVertexRejectOwnerOverflow, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: no owner edge ref", StatVertexRejectNoOwnerEdgeRef, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: invalid vertex gi", StatVertexRejectInvalidVgi, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: no boundary hit", StatVertexRejectNoBoundaryHit, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: support", StatVertexRejectSupport, StatVertexWorkItems);
+        AppendRatioLine("vertex reject: degenerate normal", StatVertexRejectDegenerateNormal, StatVertexWorkItems);
+        AppendStatLine(StatVertexCompactRejectInvalid, "vertex compact rejects");
+        AppendStatLine(StatVertexCompactValid, "vertex compact valid");
+        AppendStatLine(StatVertexFeatureHits, "vertex feature hits");
+        AppendStatLine(StatVertexWithinSupport, "vertex within support");
+        AppendStatLine(StatVertexContactsWritten, "vertex contacts written");
+        AppendStatLine(StatVertexStageOverflow, "vertex staged overflow");
+
+        AppendStatLine(StatEdgeWorkItems, "edge work items");
+        AppendStatLine(StatEdgePairCandidates, "edge pair candidates");
+        AppendStatLine(StatEdgePointIntersections, "edge point intersections");
+        AppendRatioLine("edge reject: pair OOB", StatEdgeRejectPairOob, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: swap pass", StatEdgeRejectSwap, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: same owner", StatEdgeRejectSameOwner, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: AABB", StatEdgeRejectAabb, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: owner overflow", StatEdgeRejectOwnerOverflow, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: no owner edge ref", StatEdgeRejectNoOwnerEdgeRef, StatEdgeWorkItems);
+        AppendRatioLine("edge reject: invalid edge A", StatEdgeRejectInvalidEdgeA, StatEdgeWorkItems);
+        AppendStatLine(StatEdgeBinCellsVisited, "edge bins visited");
+        AppendStatLine(StatEdgeBinEdgeRefsScanned, "edge bin refs scanned");
+        AppendStatLine(StatEdgeRejectOwnerMismatchB, "edge reject owner mismatch B");
+        AppendStatLine(StatEdgeRejectInvalidEdgeB, "edge reject invalid edge B");
+        AppendStatLine(StatEdgeRejectEdgeBbox, "edge reject edge bbox");
+        AppendStatLine(StatEdgeRejectNoIntersection, "edge reject no intersection");
+        AppendStatLine(StatEdgeRejectNonPointHit, "edge reject non-point");
+        AppendStatLine(StatEdgeRejectEndpointIntersection, "edge reject endpoint");
+        AppendStatLine(StatEdgeRejectNonCanonicalBin, "edge reject non-canonical bin");
+        AppendStatLine(StatEdgeRejectDegenerateNormal, "edge reject degenerate normal");
+        AppendStatLine(StatEdgeRejectNoPenetration, "edge reject no penetration");
+        AppendStatLine(StatEdgeWithinSupport, "edge within support");
+        AppendStatLine(StatEdgeContactsEmitted, "edge contacts emitted");
+        AppendStatLine(StatOwnerAabbRejects, "owner AABB rejects (all)");
+
+        GUI.color = new Color(0f, 0f, 0f, 0.6f);
+        Rect panel = new Rect(statsPanelPosition.x, statsPanelPosition.y, 560f, 1500f);
+        GUI.DrawTexture(panel, Texture2D.whiteTexture);
+        GUI.color = Color.white;
+        GUI.Label(new Rect(panel.x + 8f, panel.y + 8f, panel.width - 16f, panel.height - 16f), statsSb.ToString());
+    }
+
+    void AppendStatLine(int idx, string label) {
+        if (idx < 0 || idx >= collisionStats.Length)
+            return;
+
+        statsSb.Append(idx.ToString("00"))
+            .Append(": ")
+            .Append(label)
+            .Append(" = ")
+            .Append(collisionStats[idx])
+            .AppendLine();
+    }
+
+    void AppendRatioLine(string label, int valueIdx, int totalIdx) {
+        uint value = GetStat(valueIdx);
+        uint total = GetStat(totalIdx);
+        float pct = (total > 0u) ? (100f * value / total) : 0f;
+
+        statsSb.Append(label)
+            .Append(" = ")
+            .Append(value)
+            .Append(" / ")
+            .Append(total)
+            .Append(" (")
+            .Append(pct.ToString("F2"))
+            .Append("%)")
+            .AppendLine();
+    }
+
+    uint GetStat(int idx) {
+        if (idx < 0 || idx >= collisionStats.Length)
+            return 0u;
+        return collisionStats[idx];
     }
 
     Camera ResolveDebugCamera() {
@@ -564,7 +1138,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     bool TryWorldToGuiPoint(Camera cam, float2 world, out Vector2 guiPoint) {
         Vector3 screen = cam.WorldToScreenPoint(new Vector3(world.x, world.y, ResolveProjectionZ(cam)));
         guiPoint = new Vector2(screen.x, Screen.height - screen.y);
-        return true;
+        if (!float.IsFinite(screen.x) || !float.IsFinite(screen.y) || !float.IsFinite(screen.z))
+            return false;
+        return screen.z >= 0f;
     }
 
     float ResolveProjectionZ(Camera cam) {
@@ -590,6 +1166,12 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
         GUI.matrix = prev;
         GUI.color = prevColor;
+    }
+
+    static void DrawCrossMarker(Vector2 center, float sizePixels, Color color, float thickness) {
+        float h = Mathf.Max(1f, sizePixels) * 0.5f;
+        DrawGuiLine(new Vector2(center.x - h, center.y - h), new Vector2(center.x + h, center.y + h), color, thickness);
+        DrawGuiLine(new Vector2(center.x - h, center.y + h), new Vector2(center.x + h, center.y - h), color, thickness);
     }
 
     static bool LooksNormalized(float2[] data, int count) {
@@ -622,6 +1204,197 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         return point * invHalfExtent + center;
     }
 
+    bool TryGetWorldPoint(int index, float invHalfExtent, out float2 world) {
+        world = default;
+        if (index < 0 || index >= lastTotalCount || globalPositions == null || index >= globalPositions.Length)
+            return false;
+
+        world = ToWorld(globalPositions[index], lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
+        return true;
+    }
+
+    bool TryResolveAnyWorldPoint(int index, float invHalfExtent, out float2 world) {
+        if (TryGetWorldPoint(index, invHalfExtent, out world))
+            return true;
+
+        if (index < 0 || index >= lastActiveCount || dtPositions == null || index >= dtPositions.Length) {
+            world = default;
+            return false;
+        }
+
+        world = ToWorld(dtPositions[index], lastDtLooksNormalized, invHalfExtent, lastNormCenter);
+        return true;
+    }
+
+    bool DrawCollisionArrow(Camera cam, float2 origin, float2 direction, float shaftLength, float thickness, Color arrowColor) {
+        float dirLen = math.length(direction);
+        if (!(dirLen > 1e-6f))
+            return false;
+
+        float2 n = direction / dirLen;
+        float2 tip = origin + n * shaftLength;
+
+        float headLen = math.max(0.001f, arrowHeadLength);
+        float headWidth = headLen * math.clamp(arrowHeadWidthScale, 0.1f, 1f);
+        float2 side = new float2(-n.y, n.x);
+        float2 back = tip - n * headLen;
+        float2 left = back + side * headWidth;
+        float2 right = back - side * headWidth;
+
+        if (!TryWorldToGuiPoint(cam, origin, out Vector2 gOrigin) ||
+            !TryWorldToGuiPoint(cam, tip, out Vector2 gTip) ||
+            !TryWorldToGuiPoint(cam, left, out Vector2 gLeft) ||
+            !TryWorldToGuiPoint(cam, right, out Vector2 gRight))
+            return false;
+
+        DrawGuiLine(gOrigin, gTip, arrowColor, thickness);
+        DrawGuiLine(gTip, gLeft, arrowColor, thickness);
+        DrawGuiLine(gTip, gRight, arrowColor, thickness);
+        return true;
+    }
+
+    Color GetCollisionArrowColor(CollisionEventGpu evt) {
+        if (!colorArrowsByOwnerPair)
+            return collisionArrowColor;
+
+        uint a = evt.ownerA;
+        uint b = evt.ownerB;
+        if (b < a) {
+            uint t = a;
+            a = b;
+            b = t;
+        }
+
+        unchecked {
+            uint h = 2166136261u;
+            h = (h ^ a) * 16777619u;
+            h = (h ^ b) * 16777619u;
+            float hue = (h & 0x00FFFFFFu) / 16777215f;
+            return Color.HSVToRGB(hue, 0.82f, 1f);
+        }
+    }
+
+    void TryLogDetailedStats() {
+        if (!logDetailedStatsToConsole)
+            return;
+        if (Time.unscaledTime < nextDetailedLogTime)
+            return;
+
+        nextDetailedLogTime = Time.unscaledTime + Mathf.Max(0.1f, detailedLogInterval);
+
+        uint vertexWork = GetStat(StatVertexWorkItems);
+        uint edgeWork = GetStat(StatEdgeWorkItems);
+
+        StringBuilder sb = new StringBuilder(1024);
+        sb.Append("[CollisionDebug] ")
+            .Append("boundary=").Append(lastBoundaryCount)
+            .Append(" events=").Append(lastCollisionCount)
+            .Append(" buildHalfEdges=").Append(GetStat(StatBuildHalfedgeThreads))
+            .Append(" vertexWork=").Append(vertexWork)
+            .Append(" edgeWork=").Append(edgeWork)
+            .AppendLine();
+
+        AppendLogRatio(sb, "build.nonBoundaryFlag", StatBuildRejectNonBoundaryFlag, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.invalidFace", StatBuildRejectInvalidFace, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.notInterface", StatBuildRejectNotInternalBoundary, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.invalidGlobalVertex", StatBuildRejectInvalidGlobalVertex, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.invalidLocalVertex", StatBuildRejectInvalidLocalVertex, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.degenerateMappedEndpoints", StatBuildRejectDegenerateEndpoints, StatBuildHalfedgeThreads);
+        AppendLogRatio(sb, "build.invalidOwner", StatBuildRejectInvalidOwner, StatBuildHalfedgeThreads);
+
+        AppendLogRatio(sb, "vertex.pairOob", StatVertexRejectPairOob, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.sameOwner", StatVertexRejectSameOwner, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.aabb", StatVertexRejectAabb, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.ownerOverflow", StatVertexRejectOwnerOverflow, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.noOwnerEdgeRef", StatVertexRejectNoOwnerEdgeRef, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.invalidVgi", StatVertexRejectInvalidVgi, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.noBoundaryHit", StatVertexRejectNoBoundaryHit, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.support", StatVertexRejectSupport, StatVertexWorkItems);
+        AppendLogRatio(sb, "vertex.degenerateNormal", StatVertexRejectDegenerateNormal, StatVertexWorkItems);
+        AppendLogRaw(sb, "vertex.compactRejectInvalid", StatVertexCompactRejectInvalid);
+        AppendLogRaw(sb, "vertex.compactValid", StatVertexCompactValid);
+        AppendLogRaw(sb, "vertex.contactsWritten", StatVertexContactsWritten);
+
+        AppendLogRatio(sb, "edge.pairOob", StatEdgeRejectPairOob, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.swap", StatEdgeRejectSwap, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.sameOwner", StatEdgeRejectSameOwner, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.aabb", StatEdgeRejectAabb, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.ownerOverflow", StatEdgeRejectOwnerOverflow, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.noOwnerEdgeRef", StatEdgeRejectNoOwnerEdgeRef, StatEdgeWorkItems);
+        AppendLogRatio(sb, "edge.invalidEdgeA", StatEdgeRejectInvalidEdgeA, StatEdgeWorkItems);
+        AppendLogRaw(sb, "edge.binCellsVisited", StatEdgeBinCellsVisited);
+        AppendLogRaw(sb, "edge.binEdgeRefsScanned", StatEdgeBinEdgeRefsScanned);
+        AppendLogRaw(sb, "edge.ownerMismatchB", StatEdgeRejectOwnerMismatchB);
+        AppendLogRaw(sb, "edge.invalidEdgeB", StatEdgeRejectInvalidEdgeB);
+        AppendLogRaw(sb, "edge.edgeBboxReject", StatEdgeRejectEdgeBbox);
+        AppendLogRaw(sb, "edge.noIntersection", StatEdgeRejectNoIntersection);
+        AppendLogRaw(sb, "edge.pointIntersections", StatEdgePointIntersections);
+        AppendLogRaw(sb, "edge.nonPointHit", StatEdgeRejectNonPointHit);
+        AppendLogRaw(sb, "edge.endpointReject", StatEdgeRejectEndpointIntersection);
+        AppendLogRaw(sb, "edge.nonCanonicalBin", StatEdgeRejectNonCanonicalBin);
+        AppendLogRaw(sb, "edge.degenerateNormal", StatEdgeRejectDegenerateNormal);
+        AppendLogRaw(sb, "edge.noPenetration", StatEdgeRejectNoPenetration);
+        AppendLogRaw(sb, "edge.contactsEmitted", StatEdgeContactsEmitted);
+        AppendLogRaw(sb, "ownerAabbRejectsAll", StatOwnerAabbRejects);
+
+        Debug.Log(sb.ToString());
+    }
+
+    void AppendLogRatio(StringBuilder sb, string label, int valueIdx, int totalIdx) {
+        uint value = GetStat(valueIdx);
+        uint total = GetStat(totalIdx);
+        float pct = (total > 0u) ? (100f * value / total) : 0f;
+        sb.Append("  ").Append(label).Append('=').Append(value).Append('/').Append(total).Append(" (").Append(pct.ToString("F2")).Append("%)").AppendLine();
+    }
+
+    void AppendLogRaw(StringBuilder sb, string label, int valueIdx) {
+        sb.Append("  ").Append(label).Append('=').Append(GetStat(valueIdx)).AppendLine();
+    }
+
+    void TryDumpFirstCollisionEvents() {
+        if (!dumpFirstCollisionListToFile || hasDumpedFirstCollisionList)
+            return;
+
+        int count = Mathf.Min(lastCollisionCount, collisionEvents != null ? collisionEvents.Length : 0);
+        if (count <= 0)
+            return;
+
+        try {
+            string fileName = string.IsNullOrWhiteSpace(collisionDumpFileName) ? "collision_events_first_dump.csv" : collisionDumpFileName.Trim();
+            string root = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            string outputDir = Path.Combine(root, "Build");
+            Directory.CreateDirectory(outputDir);
+            string outputPath = Path.Combine(outputDir, fileName);
+
+            StringBuilder sb = new StringBuilder(math.max(256, count * 96));
+            sb.AppendLine("index,ownerA,ownerB,vGi,heA,heB,nx,ny,penetration,pAx,pAy,pBx,pBy");
+            for (int i = 0; i < count; i++) {
+                CollisionEventGpu e = collisionEvents[i];
+                sb.Append(i).Append(',')
+                    .Append(e.ownerA).Append(',')
+                    .Append(e.ownerB).Append(',')
+                    .Append(e.vGi).Append(',')
+                    .Append(e.heA).Append(',')
+                    .Append(e.heB).Append(',')
+                    .Append(e.normal.x.ToString("R")).Append(',')
+                    .Append(e.normal.y.ToString("R")).Append(',')
+                    .Append(e.penetration.ToString("R")).Append(',')
+                    .Append(e.pA.x.ToString("R")).Append(',')
+                    .Append(e.pA.y.ToString("R")).Append(',')
+                    .Append(e.pB.x.ToString("R")).Append(',')
+                    .Append(e.pB.y.ToString("R"))
+                    .AppendLine();
+            }
+
+            File.WriteAllText(outputPath, sb.ToString(), Encoding.UTF8);
+            hasDumpedFirstCollisionList = true;
+            Debug.Log($"CollisionDebugRenderer wrote first collision list to: {outputPath} ({count} events)");
+        }
+        catch (Exception ex) {
+            Debug.LogWarning($"CollisionDebugRenderer failed to dump collision events: {ex.Message}");
+        }
+    }
+
     static void EnsureCapacity<T>(ref T[] array, int count) {
         if (count <= 0) {
             if (array == null)
@@ -631,5 +1404,21 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
         if (array == null || array.Length < count)
             array = new T[count];
+    }
+
+    static int BuildArrowOverlapKey(float2 origin, float2 direction) {
+        int ox = Mathf.RoundToInt(origin.x * 200f);
+        int oy = Mathf.RoundToInt(origin.y * 200f);
+        int dx = Mathf.RoundToInt(direction.x * 100f);
+        int dy = Mathf.RoundToInt(direction.y * 100f);
+
+        unchecked {
+            int h = 17;
+            h = h * 31 + ox;
+            h = h * 31 + oy;
+            h = h * 31 + dx;
+            h = h * 31 + dy;
+            return h;
+        }
     }
 }

@@ -61,6 +61,9 @@ namespace GPU.Delaunay {
         /// <summary>Per-half-edge boundary flag (1 = boundary edge candidate).</summary>
         public ComputeBuffer BoundaryEdgeFlagsBuffer => _boundaryEdgeFlags;
 
+        /// <summary>Per-triangle internal classification (1 = internal triangle).</summary>
+        public ComputeBuffer TriInternalBuffer => _triInternal;
+
         /// <summary>Positions buffer for the current render slot.</summary>
         public ComputeBuffer PositionsBuffer => _positions[_renderSlot];
 

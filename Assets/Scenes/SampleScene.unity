@@ -119,39 +119,6 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!114 &82705930
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1054705967}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f3db50457857f3b41a6c4053eb2cfe6f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::SpriteMesh
-  maxLayer: 0
-  layerEndIndex: 0a000000
-  layerRadii:
-  - 0.04671363
-  layerKernelH:
-  - 0.09342726
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  fixedObject: 0
-  collisionOwnerOverride: {fileID: 1528506848}
-  size:
-    x: 0.2612601
-    y: 0.15311031
-  generateOnStart: 0
-  defaultAnchorMode: 0
-  seed: 1
-  generatedLayer0PointCount: 10
-  generatedLayerCount: 1
-  layerNodeCounts: 0a000000
-  spriteRenderer: {fileID: 1054705968}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  generateOnAwakeIfMissing: 1
 --- !u!1 &86236644
 GameObject:
   m_ObjectHideFlags: 0
@@ -238,6 +205,10 @@ MonoBehaviour:
       collisionFriction: 0.215
       collisionRestitution: 0.1
       collisionRestitutionThreshold: 0.005
+      collisionSdfBandHalfWidthScale: 4
+      collisionSdfVertexMarginScale: 1.5
+      collisionSdfFallbackDepthScale: 2.5
+      collisionSdfEdgeRefineIterations: 6
     durability:
       durabilityCompliance: 0.8
       durabilityMaxDistanceRatio: 0.8
@@ -248,8 +219,8 @@ MonoBehaviour:
       dtLegalizeIterations: 2
     uiAndReadback:
       showTpsOverlay: 1
-      convergenceDebugEnabled: 1
-      enableContinuousCpuReadback: 1
+      convergenceDebugEnabled: 0
+      enableContinuousCpuReadback: 0
       cpuReadbackInterval: 0.02
       prolongationConstraintDebugEnabled: 0
   simulationPreset: {fileID: 11400000, guid: 2082c9cdf9ec0ac4298ef5420949fc18, type: 2}
@@ -258,7 +229,7 @@ MonoBehaviour:
   layerSolveShader: {fileID: 7200000, guid: 3e6c7b34eb07a224fa7e8227c3bae1b8, type: 3}
   gameplayForcesShader: {fileID: 7200000, guid: 326aeac9b85c37247a0fc8e59da76e0c, type: 3}
   hierarchySyncShader: {fileID: 7200000, guid: 2b969a253377f964faaf380293a69c7e, type: 3}
-  collisionEventsShader: {fileID: 7200000, guid: 8a2dfc6820dad2d4ca7e31f1958ac6ea, type: 3}
+  collisionEventsShader: {fileID: 7200000, guid: 089480f3bb6a70f439f365adbd6716d5, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
@@ -313,49 +284,22 @@ MonoBehaviour:
   maxBoundarySegments: 6000
   drawCollisionArrows: 1
   collisionArrowColor: {r: 1, g: 0.35, b: 0.15, a: 1}
-  maxCollisionArrows: 2000
+  colorArrowsByOwnerPair: 1
+  maxCollisionArrows: 7000
   arrowScale: 1
   minArrowLength: 0.015
   arrowHeadLength: 0.02
   arrowHeadWidthScale: 0.55
+  overlapFanoutWorld: 0.002
+  dumpFirstCollisionListToFile: 1
+  collisionDumpFileName: collision_events_first_dump.csv
   lineThickness: 2
+  showCollisionStatsPanel: 1
+  statsPanelPosition: {x: 12, y: 12}
   targetCamera: {fileID: 0}
   projectOnCameraFrontPlane: 1
   cameraFrontPlaneDistance: 1
   zDepth: -100
---- !u!114 &352276157
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1054705963}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f3db50457857f3b41a6c4053eb2cfe6f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::SpriteMesh
-  maxLayer: 0
-  layerEndIndex: 0d000000
-  layerRadii:
-  - 0.07561088
-  layerKernelH:
-  - 0.15122177
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  fixedObject: 0
-  collisionOwnerOverride: {fileID: 1528506848}
-  size:
-    x: 0.59180635
-    y: 0.47157988
-  generateOnStart: 0
-  defaultAnchorMode: 0
-  seed: 1
-  generatedLayer0PointCount: 13
-  generatedLayerCount: 1
-  layerNodeCounts: 0d000000
-  spriteRenderer: {fileID: 1054705964}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  generateOnAwakeIfMissing: 1
 --- !u!1 &519420028
 GameObject:
   m_ObjectHideFlags: 0
@@ -418,7 +362,7 @@ Camera:
   far clip plane: 1000
   field of view: 60
   orthographic: 1
-  orthographic size: 5
+  orthographic size: 2.0115275
   m_Depth: -1
   m_CullingMask:
     serializedVersion: 2
@@ -443,7 +387,7 @@ Transform:
   m_GameObject: {fileID: 519420028}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: -10}
+  m_LocalPosition: {x: 0.51, y: 2.35, z: -10}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -616,30 +560,24 @@ PrefabInstance:
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
-    m_RemovedGameObjects: []
+    m_RemovedGameObjects:
+    - {fileID: 7597524397371733832, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+    - {fileID: 2482842774039024174, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+    - {fileID: 6491011326836948399, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
     m_AddedGameObjects: []
     m_AddedComponents:
     - targetCorrespondingSourceObject: {fileID: -8653719598885068355, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1528506849}
-    - targetCorrespondingSourceObject: {fileID: 7597524397371733832, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 1054705977}
     - targetCorrespondingSourceObject: {fileID: 1769465101944927738, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1054705976}
     - targetCorrespondingSourceObject: {fileID: -3171497925476864427, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1054705975}
-    - targetCorrespondingSourceObject: {fileID: 2482842774039024174, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 82705930}
     - targetCorrespondingSourceObject: {fileID: -8695416825521746284, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1178169789}
-    - targetCorrespondingSourceObject: {fileID: 6491011326836948399, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-      insertIndex: -1
-      addedObject: {fileID: 352276157}
     - targetCorrespondingSourceObject: {fileID: -1240721892719223032, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       insertIndex: -1
       addedObject: {fileID: 970776230}
@@ -667,16 +605,6 @@ SpriteRenderer:
   m_CorrespondingSourceObject: {fileID: -4457772106480614152, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
   m_PrefabInstance: {fileID: 1054705958}
   m_PrefabAsset: {fileID: 0}
---- !u!1 &1054705963 stripped
-GameObject:
-  m_CorrespondingSourceObject: {fileID: 6491011326836948399, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
---- !u!212 &1054705964 stripped
-SpriteRenderer:
-  m_CorrespondingSourceObject: {fileID: 6480651604138226042, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
 --- !u!1 &1054705965 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: -8695416825521746284, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
@@ -685,16 +613,6 @@ GameObject:
 --- !u!212 &1054705966 stripped
 SpriteRenderer:
   m_CorrespondingSourceObject: {fileID: -8913533962594999635, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
---- !u!1 &1054705967 stripped
-GameObject:
-  m_CorrespondingSourceObject: {fileID: 2482842774039024174, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
---- !u!212 &1054705968 stripped
-SpriteRenderer:
-  m_CorrespondingSourceObject: {fileID: -3180978689183888721, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
   m_PrefabInstance: {fileID: 1054705958}
   m_PrefabAsset: {fileID: 0}
 --- !u!1 &1054705969 stripped
@@ -715,16 +633,6 @@ GameObject:
 --- !u!212 &1054705972 stripped
 SpriteRenderer:
   m_CorrespondingSourceObject: {fileID: 5359103177601667974, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
---- !u!1 &1054705973 stripped
-GameObject:
-  m_CorrespondingSourceObject: {fileID: 7597524397371733832, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
-  m_PrefabInstance: {fileID: 1054705958}
-  m_PrefabAsset: {fileID: 0}
---- !u!212 &1054705974 stripped
-SpriteRenderer:
-  m_CorrespondingSourceObject: {fileID: -3276374382219496712, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
   m_PrefabInstance: {fileID: 1054705958}
   m_PrefabAsset: {fileID: 0}
 --- !u!114 &1054705975
@@ -793,39 +701,6 @@ MonoBehaviour:
   generatedLayerCount: 2
   layerNodeCounts: 820000000f000000
   spriteRenderer: {fileID: 1054705972}
-  physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  generateOnAwakeIfMissing: 1
---- !u!114 &1054705977
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1054705973}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f3db50457857f3b41a6c4053eb2cfe6f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::SpriteMesh
-  maxLayer: 0
-  layerEndIndex: 0a000000
-  layerRadii:
-  - 0.021805774
-  layerKernelH:
-  - 0.04361155
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
-  fixedObject: 0
-  collisionOwnerOverride: {fileID: 1528506848}
-  size:
-    x: 0.09214322
-    y: 0.08192136
-  generateOnStart: 0
-  defaultAnchorMode: 0
-  seed: 1
-  generatedLayer0PointCount: 10
-  generatedLayerCount: 1
-  layerNodeCounts: 0a000000
-  spriteRenderer: {fileID: 1054705974}
   physicsTemplate: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
   generateOnAwakeIfMissing: 1
 --- !u!114 &1178169789

@@ -1,3 +1,4 @@
+using System;
 using Unity.Mathematics;
 using UnityEngine;
 using GPU.Neighbors;
@@ -5,163 +6,515 @@ using GPU.Delaunay;
 using UnityEngine.Rendering;
 
 namespace GPU.Solver {
-	internal sealed partial class CollisionEvents {
-		internal ComputeBuffer collisionEvents;
-		private ComputeBuffer collisionEventCount;
-		private ComputeBuffer xferColCount;
-		private ComputeBuffer xferColNXBits;
-		private ComputeBuffer xferColNYBits;
-		private ComputeBuffer xferColPenBits;
-		private ComputeBuffer xferColSBits;
-		private ComputeBuffer xferColTBits;
-		private ComputeBuffer xferColQAGi;
-		private ComputeBuffer xferColQBGi;
-		private ComputeBuffer xferColOAGi;
-		private ComputeBuffer xferColOBGi;
-		private ComputeBuffer boundaryChunkCount;
-		private ComputeBuffer boundaryChunkEdges;
-		private ComputeBuffer boundaryChunkAabbs;
-		private ComputeBuffer boundaryChunkMortonKeys;
-		private ComputeBuffer boundaryChunkSortKeys;
-		private ComputeBuffer boundaryChunkSortIndices;
-		private ComputeBuffer lbvhNodeAabbs;
-		private ComputeBuffer lbvhNodeChunk;
-		private ComputeBuffer collisionDebugStats;
+    internal sealed partial class CollisionEvents {
+        private const int SdfResolution = 64;
+        private const int DefaultBinResolution = 32;
+        private const int DefaultMaxEdgesPerBin = 96;
+        private const int DefaultMaxVertsPerBin = 96;
+        private const int CollisionDebugStatCount = 64;
 
-		private int boundaryChunkCapacity;
-		private int boundaryChunkSortCapacity;
-		private int lbvhLeafOffset;
-		private int lbvhNodeCapacity;
+        internal ComputeBuffer collisionEvents;
+        private ComputeBuffer collisionEventCount;
 
-		internal int kClearCollisionEventCount;
-		internal int kClearBoundaryChunkCount;
-		internal int kBuildBoundaryChunksL0;
-		internal int kInitChunkSortKeys;
-		internal int kBitonicSortChunkKeys;
-		internal int kBuildLbvhLeaves;
-		internal int kBuildLbvhInternalLevel;
-		internal int kTraverseLbvhEmitCollisionEvents;
-		internal int kClearCollisionDebugStats;
-		internal int kBuildCollisionEventsL0;
-		internal int kClearTransferredCollision;
-		internal int kRestrictCollisionEventsToActivePairs;
+        private ComputeBuffer xferColCount;
+        private ComputeBuffer xferColNXBits;
+        private ComputeBuffer xferColNYBits;
+        private ComputeBuffer xferColPenBits;
+        private ComputeBuffer xferColSBits;
+        private ComputeBuffer xferColTBits;
+        private ComputeBuffer xferColQAGi;
+        private ComputeBuffer xferColQBGi;
+        private ComputeBuffer xferColOAGi;
+        private ComputeBuffer xferColOBGi;
 
-		internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
-		internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
-		internal ComputeBuffer BoundaryChunkCountBuffer => boundaryChunkCount;
-		internal ComputeBuffer BoundaryChunksBuffer => boundaryChunkEdges;
-		internal ComputeBuffer XferColCountBuffer => xferColCount;
-		internal ComputeBuffer XferColNXBitsBuffer => xferColNXBits;
-		internal ComputeBuffer XferColNYBitsBuffer => xferColNYBits;
-		internal ComputeBuffer XferColPenBitsBuffer => xferColPenBits;
-		internal ComputeBuffer XferColSBitsBuffer => xferColSBits;
-		internal ComputeBuffer XferColTBitsBuffer => xferColTBits;
-		internal ComputeBuffer XferColQAGiBuffer => xferColQAGi;
-		internal ComputeBuffer XferColQBGiBuffer => xferColQBGi;
-		internal ComputeBuffer XferColOAGiBuffer => xferColOAGi;
-		internal ComputeBuffer XferColOBGiBuffer => xferColOBGi;
-		internal int ClearCollisionEventCountKernel => kClearCollisionEventCount;
-		internal int BuildCollisionEventsL0Kernel => kBuildCollisionEventsL0;
-		internal int ClearTransferredCollisionKernel => kClearTransferredCollision;
-		internal int RestrictCollisionEventsToActivePairsKernel => kRestrictCollisionEventsToActivePairs;
-		internal int BoundaryChunkSortCapacity => boundaryChunkSortCapacity;
-		internal int BoundaryChunkCapacity => boundaryChunkCapacity;
-		internal int LbvhLeafOffset => lbvhLeafOffset;
-		internal int LbvhNodeCapacity => lbvhNodeCapacity;
-		internal ComputeBuffer CollisionDebugStatsBuffer => collisionDebugStats;
+        private ComputeBuffer boundaryEdgeCount;
 
-		private static int NextPow2(int v) {
-			if (v <= 1)
-				return 1;
+        private ComputeBuffer ownerGridOrigin;
+        private ComputeBuffer ownerGridDim;
+        private ComputeBuffer ownerGridTexel;
+        private ComputeBuffer ownerGridBase;
 
-			v--;
-			v |= v >> 1;
-			v |= v >> 2;
-			v |= v >> 4;
-			v |= v >> 8;
-			v |= v >> 16;
-			return v + 1;
-		}
+        private ComputeBuffer ownerBinOrigin;
+        private ComputeBuffer ownerBinDim;
+        private ComputeBuffer ownerBinBase;
 
-		internal void AllocateRuntimeBuffers(int newCapacity) {
-			int collisionCapacity = math.max(4096, newCapacity * 32);
-			int transferCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
-			boundaryChunkCapacity = math.max(2048, newCapacity * 12);
-			boundaryChunkSortCapacity = NextPow2(boundaryChunkCapacity);
-			lbvhLeafOffset = boundaryChunkSortCapacity - 1;
-			lbvhNodeCapacity = boundaryChunkSortCapacity * 2 - 1;
+        private ComputeBuffer ownerPairs;
 
-			collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 6 + sizeof(float) * 8, ComputeBufferType.Structured);
-			collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
-			xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColNYBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColPenBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColSBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColTBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColQAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColQBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColOAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			xferColOBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
-			boundaryChunkCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
-			boundaryChunkEdges = new ComputeBuffer(boundaryChunkCapacity, sizeof(uint) * 3 + sizeof(int), ComputeBufferType.Structured);
-			boundaryChunkAabbs = new ComputeBuffer(boundaryChunkCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
-			boundaryChunkMortonKeys = new ComputeBuffer(boundaryChunkCapacity, sizeof(uint), ComputeBufferType.Structured);
-			boundaryChunkSortKeys = new ComputeBuffer(boundaryChunkSortCapacity, sizeof(uint), ComputeBufferType.Structured);
-			boundaryChunkSortIndices = new ComputeBuffer(boundaryChunkSortCapacity, sizeof(uint), ComputeBufferType.Structured);
-			lbvhNodeAabbs = new ComputeBuffer(lbvhNodeCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
-			lbvhNodeChunk = new ComputeBuffer(lbvhNodeCapacity, sizeof(int), ComputeBufferType.Structured);
-			collisionDebugStats = new ComputeBuffer(16, sizeof(uint), ComputeBufferType.Structured);
-		}
+        private ComputeBuffer ownerBoundaryEdgeCounts;
+        private ComputeBuffer ownerBoundaryOverflow;
+        private ComputeBuffer ownerBoundaryEdgeRefs;
 
-		internal void ReleaseRuntimeBuffers() {
-			collisionEvents?.Dispose(); collisionEvents = null;
-			collisionEventCount?.Dispose(); collisionEventCount = null;
-			xferColCount?.Dispose(); xferColCount = null;
-			xferColNXBits?.Dispose(); xferColNXBits = null;
-			xferColNYBits?.Dispose(); xferColNYBits = null;
-			xferColPenBits?.Dispose(); xferColPenBits = null;
-			xferColSBits?.Dispose(); xferColSBits = null;
-			xferColTBits?.Dispose(); xferColTBits = null;
-			xferColQAGi?.Dispose(); xferColQAGi = null;
-			xferColQBGi?.Dispose(); xferColQBGi = null;
-			xferColOAGi?.Dispose(); xferColOAGi = null;
-			xferColOBGi?.Dispose(); xferColOBGi = null;
-			boundaryChunkCount?.Dispose(); boundaryChunkCount = null;
-			boundaryChunkEdges?.Dispose(); boundaryChunkEdges = null;
-			boundaryChunkAabbs?.Dispose(); boundaryChunkAabbs = null;
-			boundaryChunkMortonKeys?.Dispose(); boundaryChunkMortonKeys = null;
-			boundaryChunkSortKeys?.Dispose(); boundaryChunkSortKeys = null;
-			boundaryChunkSortIndices?.Dispose(); boundaryChunkSortIndices = null;
-			lbvhNodeAabbs?.Dispose(); lbvhNodeAabbs = null;
-			lbvhNodeChunk?.Dispose(); lbvhNodeChunk = null;
-			collisionDebugStats?.Dispose(); collisionDebugStats = null;
-			boundaryChunkCapacity = 0;
-			boundaryChunkSortCapacity = 0;
-			lbvhLeafOffset = 0;
-			lbvhNodeCapacity = 0;
-		}
+        private ComputeBuffer boundaryEdgeOwner;
+        private ComputeBuffer boundaryEdgeV0Gi;
+        private ComputeBuffer boundaryEdgeV1Gi;
+        private ComputeBuffer boundaryOutwardIsRight;
+        private ComputeBuffer boundaryEdgeP0;
+        private ComputeBuffer boundaryEdgeP1;
+        private ComputeBuffer boundaryEdgeNOut;
+        private ComputeBuffer boundaryEdgeNIn;
+        private ComputeBuffer boundaryEdgePseudoN0;
+        private ComputeBuffer boundaryEdgePseudoN1;
 
-		internal void CacheRuntimeKernels() {
-			kClearCollisionEventCount = shader.FindKernel("ClearCollisionEventCount");
-			kClearBoundaryChunkCount = shader.FindKernel("ClearBoundaryChunkCount");
-			kBuildBoundaryChunksL0 = shader.FindKernel("BuildBoundaryChunksL0");
-			kInitChunkSortKeys = shader.FindKernel("InitChunkSortKeys");
-			kBitonicSortChunkKeys = shader.FindKernel("BitonicSortChunkKeys");
-			kBuildLbvhLeaves = shader.FindKernel("BuildLbvhLeaves");
-			kBuildLbvhInternalLevel = shader.FindKernel("BuildLbvhInternalLevel");
-			kTraverseLbvhEmitCollisionEvents = shader.FindKernel("TraverseLbvhEmitCollisionEvents");
-			kClearCollisionDebugStats = shader.FindKernel("ClearCollisionDebugStats");
-			kBuildCollisionEventsL0 = shader.FindKernel("BuildCollisionEventsL0");
-			kClearTransferredCollision = shader.FindKernel("ClearTransferredCollision");
-			kRestrictCollisionEventsToActivePairs = shader.FindKernel("RestrictCollisionEventsToActivePairs");
-		}
+        private ComputeBuffer boundaryVertexOwner;
+        private ComputeBuffer boundaryVertexGi;
+        private ComputeBuffer boundaryVertexP;
+        private ComputeBuffer boundaryVertexPseudoN;
 
-		private void PrepareLayer0BuildBuffers(
-            CommandBuffer cb, 
+        private ComputeBuffer edgeBinCounts;
+        private ComputeBuffer edgeBinOverflow;
+        private ComputeBuffer edgeBinRefs;
+
+        private ComputeBuffer vertBinCounts;
+        private ComputeBuffer vertBinOverflow;
+        private ComputeBuffer vertBinRefs;
+
+        private ComputeBuffer sdfPhi;
+        private ComputeBuffer sdfGrad;
+        private ComputeBuffer sdfFeatType;
+        private ComputeBuffer sdfFeatId;
+
+        private ComputeBuffer collisionDebugStats;
+
+        private int boundaryEdgeCapacity;
+        private int ownerCapacity;
+        private int pairCapacity;
+        private int totalGridCellCapacity;
+        private int totalBinCapacity;
+        private int maxBoundaryEdgesPerOwner;
+        private int maxEdgesPerBin;
+        private int maxVertsPerBin;
+        private int queryPairCount;
+
+        private float2[] ownerGridOriginCpu = Array.Empty<float2>();
+        private uint2[] ownerGridDimCpu = Array.Empty<uint2>();
+        private float[] ownerGridTexelCpu = Array.Empty<float>();
+        private uint[] ownerGridBaseCpu = Array.Empty<uint>();
+
+        private float2[] ownerBinOriginCpu = Array.Empty<float2>();
+        private uint2[] ownerBinDimCpu = Array.Empty<uint2>();
+        private uint[] ownerBinBaseCpu = Array.Empty<uint>();
+
+        private uint2[] ownerPairsCpu = Array.Empty<uint2>();
+        private readonly uint[] oneUint = new uint[1];
+        private readonly uint[] statsScratch = new uint[CollisionDebugStatCount];
+        private int[] identityGlobalNodeMapCpu = Array.Empty<int>();
+        private ComputeBuffer identityGlobalNodeMap;
+
+        internal int kClearState;
+        internal int kBuildBoundaryFeatures;
+        internal int kBinBoundaryEdges;
+        internal int kBinBoundaryVertices;
+        internal int kBuildOwnerFeatureField;
+        internal int kQueryVertexContacts;
+        internal int kQueryEdgeEdgeContacts;
+
+        internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
+        internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
+        internal ComputeBuffer BoundaryChunkCountBuffer => boundaryEdgeCount;
+        internal ComputeBuffer BoundaryChunksBuffer => boundaryEdgeV0Gi;
+        internal ComputeBuffer BoundaryEdgeOwnerBuffer => boundaryEdgeOwner;
+        internal ComputeBuffer BoundaryEdgeV0Buffer => boundaryEdgeV0Gi;
+        internal ComputeBuffer BoundaryEdgeV1Buffer => boundaryEdgeV1Gi;
+        internal ComputeBuffer BoundaryEdgeNormalBuffer => boundaryEdgeNOut;
+        internal ComputeBuffer BoundaryEdgeP0Buffer => boundaryEdgeP0;
+        internal ComputeBuffer BoundaryEdgeP1Buffer => boundaryEdgeP1;
+        internal ComputeBuffer CollisionDebugStatsBuffer => collisionDebugStats;
+
+        internal ComputeBuffer XferColCountBuffer => xferColCount;
+        internal ComputeBuffer XferColNXBitsBuffer => xferColNXBits;
+        internal ComputeBuffer XferColNYBitsBuffer => xferColNYBits;
+        internal ComputeBuffer XferColPenBitsBuffer => xferColPenBits;
+        internal ComputeBuffer XferColSBitsBuffer => xferColSBits;
+        internal ComputeBuffer XferColTBitsBuffer => xferColTBits;
+        internal ComputeBuffer XferColQAGiBuffer => xferColQAGi;
+        internal ComputeBuffer XferColQBGiBuffer => xferColQBGi;
+        internal ComputeBuffer XferColOAGiBuffer => xferColOAGi;
+        internal ComputeBuffer XferColOBGiBuffer => xferColOBGi;
+
+        internal int ClearCollisionEventCountKernel => -1;
+        internal int ClearTransferredCollisionKernel => -1;
+        internal int RestrictCollisionEventsToActivePairsKernel => -1;
+
+        internal int BoundaryChunkSortCapacity => 1;
+        internal int BoundaryChunkCapacity => boundaryEdgeCapacity;
+        internal int OwnerPairCapacity => pairCapacity;
+        internal int TotalBinCapacity => totalBinCapacity;
+        internal int SdfGridDimX => SdfResolution;
+        internal int SdfGridDimY => SdfResolution;
+        internal int MaxBoundaryEdgesPerOwner => maxBoundaryEdgesPerOwner;
+        internal int QueryPairCount => queryPairCount;
+        internal int LbvhLeafOffset => 0;
+        internal int LbvhNodeCapacity => 0;
+
+        private static void ReleaseBuffer(ref ComputeBuffer buffer) {
+            buffer?.Dispose();
+            buffer = null;
+        }
+
+        private ComputeBuffer EnsureIdentityGlobalNodeMap(int count) {
+            int required = math.max(1, count);
+            if (identityGlobalNodeMap == null || !identityGlobalNodeMap.IsValid() || identityGlobalNodeMap.count != required) {
+                ReleaseBuffer(ref identityGlobalNodeMap);
+                identityGlobalNodeMap = new ComputeBuffer(required, sizeof(int), ComputeBufferType.Structured);
+            }
+
+            if (identityGlobalNodeMapCpu.Length < required)
+                identityGlobalNodeMapCpu = new int[required];
+
+            for (int i = 0; i < required; i++)
+                identityGlobalNodeMapCpu[i] = i;
+
+            identityGlobalNodeMap.SetData(identityGlobalNodeMapCpu, 0, 0, required);
+            return identityGlobalNodeMap;
+        }
+
+        private static int NextPow2(int v) {
+            v = math.max(1, v);
+            int p = 1;
+            while (p < v)
+                p <<= 1;
+            return p;
+        }
+
+        private void EnsureOwnerCapacity(int requiredOwnerCount) {
+            int required = math.max(1, requiredOwnerCount);
+            if (required <= ownerCapacity && ownerGridOrigin != null && ownerGridOrigin.IsValid())
+                return;
+
+            ownerCapacity = NextPow2(required);
+            int binsPerOwner = DefaultBinResolution * DefaultBinResolution;
+            int gridCellsPerOwner = SdfResolution * SdfResolution;
+
+            maxBoundaryEdgesPerOwner = math.max(64, (boundaryEdgeCapacity + ownerCapacity - 1) / ownerCapacity * 2);
+            maxEdgesPerBin = DefaultMaxEdgesPerBin;
+            maxVertsPerBin = DefaultMaxVertsPerBin;
+            totalGridCellCapacity = ownerCapacity * gridCellsPerOwner;
+            totalBinCapacity = ownerCapacity * binsPerOwner;
+
+            ReleaseBuffer(ref ownerGridOrigin);
+            ownerGridOrigin = new ComputeBuffer(ownerCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerGridDim);
+            ownerGridDim = new ComputeBuffer(ownerCapacity, sizeof(uint) * 2, ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerGridTexel);
+            ownerGridTexel = new ComputeBuffer(ownerCapacity, sizeof(float), ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerGridBase);
+            ownerGridBase = new ComputeBuffer(ownerCapacity, sizeof(uint), ComputeBufferType.Structured);
+
+            ReleaseBuffer(ref ownerBinOrigin);
+            ownerBinOrigin = new ComputeBuffer(ownerCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerBinDim);
+            ownerBinDim = new ComputeBuffer(ownerCapacity, sizeof(uint) * 2, ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerBinBase);
+            ownerBinBase = new ComputeBuffer(ownerCapacity, sizeof(uint), ComputeBufferType.Structured);
+
+            ReleaseBuffer(ref ownerBoundaryEdgeCounts);
+            ownerBoundaryEdgeCounts = new ComputeBuffer(ownerCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerBoundaryOverflow);
+            ownerBoundaryOverflow = new ComputeBuffer(ownerCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref ownerBoundaryEdgeRefs);
+            ownerBoundaryEdgeRefs = new ComputeBuffer(ownerCapacity * maxBoundaryEdgesPerOwner, sizeof(uint), ComputeBufferType.Structured);
+
+            ReleaseBuffer(ref edgeBinCounts);
+            edgeBinCounts = new ComputeBuffer(totalBinCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref edgeBinOverflow);
+            edgeBinOverflow = new ComputeBuffer(totalBinCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref edgeBinRefs);
+            edgeBinRefs = new ComputeBuffer(totalBinCapacity * maxEdgesPerBin, sizeof(uint), ComputeBufferType.Structured);
+
+            ReleaseBuffer(ref vertBinCounts);
+            vertBinCounts = new ComputeBuffer(totalBinCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref vertBinOverflow);
+            vertBinOverflow = new ComputeBuffer(totalBinCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref vertBinRefs);
+            vertBinRefs = new ComputeBuffer(totalBinCapacity * maxVertsPerBin, sizeof(uint), ComputeBufferType.Structured);
+
+            ReleaseBuffer(ref sdfPhi);
+            sdfPhi = new ComputeBuffer(totalGridCellCapacity, sizeof(float), ComputeBufferType.Structured);
+            ReleaseBuffer(ref sdfGrad);
+            sdfGrad = new ComputeBuffer(totalGridCellCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            ReleaseBuffer(ref sdfFeatType);
+            sdfFeatType = new ComputeBuffer(totalGridCellCapacity, sizeof(uint), ComputeBufferType.Structured);
+            ReleaseBuffer(ref sdfFeatId);
+            sdfFeatId = new ComputeBuffer(totalGridCellCapacity, sizeof(uint), ComputeBufferType.Structured);
+
+            if (ownerGridOriginCpu.Length < ownerCapacity)
+                ownerGridOriginCpu = new float2[ownerCapacity];
+            if (ownerGridDimCpu.Length < ownerCapacity)
+                ownerGridDimCpu = new uint2[ownerCapacity];
+            if (ownerGridTexelCpu.Length < ownerCapacity)
+                ownerGridTexelCpu = new float[ownerCapacity];
+            if (ownerGridBaseCpu.Length < ownerCapacity)
+                ownerGridBaseCpu = new uint[ownerCapacity];
+
+            if (ownerBinOriginCpu.Length < ownerCapacity)
+                ownerBinOriginCpu = new float2[ownerCapacity];
+            if (ownerBinDimCpu.Length < ownerCapacity)
+                ownerBinDimCpu = new uint2[ownerCapacity];
+            if (ownerBinBaseCpu.Length < ownerCapacity)
+                ownerBinBaseCpu = new uint[ownerCapacity];
+        }
+
+        internal void AllocateRuntimeBuffers(int newCapacity) {
+            int collisionCapacity = math.max(4096, newCapacity * 32);
+            int transferCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
+
+            boundaryEdgeCapacity = math.max(2048, newCapacity * 12);
+            pairCapacity = math.max(256, newCapacity * 2);
+
+            // Contact in XPBI.CollisionEventsNew.compute is 48 bytes.
+            collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 5 + sizeof(float) * 7, ComputeBufferType.Structured);
+            collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+
+            xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColNYBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColPenBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColSBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColTBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColQAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColQBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColOAGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+            xferColOBGi = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
+
+            boundaryEdgeCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+
+            boundaryEdgeOwner = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryEdgeV0Gi = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryEdgeV1Gi = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryOutwardIsRight = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryEdgeP0 = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryEdgeP1 = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryEdgeNOut = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryEdgeNIn = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryEdgePseudoN0 = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryEdgePseudoN1 = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+
+            boundaryVertexOwner = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryVertexGi = new ComputeBuffer(boundaryEdgeCapacity, sizeof(uint), ComputeBufferType.Structured);
+            boundaryVertexP = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            boundaryVertexPseudoN = new ComputeBuffer(boundaryEdgeCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+
+            ownerPairs = new ComputeBuffer(pairCapacity, sizeof(uint) * 2, ComputeBufferType.Structured);
+            if (ownerPairsCpu.Length < pairCapacity)
+                ownerPairsCpu = new uint2[pairCapacity];
+
+            collisionDebugStats = new ComputeBuffer(CollisionDebugStatCount, sizeof(uint), ComputeBufferType.Structured);
+
+            ownerCapacity = 0;
+            totalGridCellCapacity = 0;
+            totalBinCapacity = 0;
+            maxBoundaryEdgesPerOwner = 0;
+            maxEdgesPerBin = 0;
+            maxVertsPerBin = 0;
+            queryPairCount = 0;
+
+            EnsureOwnerCapacity(1);
+        }
+
+        internal void ReleaseRuntimeBuffers() {
+            ReleaseBuffer(ref collisionEvents);
+            ReleaseBuffer(ref collisionEventCount);
+
+            ReleaseBuffer(ref xferColCount);
+            ReleaseBuffer(ref xferColNXBits);
+            ReleaseBuffer(ref xferColNYBits);
+            ReleaseBuffer(ref xferColPenBits);
+            ReleaseBuffer(ref xferColSBits);
+            ReleaseBuffer(ref xferColTBits);
+            ReleaseBuffer(ref xferColQAGi);
+            ReleaseBuffer(ref xferColQBGi);
+            ReleaseBuffer(ref xferColOAGi);
+            ReleaseBuffer(ref xferColOBGi);
+
+            ReleaseBuffer(ref boundaryEdgeCount);
+
+            ReleaseBuffer(ref ownerGridOrigin);
+            ReleaseBuffer(ref ownerGridDim);
+            ReleaseBuffer(ref ownerGridTexel);
+            ReleaseBuffer(ref ownerGridBase);
+            ReleaseBuffer(ref ownerBinOrigin);
+            ReleaseBuffer(ref ownerBinDim);
+            ReleaseBuffer(ref ownerBinBase);
+            ReleaseBuffer(ref ownerPairs);
+            ReleaseBuffer(ref ownerBoundaryEdgeCounts);
+            ReleaseBuffer(ref ownerBoundaryOverflow);
+            ReleaseBuffer(ref ownerBoundaryEdgeRefs);
+            ReleaseBuffer(ref boundaryEdgeOwner);
+            ReleaseBuffer(ref boundaryEdgeV0Gi);
+            ReleaseBuffer(ref boundaryEdgeV1Gi);
+            ReleaseBuffer(ref boundaryOutwardIsRight);
+            ReleaseBuffer(ref boundaryEdgeP0);
+            ReleaseBuffer(ref boundaryEdgeP1);
+            ReleaseBuffer(ref boundaryEdgeNOut);
+            ReleaseBuffer(ref boundaryEdgeNIn);
+            ReleaseBuffer(ref boundaryEdgePseudoN0);
+            ReleaseBuffer(ref boundaryEdgePseudoN1);
+            ReleaseBuffer(ref boundaryVertexOwner);
+            ReleaseBuffer(ref boundaryVertexGi);
+            ReleaseBuffer(ref boundaryVertexP);
+            ReleaseBuffer(ref boundaryVertexPseudoN);
+            ReleaseBuffer(ref edgeBinCounts);
+            ReleaseBuffer(ref edgeBinOverflow);
+            ReleaseBuffer(ref edgeBinRefs);
+            ReleaseBuffer(ref vertBinCounts);
+            ReleaseBuffer(ref vertBinOverflow);
+            ReleaseBuffer(ref vertBinRefs);
+            ReleaseBuffer(ref sdfPhi);
+            ReleaseBuffer(ref sdfGrad);
+            ReleaseBuffer(ref sdfFeatType);
+            ReleaseBuffer(ref sdfFeatId);
+            ReleaseBuffer(ref collisionDebugStats);
+            ReleaseBuffer(ref identityGlobalNodeMap);
+            identityGlobalNodeMapCpu = Array.Empty<int>();
+
+            boundaryEdgeCapacity = 0;
+            ownerCapacity = 0;
+            pairCapacity = 0;
+            totalGridCellCapacity = 0;
+            totalBinCapacity = 0;
+            maxBoundaryEdgesPerOwner = 0;
+            maxEdgesPerBin = 0;
+            maxVertsPerBin = 0;
+            queryPairCount = 0;
+
+            ownerGridOriginCpu = Array.Empty<float2>();
+            ownerGridDimCpu = Array.Empty<uint2>();
+            ownerGridTexelCpu = Array.Empty<float>();
+            ownerGridBaseCpu = Array.Empty<uint>();
+            ownerBinOriginCpu = Array.Empty<float2>();
+            ownerBinDimCpu = Array.Empty<uint2>();
+            ownerBinBaseCpu = Array.Empty<uint>();
+            ownerPairsCpu = Array.Empty<uint2>();
+        }
+
+        internal void CacheRuntimeKernels() {
+            kClearState = shader.FindKernel("ClearState");
+            kBuildBoundaryFeatures = shader.FindKernel("BuildBoundaryFeatures");
+            kBinBoundaryEdges = shader.FindKernel("BinBoundaryEdges");
+            kBinBoundaryVertices = shader.FindKernel("BinBoundaryVertices");
+            kBuildOwnerFeatureField = shader.FindKernel("BuildOwnerFeatureField");
+            kQueryVertexContacts = shader.FindKernel("QueryVertexContacts");
+            kQueryEdgeEdgeContacts = shader.FindKernel("QueryEdgeEdgeContacts");
+        }
+
+        private int BuildOwnerPairs(int ownerCount) {
+            int pairCount = 0;
+            for (uint a = 0; a < ownerCount; a++) {
+                for (uint b = a + 1u; b < ownerCount; b++) {
+                    if (pairCount >= ownerPairsCpu.Length)
+                        return pairCount;
+                    ownerPairsCpu[pairCount++] = new uint2(a, b);
+                }
+            }
+            return pairCount;
+        }
+
+        private void PrepareOwnerGridData(int ownerCount, float2 boundsMin, float2 boundsMax, float layerKernelH) {
+            float margin = math.max(Const.CollisionSdfBandHalfWidthScale * layerKernelH, 1e-3f);
+
+            float2 min = boundsMin;
+            float2 max = boundsMax;
+            if (math.any(max <= min)) {
+                min = new float2(-1f, -1f);
+                max = new float2(1f, 1f);
+            }
+
+            min -= margin;
+            max += margin;
+
+            float2 size = max - min;
+            float maxExtent = math.max(size.x, size.y);
+            float texel = math.max(maxExtent / SdfResolution, 1e-4f);
+
+            uint2 gridDim = new uint2(SdfResolution, SdfResolution);
+            uint2 binDim = new uint2(DefaultBinResolution, DefaultBinResolution);
+            uint gridCellsPerOwner = (uint)(SdfResolution * SdfResolution);
+            uint binsPerOwner = (uint)(DefaultBinResolution * DefaultBinResolution);
+
+            for (int owner = 0; owner < ownerCount; owner++) {
+                ownerGridOriginCpu[owner] = min;
+                ownerGridDimCpu[owner] = gridDim;
+                ownerGridTexelCpu[owner] = texel;
+                ownerGridBaseCpu[owner] = (uint)owner * gridCellsPerOwner;
+
+                ownerBinOriginCpu[owner] = min;
+                ownerBinDimCpu[owner] = binDim;
+                ownerBinBaseCpu[owner] = (uint)owner * binsPerOwner;
+            }
+        }
+
+        private void BindKernelBuffers(
+            CommandBuffer cb,
+            int kernel,
+            DT layer0Dt,
+            int dtReadSlot,
+            ComputeBuffer dtOwnerByLocal,
+            ComputeBuffer dtGlobalNodeMap
+        ) {
+            cb.SetComputeBufferParam(shader, kernel, "_Pos", solver.pos);
+            cb.SetComputeBufferParam(shader, kernel, "_Vel", solver.vel);
+
+            cb.SetComputeBufferParam(shader, kernel, "_DtCollisionOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtCollisionOwnerByLocal);
+            cb.SetComputeBufferParam(shader, kernel, "_DtHalfEdges", layer0Dt.GetHalfEdgesBuffer(dtReadSlot));
+            cb.SetComputeBufferParam(shader, kernel, "_DtBoundaryEdgeFlags", layer0Dt.BoundaryEdgeFlagsBuffer);
+            cb.SetComputeBufferParam(shader, kernel, "_DtGlobalVertexByLocal", dtGlobalNodeMap ?? solver.layerMappingCache.DefaultDtGlobalNodeMap);
+            cb.SetComputeBufferParam(shader, kernel, "_DtTriInternal", layer0Dt.TriInternalBuffer);
+            cb.SetComputeBufferParam(shader, kernel, "_DtBoundaryNormals", layer0Dt.BoundaryNormalsBuffer);
+
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerGridOrigin", ownerGridOrigin);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerGridDim", ownerGridDim);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerGridTexel", ownerGridTexel);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerGridBase", ownerGridBase);
+
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBinOrigin", ownerBinOrigin);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBinDim", ownerBinDim);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBinBase", ownerBinBase);
+
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerPairs", ownerPairs);
+
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBoundaryEdgeCounts", ownerBoundaryEdgeCounts);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBoundaryOverflow", ownerBoundaryOverflow);
+            cb.SetComputeBufferParam(shader, kernel, "_OwnerBoundaryEdgeRefs", ownerBoundaryEdgeRefs);
+
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeOwner", boundaryEdgeOwner);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryOutwardIsRight", boundaryOutwardIsRight);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeP0", boundaryEdgeP0);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeP1", boundaryEdgeP1);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeNOut", boundaryEdgeNOut);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeNIn", boundaryEdgeNIn);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgePseudoN0", boundaryEdgePseudoN0);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgePseudoN1", boundaryEdgePseudoN1);
+
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexOwner", boundaryVertexOwner);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexGi", boundaryVertexGi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexP", boundaryVertexP);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexPseudoN", boundaryVertexPseudoN);
+
+            cb.SetComputeBufferParam(shader, kernel, "_EdgeBinCounts", edgeBinCounts);
+            cb.SetComputeBufferParam(shader, kernel, "_EdgeBinOverflow", edgeBinOverflow);
+            cb.SetComputeBufferParam(shader, kernel, "_EdgeBinRefs", edgeBinRefs);
+
+            cb.SetComputeBufferParam(shader, kernel, "_VertBinCounts", vertBinCounts);
+            cb.SetComputeBufferParam(shader, kernel, "_VertBinOverflow", vertBinOverflow);
+            cb.SetComputeBufferParam(shader, kernel, "_VertBinRefs", vertBinRefs);
+
+            cb.SetComputeBufferParam(shader, kernel, "_SdfPhi", sdfPhi);
+            cb.SetComputeBufferParam(shader, kernel, "_SdfGrad", sdfGrad);
+            cb.SetComputeBufferParam(shader, kernel, "_SdfFeatType", sdfFeatType);
+            cb.SetComputeBufferParam(shader, kernel, "_SdfFeatId", sdfFeatId);
+
+            cb.SetComputeBufferParam(shader, kernel, "_Contacts", collisionEvents);
+            cb.SetComputeBufferParam(shader, kernel, "_ContactCount", collisionEventCount);
+            cb.SetComputeBufferParam(shader, kernel, "_CollisionDebugStats", collisionDebugStats);
+        }
+
+        private void PrepareLayer0BuildBuffers(
+            CommandBuffer cb,
             INeighborSearch layer0NeighborSearch,
             DT layer0Dt,
-			int dtReadSlot,
+            int dtReadSlot,
             int layer0ActiveCount,
             float layer0KernelH,
             float2 layer0BoundsMin,
@@ -169,124 +522,78 @@ namespace GPU.Solver {
             bool useDtGlobalNodeMap,
             ComputeBuffer dtGlobalNodeMap,
             ComputeBuffer dtGlobalToLayerLocalMap,
-            ComputeBuffer dtOwnerByLocal
+            ComputeBuffer dtOwnerByLocal,
+            bool resetForPrepass
         ) {
-			if (layer0Dt == null)
-				return;
+            if (layer0Dt == null)
+                return;
 
-            cb.SetComputeIntParam(shader, "_Base", 0);
-            cb.SetComputeIntParam(shader, "_ActiveCount", layer0ActiveCount);
-            cb.SetComputeIntParam(shader, "_DtNeighborCount", layer0NeighborSearch.NeighborCount);
-            cb.SetComputeFloatParam(shader, "_LayerKernelH", layer0KernelH);
-            cb.SetComputeIntParam(shader, "_UseDtOwnerFilter", dtOwnerByLocal != null ? 1 : 0);
-            cb.SetComputeIntParam(shader, "_CollisionEventCapacity", collisionEvents != null ? collisionEvents.count : 0);
+            int collisionOwnerCount = math.max(1, solver.solveRanges.Count);
+            EnsureOwnerCapacity(collisionOwnerCount);
+
+            PrepareOwnerGridData(collisionOwnerCount, layer0BoundsMin, layer0BoundsMax, layer0KernelH);
+            queryPairCount = BuildOwnerPairs(collisionOwnerCount);
+
+            if (resetForPrepass) {
+                oneUint[0] = (uint)layer0Dt.HalfEdgeCount;
+                cb.SetBufferData(boundaryEdgeCount, oneUint);
+
+                Array.Clear(statsScratch, 0, statsScratch.Length);
+                cb.SetBufferData(collisionDebugStats, statsScratch);
+            }
+
+            if (collisionOwnerCount > 0) {
+                cb.SetBufferData(ownerGridOrigin, ownerGridOriginCpu, 0, 0, collisionOwnerCount);
+                cb.SetBufferData(ownerGridDim, ownerGridDimCpu, 0, 0, collisionOwnerCount);
+                cb.SetBufferData(ownerGridTexel, ownerGridTexelCpu, 0, 0, collisionOwnerCount);
+                cb.SetBufferData(ownerGridBase, ownerGridBaseCpu, 0, 0, collisionOwnerCount);
+
+                cb.SetBufferData(ownerBinOrigin, ownerBinOriginCpu, 0, 0, collisionOwnerCount);
+                cb.SetBufferData(ownerBinDim, ownerBinDimCpu, 0, 0, collisionOwnerCount);
+                cb.SetBufferData(ownerBinBase, ownerBinBaseCpu, 0, 0, collisionOwnerCount);
+            }
+
+            if (queryPairCount > 0)
+                cb.SetBufferData(ownerPairs, ownerPairsCpu, 0, 0, queryPairCount);
+
             cb.SetComputeIntParam(shader, "_DtHalfEdgeCount", layer0Dt.HalfEdgeCount);
-            cb.SetComputeIntParam(shader, "_BoundaryChunkCapacity", boundaryChunkCapacity);
-            cb.SetComputeIntParam(shader, "_BoundaryChunkSortCapacity", boundaryChunkSortCapacity);
-            cb.SetComputeIntParam(shader, "_LbvhLeafOffset", lbvhLeafOffset);
-            cb.SetComputeIntParam(shader, "_LbvhNodeCount", lbvhNodeCapacity);
-            cb.SetComputeVectorParam(shader, "_LbvhBoundsMin", (Vector2)layer0BoundsMin);
-            cb.SetComputeVectorParam(shader, "_LbvhBoundsMax", (Vector2)layer0BoundsMax);
+            cb.SetComputeIntParam(shader, "_DtTriCount", layer0Dt.TriCount);
+            cb.SetComputeIntParam(shader, "_DtLocalVertexCount", layer0ActiveCount);
+            cb.SetComputeIntParam(shader, "_OwnerCount", collisionOwnerCount);
+            cb.SetComputeIntParam(shader, "_MaxBoundaryEdgesPerOwner", maxBoundaryEdgesPerOwner);
+            cb.SetComputeIntParam(shader, "_MaxEdgesPerBin", maxEdgesPerBin);
+            cb.SetComputeIntParam(shader, "_MaxVertsPerBin", maxVertsPerBin);
+            cb.SetComputeIntParam(shader, "_MaxContacts", collisionEvents != null ? collisionEvents.count : 0);
+            cb.SetComputeIntParam(shader, "_MaxGridDimX", SdfResolution);
+            cb.SetComputeIntParam(shader, "_MaxGridDimY", SdfResolution);
+            cb.SetComputeIntParam(shader, "_QueryPairCount", queryPairCount);
+            cb.SetComputeIntParam(shader, "_QuerySwap", 0);
 
-            cb.SetComputeBufferParam(shader, kClearCollisionEventCount, "_CollisionEventCount", collisionEventCount);
-            cb.SetComputeBufferParam(shader, kClearBoundaryChunkCount, "_BoundaryChunkCount", boundaryChunkCount);
-			cb.SetComputeBufferParam(shader, kClearCollisionDebugStats, "_CollisionDebugStats", collisionDebugStats);
+            cb.SetComputeFloatParam(shader, "_LayerKernelH", layer0KernelH);
+            cb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);
+            cb.SetComputeFloatParam(shader, "_SdfBandWorld", math.max(Const.CollisionSdfBandHalfWidthScale * layer0KernelH, 1e-4f));
+            cb.SetComputeFloatParam(shader, "_SdfFar", 1e6f);
+            cb.SetComputeFloatParam(shader, "_SdfEps", 1e-8f);
+            cb.SetComputeFloatParam(shader, "_OwnerBinSizeScale", 2f);
 
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_Pos", solver.pos);
-			cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_Vel", solver.vel);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighbors", layer0NeighborSearch.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtNeighborCounts", layer0NeighborSearch.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtOwnerByLocal);
-			cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_DtCollisionOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtCollisionOwnerByLocal);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEvents", collisionEvents);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_CollisionEventCount", collisionEventCount);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_BoundaryChunkCount", boundaryChunkCount);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_BoundaryChunks", boundaryChunkEdges);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_BoundaryChunkAabbs", boundaryChunkAabbs);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_BoundaryChunkSortIndices", boundaryChunkSortIndices);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_LbvhNodeAabbs", lbvhNodeAabbs);
-            cb.SetComputeBufferParam(shader, kBuildCollisionEventsL0, "_LbvhNodeChunk", lbvhNodeChunk);
+            int[] kernels = {
+                kClearState,
+                kBuildBoundaryFeatures,
+                kBinBoundaryEdges,
+                kBinBoundaryVertices,
+                kBuildOwnerFeatureField,
+                kQueryVertexContacts,
+                kQueryEdgeEdgeContacts,
+            };
 
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_Pos", solver.pos);
-			cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_Vel", solver.vel);
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_DtOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtOwnerByLocal);
-			cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_DtCollisionOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtCollisionOwnerByLocal);
-			cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_DtHalfEdges", layer0Dt.GetHalfEdgesBuffer(dtReadSlot));
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_DtBoundaryEdgeFlags", layer0Dt.BoundaryEdgeFlagsBuffer);
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_BoundaryChunkCount", boundaryChunkCount);
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_BoundaryChunks", boundaryChunkEdges);
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_BoundaryChunkAabbs", boundaryChunkAabbs);
-            cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_BoundaryChunkMortonKeys", boundaryChunkMortonKeys);
-			cb.SetComputeBufferParam(shader, kBuildBoundaryChunksL0, "_CollisionDebugStats", collisionDebugStats);
+            ComputeBuffer globalVertexByLocal = dtGlobalNodeMap;
+            if (globalVertexByLocal == null || !globalVertexByLocal.IsValid())
+                globalVertexByLocal = EnsureIdentityGlobalNodeMap(layer0ActiveCount);
+            for (int i = 0; i < kernels.Length; i++)
+                BindKernelBuffers(cb, kernels[i], layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal);
 
-            cb.SetComputeBufferParam(shader, kInitChunkSortKeys, "_BoundaryChunkCount", boundaryChunkCount);
-            cb.SetComputeBufferParam(shader, kInitChunkSortKeys, "_BoundaryChunkMortonKeys", boundaryChunkMortonKeys);
-            cb.SetComputeBufferParam(shader, kInitChunkSortKeys, "_BoundaryChunkSortKeys", boundaryChunkSortKeys);
-            cb.SetComputeBufferParam(shader, kInitChunkSortKeys, "_BoundaryChunkSortIndices", boundaryChunkSortIndices);
-
-            cb.SetComputeBufferParam(shader, kBitonicSortChunkKeys, "_BoundaryChunkSortKeys", boundaryChunkSortKeys);
-            cb.SetComputeBufferParam(shader, kBitonicSortChunkKeys, "_BoundaryChunkSortIndices", boundaryChunkSortIndices);
-
-            cb.SetComputeBufferParam(shader, kBuildLbvhLeaves, "_BoundaryChunkCount", boundaryChunkCount);
-            cb.SetComputeBufferParam(shader, kBuildLbvhLeaves, "_BoundaryChunkSortIndices", boundaryChunkSortIndices);
-            cb.SetComputeBufferParam(shader, kBuildLbvhLeaves, "_BoundaryChunkAabbs", boundaryChunkAabbs);
-            cb.SetComputeBufferParam(shader, kBuildLbvhLeaves, "_LbvhNodeAabbs", lbvhNodeAabbs);
-            cb.SetComputeBufferParam(shader, kBuildLbvhLeaves, "_LbvhNodeChunk", lbvhNodeChunk);
-
-            cb.SetComputeBufferParam(shader, kBuildLbvhInternalLevel, "_LbvhNodeAabbs", lbvhNodeAabbs);
-            cb.SetComputeBufferParam(shader, kBuildLbvhInternalLevel, "_LbvhNodeChunk", lbvhNodeChunk);
-
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_Pos", solver.pos);
-			cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_Vel", solver.vel);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_DtCollisionOwnerByLocal", dtOwnerByLocal ?? solver.layerMappingCache.DefaultDtCollisionOwnerByLocal);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_BoundaryChunkCount", boundaryChunkCount);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_BoundaryChunks", boundaryChunkEdges);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_BoundaryChunkAabbs", boundaryChunkAabbs);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_BoundaryChunkSortIndices", boundaryChunkSortIndices);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_LbvhNodeAabbs", lbvhNodeAabbs);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_LbvhNodeChunk", lbvhNodeChunk);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_CollisionEvents", collisionEvents);
-            cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_CollisionEventCount", collisionEventCount);
-			cb.SetComputeBufferParam(shader, kTraverseLbvhEmitCollisionEvents, "_CollisionDebugStats", collisionDebugStats);
-
-            cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColCount", xferColCount);
-            cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNXBits", xferColNXBits);
-            cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
-            cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColSBits", xferColSBits);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColTBits", xferColTBits);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColQAGi", xferColQAGi);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColQBGi", xferColQBGi);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColOAGi", xferColOAGi);
-			cb.SetComputeBufferParam(shader, kClearTransferredCollision, "_XferColOBGi", xferColOBGi);
-
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", solver.parentIndex);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentIndices", solver.parentIndices);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_ParentWeights", solver.parentWeights);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighbors", layer0NeighborSearch.NeighborsBuffer);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_DtNeighborCounts", layer0NeighborSearch.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_CollisionEvents", collisionEvents);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_CollisionEventCount", collisionEventCount);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColCount", xferColCount);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNXBits", xferColNXBits);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColNYBits", xferColNYBits);
-            cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColPenBits", xferColPenBits);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColSBits", xferColSBits);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColTBits", xferColTBits);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColQAGi", xferColQAGi);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColQBGi", xferColQBGi);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColOAGi", xferColOAGi);
-			cb.SetComputeBufferParam(shader, kRestrictCollisionEventsToActivePairs, "_XferColOBGi", xferColOBGi);
-
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBuildBoundaryChunksL0, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kInitChunkSortKeys, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBitonicSortChunkKeys, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBuildLbvhLeaves, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBuildLbvhInternalLevel, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-			solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kTraverseLbvhEmitCollisionEvents, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kBuildCollisionEventsL0, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kClearTransferredCollision, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kRestrictCollisionEventsToActivePairs, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            _ = layer0NeighborSearch;
+            _ = dtGlobalToLayerLocalMap;
         }
-	}
+    }
 }

@@ -27,6 +27,7 @@ namespace GPU.Solver {
         private ComputeBuffer defaultDtGlobalNodeMap;
         private ComputeBuffer defaultDtGlobalToLocalMap;
         private ComputeBuffer defaultDtOwnerByLocal;
+        internal ComputeBuffer DefaultDtGlobalNodeMap => defaultDtGlobalNodeMap;
         internal ComputeBuffer DefaultDtOwnerByLocal => defaultDtOwnerByLocal;
         internal ComputeBuffer DefaultDtCollisionOwnerByLocal => defaultDtOwnerByLocal;
 

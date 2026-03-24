@@ -58,6 +58,10 @@ public static class Const {
     public static float CollisionFriction => SimulationParamSource.Current.collision.collisionFriction;
     public static float CollisionRestitution => SimulationParamSource.Current.collision.collisionRestitution;
     public static float CollisionRestitutionThreshold => SimulationParamSource.Current.collision.collisionRestitutionThreshold;
+    public static float CollisionSdfBandHalfWidthScale => SimulationParamSource.Current.collision.collisionSdfBandHalfWidthScale;
+    public static float CollisionSdfVertexMarginScale => SimulationParamSource.Current.collision.collisionSdfVertexMarginScale;
+    public static float CollisionSdfFallbackDepthScale => SimulationParamSource.Current.collision.collisionSdfFallbackDepthScale;
+    public static int CollisionSdfEdgeRefineIterations => SimulationParamSource.Current.collision.collisionSdfEdgeRefineIterations;
 
     // Durability tether (unilateral max-distance inequality)
     public static float DurabilityCompliance => SimulationParamSource.Current.durability.durabilityCompliance;

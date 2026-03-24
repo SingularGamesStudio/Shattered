@@ -1,0 +1,17 @@
+#pragma enable_d3d11_debug_symbols
+
+#pragma kernel ClearState
+#pragma kernel BuildBoundaryFeatures
+#pragma kernel BinBoundaryEdges
+#pragma kernel BinBoundaryVertices
+#pragma kernel BuildOwnerFeatureField
+#pragma kernel QueryVertexContacts
+#pragma kernel QueryEdgeEdgeContacts
+
+#include "XPBI.CollisionEventsNew.Shared.hlsl"
+
+groupshared uint  gQueryVertexContactCount;
+groupshared Contact gQueryVertexContacts[QUERY_VERTEX_CONTACT_CAP];
+
+#include "XPBI.CollisionEventsNew.Helpers.hlsl"
+#include "XPBI.CollisionEventsNew.Kernels.hlsl"

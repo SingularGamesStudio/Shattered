@@ -38,24 +38,8 @@ namespace GPU.Solver {
         private ComputeBuffer parentIndices => solver.parentIndices;
         private ComputeBuffer parentWeights => solver.parentWeights;
         private ComputeBuffer F => solver.F;
-        private ComputeBuffer collisionEvents => solver.collisionEvent.CollisionEventsBuffer;
-        private ComputeBuffer collisionEventCount => solver.collisionEvent.CollisionEventCountBuffer;
-        private ComputeBuffer xferColCount => solver.collisionEvent.XferColCountBuffer;
-        private ComputeBuffer xferColNXBits => solver.collisionEvent.XferColNXBitsBuffer;
-        private ComputeBuffer xferColNYBits => solver.collisionEvent.XferColNYBitsBuffer;
-        private ComputeBuffer xferColPenBits => solver.collisionEvent.XferColPenBitsBuffer;
-        private ComputeBuffer xferColSBits => solver.collisionEvent.XferColSBitsBuffer;
-        private ComputeBuffer xferColTBits => solver.collisionEvent.XferColTBitsBuffer;
-        private ComputeBuffer xferColQAGi => solver.collisionEvent.XferColQAGiBuffer;
-        private ComputeBuffer xferColQBGi => solver.collisionEvent.XferColQBGiBuffer;
-        private ComputeBuffer xferColOAGi => solver.collisionEvent.XferColOAGiBuffer;
-        private ComputeBuffer xferColOBGi => solver.collisionEvent.XferColOBGiBuffer;
         private ComputeBuffer defaultDtOwnerByLocal => solver.layerMappingCache.DefaultDtOwnerByLocal;
         private ComputeBuffer defaultDtCollisionOwnerByLocal => solver.layerMappingCache.DefaultDtCollisionOwnerByLocal;
-        private int kClearCollisionEventCount => solver.collisionEvent.ClearCollisionEventCountKernel;
-        private int kBuildCollisionEventsL0 => solver.collisionEvent.BuildCollisionEventsL0Kernel;
-        private int kClearTransferredCollision => solver.collisionEvent.ClearTransferredCollisionKernel;
-        private int kRestrictCollisionEventsToActivePairs => solver.collisionEvent.RestrictCollisionEventsToActivePairsKernel;
         private LayerSolveRuntime actualRuntime => solver.LayerSolveRuntime;
 
         private void BindDtGlobalMappingParams(CommandBuffer cb, ComputeShader targetShader, int kernel, bool useDtGlobalNodeMap, int dtLocalBase, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap) {
@@ -221,44 +205,6 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kResetCollisionLambda, "_DurabilityLambda", actualRuntime.DurabilityLambda);
             cb.SetComputeBufferParam(shader, kResetCollisionLambda, "_CollisionLambda", actualRuntime.CollisionLambda);
 
-            cb.SetComputeBufferParam(collisionShader, kClearCollisionEventCount, "_CollisionEventCount", collisionEventCount);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_Pos", pos);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtNeighbors", neighborSearch.NeighborsBuffer);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_CollisionEvents", collisionEvents);
-            cb.SetComputeBufferParam(collisionShader, kBuildCollisionEventsL0, "_CollisionEventCount", collisionEventCount);
-
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColCount", xferColCount);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColNXBits", xferColNXBits);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColNYBits", xferColNYBits);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColPenBits", xferColPenBits);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColSBits", xferColSBits);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColTBits", xferColTBits);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColQAGi", xferColQAGi);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColQBGi", xferColQBGi);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColOAGi", xferColOAGi);
-            cb.SetComputeBufferParam(collisionShader, kClearTransferredCollision, "_XferColOBGi", xferColOBGi);
-
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_ParentIndex", parentIndex);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_ParentIndices", parentIndices);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_ParentWeights", parentWeights);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_DtNeighbors", neighborSearch.NeighborsBuffer);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_CollisionEvents", collisionEvents);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_CollisionEventCount", collisionEventCount);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColCount", xferColCount);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColNXBits", xferColNXBits);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColNYBits", xferColNYBits);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColPenBits", xferColPenBits);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColSBits", xferColSBits);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColTBits", xferColTBits);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColQAGi", xferColQAGi);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColQBGi", xferColQBGi);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColOAGi", xferColOAGi);
-            cb.SetComputeBufferParam(collisionShader, kRestrictCollisionEventsToActivePairs, "_XferColOBGi", xferColOBGi);
-
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVBits", actualRuntime.RestrictedDeltaVBits);
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVCount", actualRuntime.RestrictedDeltaVCount);
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVAvg", actualRuntime.RestrictedDeltaVAvg);
@@ -302,10 +248,6 @@ namespace GPU.Solver {
             BindDtGlobalMappingParams(cb, shader, kRestrictFineVelocityResidualToActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(cb, shader, kApplyRestrictedDeltaVToActiveAndPrefix, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(cb, shader, kRemoveRestrictedDeltaVFromActive, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            BindDtGlobalMappingParams(cb, collisionShader, kBuildCollisionEventsL0, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            BindDtGlobalMappingParams(cb, collisionShader, kClearTransferredCollision, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-            BindDtGlobalMappingParams(cb, collisionShader, kRestrictCollisionEventsToActivePairs, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
-
             cb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kComputeCorrectionL, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);

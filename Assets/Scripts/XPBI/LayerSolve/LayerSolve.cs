@@ -145,7 +145,7 @@ namespace GPU.Solver {
             }
 
             if (gsIterations > 0 && layerColoring != null) {
-                runtime.SetCollisionEnable(session.AsyncCb, true);
+                runtime.SetCollisionEnable(session.AsyncCb, false);
 
                 if (usePersistentCoarseGs) {
                     runtime.SetPersistentRelaxParams(session.AsyncCb, gsIterations, 0);
