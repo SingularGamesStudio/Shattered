@@ -1,175 +1,459 @@
-// Expected locals in scope:
-//   uint li, gi, active, dtLi
+// ============================================================================
+// CollisionSolveBlock.hlsl
+//
+// Expected locals already in scope:
+//   uint  li, gi, active, dtLi
 //   float support
+//
+// Expected macros/helpers in the solve path:
+//   LocalIndexFromGlobal()
+//   XPBI_POS(li, gi)
+//   XPBI_VEL(li, gi)
+//   XPBI_SET_VEL(li, gi, v)
+//   XPBI_INV_MASS(li, gi)
+//   XPBI_NEIGHBOR_FIXED(li, gi)
+//   EPS
+//   _Dt
+//   _CollisionCompliance
+//   _CollisionSupportScale
+// ============================================================================
 
 int ownerICollision = (li < active) ? _DtCollisionOwnerByLocal[li] : -1;
-if (ownerICollision >= 0 && _ActiveCount == _FineCount)
+if (ownerICollision >= 0)
 {
-    float targetSeparation = max(EPS, _CollisionSupportScale * support);
-    float targetSeparationSq = targetSeparation * targetSeparation;
-    float dt = max(_Dt, EPS);
-    float dt2 = dt * dt;
-    float alphaCollision = max(_CollisionCompliance, 0.0);
+float dt = max(_Dt, EPS);
+float dt2 = dt * dt;
 
-    uint baseIdxCol = dtLi * _DtNeighborCount;
-    uint rawCountCol = _DtNeighborCounts[dtLi];
-    uint nCountCol = min(rawCountCol, _DtNeighborCount);
-    nCountCol = min(nCountCol, targetNeighborCount);
+float alphaCollision = max(_CollisionCompliance, 0.0);
+float targetSeparation = max(EPS, _CollisionSupportScale * support);
 
-    uint contactBase = dtLi * _DtNeighborCount * xferColManifoldSlots;
+bool useFineContacts = (_ActiveCount == _FineCount);
 
-    bool fixedI = XPBI_NEIGHBOR_FIXED(li, gi);
-    float invMassICol = fixedI ? 0.0 : XPBI_INV_MASS(li, gi);
+uint contactCount = useFineContacts ? ColFineCount() : ColCoarseCount();
+uint lambdaBase   = useFineContacts ? 0u : _CollisionEventCapacity;
 
-    [loop] for (uint kCol = 0u; kCol < nCountCol; kCol++)
+const float COL_GEOM_EPS = 1e-12;
+const float COL_PARAM_EPS = 1e-4;
+
+[loop]
+for (uint cid = 0u; cid < contactCount; cid++)
+{
+    uint ownerA = COLLISION_INVALID_U32;
+    uint ownerB = COLLISION_INVALID_U32;
+    float2 nrm = 0.0;
+    float penRaw = 0.0;
+    float scale = 1.0;
+
+    uint  nodeGiRaw[COLLISION_MAX_NODES];
+    float betaRaw[COLLISION_MAX_NODES];
+
+    [unroll]
+    for (uint iInit = 0u; iInit < COLLISION_MAX_NODES; iInit++)
     {
-        uint gjLi = _DtNeighbors[baseIdxCol + kCol];
-        if (gjLi == ~0u || gjLi >= active) continue;
+        nodeGiRaw[iInit] = COLLISION_INVALID_U32;
+        betaRaw[iInit] = 0.0;
+    }
 
-        int ownerJ = _DtCollisionOwnerByLocal[gjLi];
-        if (ownerJ < 0 || ownerJ == ownerICollision) continue;
+    // --------------------------------------------------------------------
+    // Decode current event into a raw local stencil.
+    // --------------------------------------------------------------------
+    if (useFineContacts)
+    {
+        CollisionFineContact c = _FineContacts[cid];
 
-        uint gj = XPBI_GET_GJ(gjLi);
-        if (gj == ~0u || gj <= gi) continue;
+        ownerA = c.ownerA;
+        ownerB = c.ownerB;
+        nrm = c.n;
+        penRaw = max(c.pen, 0.0);
+        scale = 1.0;
 
-        bool fixedJ = XPBI_NEIGHBOR_FIXED(gjLi, gj);
-        if (fixedI && fixedJ) continue;
-
-        float invMassJCol = fixedJ ? 0.0 : XPBI_INV_MASS(gjLi, gj);
-        float wTerm = dt2 * (invMassICol + invMassJCol);
-        if (wTerm <= EPS && alphaCollision <= EPS) continue;
-
-        uint pairBase = contactBase + kCol * xferColManifoldSlots;
-
-        if (_UseTransferredCollisions != 0u)
+        // Fine vertex-vs-feature event.
+        if (c.vGiA != COLLISION_INVALID_U32)
         {
-            bool anySlotUsed = false;
+            nodeGiRaw[0] = c.vGiA;
+            betaRaw[0] = -1.0;
 
-            [unroll]
-            for (uint slotOffset = 0u; slotOffset < xferColManifoldSlots; slotOffset++)
+            uint b0 = _BoundaryEdgeV0Gi[c.featB];
+            uint b1 = _BoundaryEdgeV1Gi[c.featB];
+            uint bv = _BoundaryVertexGi[c.featB];
+
+            bool haveB0 = (b0 != COLLISION_INVALID_U32);
+            bool haveB1 = (b1 != COLLISION_INVALID_U32);
+
+            // Prefer the boundary edge interpretation when both endpoints exist.
+            // Collapse to point-point when projection lands on an endpoint.
+            if (haveB0 && haveB1 && b0 != b1)
             {
-                uint slot = pairBase + slotOffset;
-                if (_XferColCount[slot] == 0u)
-                    continue;
+                uint b0Li = LocalIndexFromGlobal(b0);
+                uint b1Li = LocalIndexFromGlobal(b1);
 
-                anySlotUsed = true;
+                bool b0Active = (b0Li != COLLISION_INVALID_U32 && b0Li < active);
+                bool b1Active = (b1Li != COLLISION_INVALID_U32 && b1Li < active);
 
-                float pen = asfloat(_XferColPenBits[slot]);
-                if (!(pen > EPS))
-                    continue;
+                if (b0Active && b1Active)
+                {
+                    float2 b0Cand = XPBI_POS(b0Li, b0) + XPBI_VEL(b0Li, b0) * dt;
+                    float2 b1Cand = XPBI_POS(b1Li, b1) + XPBI_VEL(b1Li, b1) * dt;
+                    float2 e = b1Cand - b0Cand;
+                    float e2 = dot(e, e);
 
-                float2 nrm = float2(asfloat(_XferColNXBits[slot]), asfloat(_XferColNYBits[slot]));
-                float n2 = dot(nrm, nrm);
-                if (!(n2 > 1e-12))
-                    continue;
-                nrm *= rsqrt(n2);
+                    if (e2 > COL_GEOM_EPS)
+                    {
+                        float t = saturate(dot(c.cpB - b0Cand, e) / e2);
 
-                uint qaGi = _XferColQAGi[slot];
-                uint qbGi = _XferColQBGi[slot];
-                uint oaGi = _XferColOAGi[slot];
-                uint obGi = _XferColOBGi[slot];
-                if (qaGi == ~0u || qbGi == ~0u || oaGi == ~0u || obGi == ~0u)
-                    continue;
+                        if (t <= COL_PARAM_EPS)
+                        {
+                            nodeGiRaw[1] = b0;
+                            betaRaw[1] = 1.0;
+                        }
+                        else if (t >= (1.0 - COL_PARAM_EPS))
+                        {
+                            nodeGiRaw[1] = b1;
+                            betaRaw[1] = 1.0;
+                        }
+                        else
+                        {
+                            nodeGiRaw[1] = b0;
+                            nodeGiRaw[2] = b1;
+                            betaRaw[1] = 1.0 - t;
+                            betaRaw[2] = t;
+                        }
+                    }
+                    else
+                    {
+                        float d0 = dot(c.cpB - b0Cand, c.cpB - b0Cand);
+                        float d1 = dot(c.cpB - b1Cand, c.cpB - b1Cand);
 
-                uint qaLi = LocalIndexFromGlobal(qaGi);
-                uint qbLi = LocalIndexFromGlobal(qbGi);
-                uint oaLi = LocalIndexFromGlobal(oaGi);
-                uint obLi = LocalIndexFromGlobal(obGi);
-                if (qaLi == ~0u || qbLi == ~0u || oaLi == ~0u || obLi == ~0u)
-                    continue;
-                if (qaLi >= active || qbLi >= active || oaLi >= active || obLi >= active)
-                    continue;
+                        nodeGiRaw[1] = (d0 <= d1) ? b0 : b1;
+                        betaRaw[1] = 1.0;
+                    }
+                }
+                else if (b0Active || b1Active)
+                {
+                    nodeGiRaw[1] = b0Active ? b0 : b1;
+                    betaRaw[1] = 1.0;
+                }
+                else if (bv != COLLISION_INVALID_U32)
+                {
+                    nodeGiRaw[1] = bv;
+                    betaRaw[1] = 1.0;
+                }
+            }
+            else if (bv != COLLISION_INVALID_U32)
+            {
+                nodeGiRaw[1] = bv;
+                betaRaw[1] = 1.0;
+            }
+            else if (haveB0 || haveB1)
+            {
+                nodeGiRaw[1] = haveB0 ? b0 : b1;
+                betaRaw[1] = 1.0;
+            }
+        }
+        // Fine edge-edge event.
+        else
+        {
+            uint a0 = _BoundaryEdgeV0Gi[c.heA];
+            uint a1 = _BoundaryEdgeV1Gi[c.heA];
+            uint b0 = _BoundaryEdgeV0Gi[c.featB];
+            uint b1 = _BoundaryEdgeV1Gi[c.featB];
 
-                float sSeg = saturate(asfloat(_XferColSBits[slot]));
-                float tSeg = saturate(asfloat(_XferColTBits[slot]));
+            if (a0 != COLLISION_INVALID_U32 && a1 != COLLISION_INVALID_U32 &&
+                b0 != COLLISION_INVALID_U32 && b1 != COLLISION_INVALID_U32)
+            {
+                uint a0Li = LocalIndexFromGlobal(a0);
+                uint a1Li = LocalIndexFromGlobal(a1);
+                uint b0Li = LocalIndexFromGlobal(b0);
+                uint b1Li = LocalIndexFromGlobal(b1);
 
-                bool fixedA0 = XPBI_NEIGHBOR_FIXED(qaLi, qaGi);
-                bool fixedA1 = XPBI_NEIGHBOR_FIXED(qbLi, qbGi);
-                bool fixedB0 = XPBI_NEIGHBOR_FIXED(oaLi, oaGi);
-                bool fixedB1 = XPBI_NEIGHBOR_FIXED(obLi, obGi);
+                bool a0Active = (a0Li != COLLISION_INVALID_U32 && a0Li < active);
+                bool a1Active = (a1Li != COLLISION_INVALID_U32 && a1Li < active);
+                bool b0Active = (b0Li != COLLISION_INVALID_U32 && b0Li < active);
+                bool b1Active = (b1Li != COLLISION_INVALID_U32 && b1Li < active);
 
-                float invMassA0 = fixedA0 ? 0.0 : XPBI_INV_MASS(qaLi, qaGi);
-                float invMassA1 = fixedA1 ? 0.0 : XPBI_INV_MASS(qbLi, qbGi);
-                float invMassB0 = fixedB0 ? 0.0 : XPBI_INV_MASS(oaLi, oaGi);
-                float invMassB1 = fixedB1 ? 0.0 : XPBI_INV_MASS(obLi, obGi);
+                if (a0Active && a1Active && b0Active && b1Active)
+                {
+                    float2 a0Cand = XPBI_POS(a0Li, a0) + XPBI_VEL(a0Li, a0) * dt;
+                    float2 a1Cand = XPBI_POS(a1Li, a1) + XPBI_VEL(a1Li, a1) * dt;
+                    float2 b0Cand = XPBI_POS(b0Li, b0) + XPBI_VEL(b0Li, b0) * dt;
+                    float2 b1Cand = XPBI_POS(b1Li, b1) + XPBI_VEL(b1Li, b1) * dt;
 
-                float wA0 = (1.0 - sSeg) * invMassA0;
-                float wA1 = sSeg * invMassA1;
-                float wB0 = (1.0 - tSeg) * invMassB0;
-                float wB1 = tSeg * invMassB1;
-                float wTermWeighted = dt2 * (wA0 + wA1 + wB0 + wB1);
-                if (wTermWeighted <= EPS && alphaCollision <= EPS)
-                    continue;
+                    float2 aEdge = a1Cand - a0Cand;
+                    float2 bEdge = b1Cand - b0Cand;
+                    float aLen2 = dot(aEdge, aEdge);
+                    float bLen2 = dot(bEdge, bEdge);
 
-                float2 qaCand = XPBI_POS(qaLi, qaGi) + XPBI_VEL(qaLi, qaGi) * dt;
-                float2 qbCand = XPBI_POS(qbLi, qbGi) + XPBI_VEL(qbLi, qbGi) * dt;
-                float2 oaCand = XPBI_POS(oaLi, oaGi) + XPBI_VEL(oaLi, oaGi) * dt;
-                float2 obCand = XPBI_POS(obLi, obGi) + XPBI_VEL(obLi, obGi) * dt;
+                    // Degenerate A edge -> point-edge against B.
+                    if (aLen2 <= COL_GEOM_EPS && bLen2 > COL_GEOM_EPS)
+                    {
+                        float t = saturate(dot(c.x - b0Cand, bEdge) / bLen2);
 
-                float2 cA = lerp(qaCand, qbCand, sSeg);
-                float2 cB = lerp(oaCand, obCand, tSeg);
-                float Cn = dot(nrm, cB - cA) - targetSeparation;
-                if (Cn >= 0.0)
-                    continue;
-                Cn = min(Cn, -pen);
+                        nodeGiRaw[0] = a0;
+                        betaRaw[0] = -1.0;
 
-                float lambdaPrev = _CollisionLambda[slot];
-                float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTermWeighted + alphaCollision, EPS);
-                float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
-                float appliedDLambda = lambdaNew - lambdaPrev;
-                if (appliedDLambda <= 0.0)
-                    continue;
+                        if (t <= COL_PARAM_EPS)
+                        {
+                            nodeGiRaw[1] = b0;
+                            betaRaw[1] = 1.0;
+                        }
+                        else if (t >= (1.0 - COL_PARAM_EPS))
+                        {
+                            nodeGiRaw[1] = b1;
+                            betaRaw[1] = 1.0;
+                        }
+                        else
+                        {
+                            nodeGiRaw[1] = b0;
+                            nodeGiRaw[2] = b1;
+                            betaRaw[1] = 1.0 - t;
+                            betaRaw[2] = t;
+                        }
+                    }
+                    // Degenerate B edge -> edge-point.
+                    else if (bLen2 <= COL_GEOM_EPS && aLen2 > COL_GEOM_EPS)
+                    {
+                        float s = saturate(dot(c.x - a0Cand, aEdge) / aLen2);
 
-                float2 dVA0 = -wA0 * dt * appliedDLambda * nrm;
-                float2 dVA1 = -wA1 * dt * appliedDLambda * nrm;
-                float2 dVB0 = wB0 * dt * appliedDLambda * nrm;
-                float2 dVB1 = wB1 * dt * appliedDLambda * nrm;
-                if (!all(isfinite(dVA0)) || !all(isfinite(dVA1)) || !all(isfinite(dVB0)) || !all(isfinite(dVB1)))
-                    continue;
+                        if (s <= COL_PARAM_EPS)
+                        {
+                            nodeGiRaw[0] = a0;
+                            betaRaw[0] = -1.0;
+                        }
+                        else if (s >= (1.0 - COL_PARAM_EPS))
+                        {
+                            nodeGiRaw[0] = a1;
+                            betaRaw[0] = -1.0;
+                        }
+                        else
+                        {
+                            nodeGiRaw[0] = a0;
+                            nodeGiRaw[1] = a1;
+                            betaRaw[0] = -(1.0 - s);
+                            betaRaw[1] = -s;
+                        }
 
-                if (!fixedA0)
-                    XPBI_SET_VEL(qaLi, qaGi, XPBI_VEL(qaLi, qaGi) + dVA0);
-                if (!fixedA1)
-                    XPBI_SET_VEL(qbLi, qbGi, XPBI_VEL(qbLi, qbGi) + dVA1);
-                if (!fixedB0)
-                    XPBI_SET_VEL(oaLi, oaGi, XPBI_VEL(oaLi, oaGi) + dVB0);
-                if (!fixedB1)
-                    XPBI_SET_VEL(obLi, obGi, XPBI_VEL(obLi, obGi) + dVB1);
+                        nodeGiRaw[2] = b0;
+                        betaRaw[2] = 1.0;
+                    }
+                    // Both degenerate -> point-point.
+                    else if (aLen2 <= COL_GEOM_EPS && bLen2 <= COL_GEOM_EPS)
+                    {
+                        nodeGiRaw[0] = a0;
+                        nodeGiRaw[1] = b0;
+                        betaRaw[0] = -1.0;
+                        betaRaw[1] = 1.0;
+                    }
+                    // Full edge-edge stencil.
+                    else
+                    {
+                        float s = saturate(dot(c.x - a0Cand, aEdge) / aLen2);
+                        float t = saturate(dot(c.x - b0Cand, bEdge) / bLen2);
 
-                _CollisionLambda[slot] = lambdaNew;
+                        nodeGiRaw[0] = a0;
+                        nodeGiRaw[1] = a1;
+                        nodeGiRaw[2] = b0;
+                        nodeGiRaw[3] = b1;
+
+                        betaRaw[0] = -(1.0 - s);
+                        betaRaw[1] = -s;
+                        betaRaw[2] = 1.0 - t;
+                        betaRaw[3] = t;
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        CollisionCoarseContact c = _CoarseContacts[cid];
+
+        ownerA = c.ownerA;
+        ownerB = c.ownerB;
+        nrm = c.n;
+
+        float w = max(c.weight, EPS);
+        penRaw = max(c.pen, 0.0) / w;
+        scale  = sqrt(w);
+
+        nodeGiRaw[0] = c.coarseGiA;
+        nodeGiRaw[1] = c.coarseGiB;
+        betaRaw[0] = -1.0;
+        betaRaw[1] = 1.0;
+    }
+
+    if (ownerA == ownerB)
+        continue;
+    if (ownerA == COLLISION_INVALID_U32 || ownerB == COLLISION_INVALID_U32)
+        continue;
+
+    float n2 = dot(nrm, nrm);
+    if (!(n2 > COL_GEOM_EPS))
+        continue;
+    nrm *= rsqrt(n2);
+
+    if (!(scale > EPS))
+        continue;
+
+    // --------------------------------------------------------------------
+    // Merge duplicate raw participants by GI.
+    // This avoids overcounting when a feature degenerates or collapses.
+    // --------------------------------------------------------------------
+    uint  nodeGiMerged[COLLISION_MAX_NODES];
+    float betaMerged[COLLISION_MAX_NODES];
+
+    [unroll]
+    for (uint mInit = 0u; mInit < COLLISION_MAX_NODES; mInit++)
+    {
+        nodeGiMerged[mInit] = COLLISION_INVALID_U32;
+        betaMerged[mInit] = 0.0;
+    }
+
+    [unroll]
+    for (uint sRaw = 0u; sRaw < COLLISION_MAX_NODES; sRaw++)
+    {
+        uint g = nodeGiRaw[sRaw];
+        float b = betaRaw[sRaw];
+
+        if (g == COLLISION_INVALID_U32)
+            continue;
+        if (abs(b) <= COL_GEOM_EPS)
+            continue;
+
+        bool merged = false;
+
+        [unroll]
+        for (uint m = 0u; m < COLLISION_MAX_NODES; m++)
+        {
+            if (nodeGiMerged[m] == g)
+            {
+                betaMerged[m] += b;
+                merged = true;
+                break;
             }
 
-            if (anySlotUsed)
-                continue;
+            if (nodeGiMerged[m] == COLLISION_INVALID_U32)
+            {
+                nodeGiMerged[m] = g;
+                betaMerged[m] = b;
+                merged = true;
+                break;
+            }
         }
 
-        float2 xiCandFine = XPBI_POS(li, gi) + XPBI_VEL(li, gi) * dt;
-        float2 xjCandFine = XPBI_POS(gjLi, gj) + XPBI_VEL(gjLi, gj) * dt;
-        float2 dx = xjCandFine - xiCandFine;
-        float distSq = dot(dx, dx);
-        if (distSq <= EPS * EPS || distSq > targetSeparationSq) continue;
-
-        float dist = sqrt(distSq);
-        float Cn = dist - targetSeparation;
-        if (Cn >= 0.0) continue;
-
-        float2 nrm = dx / max(dist, EPS);
-        uint lambdaIdx = pairBase;
-        float lambdaPrev = _CollisionLambda[lambdaIdx];
-        float dLambdaCol = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
-        float lambdaNew = max(0.0, lambdaPrev + dLambdaCol);
-        float appliedDLambda = lambdaNew - lambdaPrev;
-        if (appliedDLambda <= 0.0) continue;
-
-        float2 dVi = -invMassICol * dt * appliedDLambda * nrm;
-        float2 dVj = invMassJCol * dt * appliedDLambda * nrm;
-        if (!all(isfinite(dVi)) || !all(isfinite(dVj))) continue;
-
-        if (!fixedI)
-            XPBI_SET_VEL(li, gi, XPBI_VEL(li, gi) + dVi);
-        if (!fixedJ)
-            XPBI_SET_VEL(gjLi, gj, XPBI_VEL(gjLi, gj) + dVj);
-
-        _CollisionLambda[lambdaIdx] = lambdaNew;
+        if (!merged)
+        {
+            // Should not happen with max-4 input, but keep silent and skip.
+        }
     }
+
+    // --------------------------------------------------------------------
+    // Validate merged participants, build active stencil, and choose anchor
+    // FROM VALIDATED PARTICIPANTS ONLY.
+    // --------------------------------------------------------------------
+    float projected = 0.0;
+    float wTerm = 0.0;
+    uint usedCount = 0u;
+    uint anchorGi = COLLISION_INVALID_U32;
+
+    uint  nodeLiCache[COLLISION_MAX_NODES];
+    uint  nodeGiCache[COLLISION_MAX_NODES];
+    float betaCache[COLLISION_MAX_NODES];
+    float invMassCache[COLLISION_MAX_NODES];
+    bool  fixedCache[COLLISION_MAX_NODES];
+
+    [unroll]
+    for (uint cInit = 0u; cInit < COLLISION_MAX_NODES; cInit++)
+    {
+        nodeLiCache[cInit] = COLLISION_INVALID_U32;
+        nodeGiCache[cInit] = COLLISION_INVALID_U32;
+        betaCache[cInit] = 0.0;
+        invMassCache[cInit] = 0.0;
+        fixedCache[cInit] = true;
+    }
+
+    [unroll]
+    for (uint s = 0u; s < COLLISION_MAX_NODES; s++)
+    {
+        uint nodeGi = nodeGiMerged[s];
+        float beta = betaMerged[s];
+
+        if (nodeGi == COLLISION_INVALID_U32)
+            continue;
+        if (abs(beta) <= COL_GEOM_EPS)
+            continue;
+
+        uint nodeLi = LocalIndexFromGlobal(nodeGi);
+        if (nodeLi == COLLISION_INVALID_U32 || nodeLi >= active)
+            continue;
+
+        bool fixedNode = XPBI_NEIGHBOR_FIXED(nodeLi, nodeGi);
+        float invMass = fixedNode ? 0.0 : XPBI_INV_MASS(nodeLi, nodeGi);
+
+        float betaScaled = scale * beta;
+        float2 xCand = XPBI_POS(nodeLi, nodeGi) + XPBI_VEL(nodeLi, nodeGi) * dt;
+
+        projected += betaScaled * dot(nrm, xCand);
+        wTerm += dt2 * invMass * betaScaled * betaScaled;
+
+        nodeLiCache[s] = nodeLi;
+        nodeGiCache[s] = nodeGi;
+        betaCache[s] = betaScaled;
+        invMassCache[s] = invMass;
+        fixedCache[s] = fixedNode;
+
+        usedCount++;
+
+        if (anchorGi == COLLISION_INVALID_U32 || nodeGi < anchorGi)
+            anchorGi = nodeGi;
+    }
+
+    if (usedCount < 2u)
+        continue;
+    if (anchorGi == COLLISION_INVALID_U32 || anchorGi != gi)
+        continue;
+
+    float Cn = projected - scale * targetSeparation;
+
+    if (penRaw > EPS)
+    {
+        float penScaled = scale * penRaw;
+        Cn = max(Cn, -penScaled);
+    }
+
+    if (Cn >= 0.0)
+        continue;
+
+    if (wTerm <= EPS && alphaCollision <= EPS)
+        continue;
+
+    uint lambdaIdx = lambdaBase + cid;
+    float lambdaPrev = XPBI_COL_READ_LAMBDA(lambdaIdx);
+    float dLambda = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
+    float lambdaNew = max(0.0, lambdaPrev + dLambda);
+    float appliedDLambda = lambdaNew - lambdaPrev;
+    if (appliedDLambda <= 0.0)
+        continue;
+
+    [unroll]
+    for (uint sApply = 0u; sApply < COLLISION_MAX_NODES; sApply++)
+    {
+        uint nodeGi = nodeGiCache[sApply];
+        if (nodeGi == COLLISION_INVALID_U32)
+            continue;
+        if (fixedCache[sApply])
+            continue;
+
+        uint nodeLi = nodeLiCache[sApply];
+        float invMass = invMassCache[sApply];
+        float betaScaled = betaCache[sApply];
+
+        float2 dV = -invMass * betaScaled * dt * appliedDLambda * nrm;
+        if (!all(isfinite(dV)))
+            continue;
+
+        XPBI_COL_APPLY_DV(nodeLi, nodeGi, dV);
+    }
+
+    XPBI_COL_WRITE_LAMBDA(lambdaIdx, lambdaNew);
+}
 }

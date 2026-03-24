@@ -59,6 +59,9 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #define XPBI_APPLY_MODE_JR 1
     #define XPBI_SCATTER_DV(gi_, dv_) AtomicAddFloat2(_JRVelDeltaBits, gi_, (dv_))
     #define XPBI_SCATTER_DL(gi_, dl_) (_JRLambdaDelta[gi_] = (dl_))
+    #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambdaPrev[lambdaIdx_]
+    #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_JRCollisionLambda[lambdaIdx_] = (v_))
+    #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SCATTER_DV(gi_, (dv_))
 
     #include "XPBI.LayerSolve.Relax.hlsl"
 
@@ -76,6 +79,9 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #undef XPBI_VEL
     #undef XPBI_POS
     #undef XPBI_GET_GJ
+    #undef XPBI_COL_READ_LAMBDA
+    #undef XPBI_COL_WRITE_LAMBDA
+    #undef XPBI_COL_APPLY_DV
 }
 
 [numthreads(256,1,1)]

@@ -68,6 +68,9 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #define XPBI_APPLY_MODE_JR 0
     #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
     #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+    #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
+    #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
+    #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SET_VEL(li_, gi_, XPBI_VEL(li_, gi_) + (dv_))
 
     #include "XPBI.LayerSolve.Relax.hlsl"
 
@@ -85,6 +88,9 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #undef XPBI_VEL
     #undef XPBI_POS
     #undef XPBI_GET_GJ
+    #undef XPBI_COL_READ_LAMBDA
+    #undef XPBI_COL_WRITE_LAMBDA
+    #undef XPBI_COL_APPLY_DV
 }
 
 #endif // XPBI_LAYER_ACTUAL_SOLVE_RELAX_COLORED_INCLUDED

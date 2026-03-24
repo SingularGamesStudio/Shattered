@@ -201,8 +201,8 @@ MonoBehaviour:
       positionCorrectionMaxFraction: 0.25
     collision:
       collisionSupportScale: 0.3
-      collisionCompliance: 0.1
-      collisionFriction: 0.215
+      collisionCompliance: 0.01
+      collisionFriction: 0.457
       collisionRestitution: 0.1
       collisionRestitutionThreshold: 0.005
       collisionSdfBandHalfWidthScale: 4
@@ -223,7 +223,7 @@ MonoBehaviour:
       enableContinuousCpuReadback: 0
       cpuReadbackInterval: 0.02
       prolongationConstraintDebugEnabled: 0
-  simulationPreset: {fileID: 11400000, guid: 2082c9cdf9ec0ac4298ef5420949fc18, type: 2}
+  simulationPreset: {fileID: 0}
   applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}
   layerSolveShader: {fileID: 7200000, guid: 3e6c7b34eb07a224fa7e8227c3bae1b8, type: 3}
@@ -508,6 +508,10 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: -8695416825521746284, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+      propertyPath: m_IsActive
+      value: 1
+      objectReference: {fileID: 0}
     - target: {fileID: -8653719598885068355, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_Name
       value: RatMonsterPSB
@@ -526,11 +530,11 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -7552582706839291426, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_LocalPosition.x
-      value: 1.2
+      value: 1.22
       objectReference: {fileID: 0}
     - target: {fileID: -7552582706839291426, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 2.7402
+      value: 1.742
       objectReference: {fileID: 0}
     - target: {fileID: -7552582706839291426, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_LocalPosition.z
@@ -563,6 +567,18 @@ PrefabInstance:
     - target: {fileID: -7552582706839291426, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -3171497925476864427, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+      propertyPath: m_IsActive
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -1240721892719223032, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+      propertyPath: m_IsActive
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1769465101944927738, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+      propertyPath: m_IsActive
+      value: 1
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects:

@@ -171,7 +171,7 @@ namespace GPU.Solver {
             }
 
             if (jrIterations > 0) {
-                runtime.SetCollisionEnable(session.AsyncCb, false);
+                runtime.SetCollisionEnable(session.AsyncCb, true);
                 runtime.SetJRParams(session.AsyncCb);
 
                 for (int iter = 0; iter < jrIterations; iter++) {

@@ -337,7 +337,7 @@ if (pred2 > maxSpeedHalf2) return;
 
     if (_CollisionEnable != 0u)
     {
-        #include "XPBI.LayerSolve.CollisionNew.hlsl"
+        #include "XPBI.LayerSolve.Collision.hlsl"
     }
 
     XPBI_SET_LAMBDA(li, gi, lambdaBefore + dLambda);
