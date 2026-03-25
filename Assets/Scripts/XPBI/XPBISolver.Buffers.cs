@@ -171,7 +171,7 @@ namespace GPU.Solver {
                 asyncCb.SetComputeFloatParam(target, "_DurabilityCompliance", Const.DurabilityCompliance);
                 asyncCb.SetComputeFloatParam(target, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
                 asyncCb.SetComputeIntParam(target, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
-                asyncCb.SetComputeIntParam(target, "_ParentKNearest", math.clamp(Const.ParentKNearest, 1, 4));
+                asyncCb.SetComputeIntParam(target, "_ParentKNearest", 2);
                 asyncCb.SetComputeFloatParam(target, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));
             }
         }

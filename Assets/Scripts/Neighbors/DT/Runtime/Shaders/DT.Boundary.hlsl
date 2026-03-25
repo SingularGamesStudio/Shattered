@@ -1,5 +1,8 @@
 // Boundary classification and normal generation kernels.
 
+groupshared float2 _BoundsReduceMin[256];
+groupshared float2 _BoundsReduceMax[256];
+
 [numthreads(256,1,1)]
 void ClearBoundaryData(uint3 id : SV_DispatchThreadID)
 {
@@ -128,4 +131,61 @@ void BuildBoundaryNormals(uint3 id : SV_DispatchThreadID)
 
     float len2Sum = dot(sum, sum);
     _BoundaryNormals[v] = len2Sum > 1e-12f ? sum * rsqrt(len2Sum) : float2(0.0f, 0.0f);
+}
+
+[numthreads(256, 1, 1)]
+void ReduceBounds(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
+{
+    uint v = id.x;
+    float2 pMin = float2(1e30, 1e30);
+    float2 pMax = float2(-1e30, -1e30);
+
+    if (v < (uint)_RealVertexCount)
+    {
+        float2 p = _Positions[v];
+        pMin = p;
+        pMax = p;
+    }
+
+    _BoundsReduceMin[gtid.x] = pMin;
+    _BoundsReduceMax[gtid.x] = pMax;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (gtid.x < stride)
+        {
+            _BoundsReduceMin[gtid.x] = min(_BoundsReduceMin[gtid.x], _BoundsReduceMin[gtid.x + stride]);
+            _BoundsReduceMax[gtid.x] = max(_BoundsReduceMax[gtid.x], _BoundsReduceMax[gtid.x + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (gtid.x == 0u)
+        _BoundsPartials[gid.x] = float4(_BoundsReduceMin[0], _BoundsReduceMax[0]);
+}
+
+[numthreads(1, 1, 1)]
+void FinalizeBounds(uint3 id : SV_DispatchThreadID)
+{
+    float2 bMin = float2(1e30, 1e30);
+    float2 bMax = float2(-1e30, -1e30);
+
+    [loop]
+    for (int i = 0; i < _BoundsPartialCount; i++)
+    {
+        float4 v = _BoundsPartials[i];
+        bMin = min(bMin, v.xy);
+        bMax = max(bMax, v.zw);
+    }
+
+    if (_RealVertexCount <= 0)
+    {
+        bMin = 0.0;
+        bMax = 0.0;
+    }
+
+    _BoundsResult[0] = float4(bMin, bMax);
 }

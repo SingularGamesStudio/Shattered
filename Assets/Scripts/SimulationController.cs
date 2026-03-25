@@ -383,7 +383,7 @@ public sealed class SimulationController : MonoBehaviour {
             globalDTHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH))
             boundsPadding = Mathf.Max(1e-5f, Const.WendlandSupport * layerKernelH);
 
-        if (!TryComputeBatchBounds(activeMeshlessBatch, out neighborBoundsMin, out neighborBoundsMax, boundsPadding))
+        if (!TryComputeBatchBounds(activeMeshlessBatch, globalDTHierarchy, out neighborBoundsMin, out neighborBoundsMax, boundsPadding))
             return false;
 
         int readSlot = asyncState.renderSlot;
@@ -472,23 +472,25 @@ public sealed class SimulationController : MonoBehaviour {
         globalHierarchyDirty = false;
     }
 
-    bool TryComputeBatchBounds(List<Meshless> activeMeshes, out float2 boundsMin, out float2 boundsMax, float padding = 0f) {
+    bool TryComputeBatchBounds(List<Meshless> activeMeshes, DTHierarchy hierarchy, out float2 boundsMin, out float2 boundsMax, float padding = 0f) {
         boundsMin = new float2(float.PositiveInfinity, float.PositiveInfinity);
         boundsMax = new float2(float.NegativeInfinity, float.NegativeInfinity);
 
         bool hasPoint = false;
-        for (int meshIdx = 0; meshIdx < activeMeshes.Count; meshIdx++) {
-            Meshless m = activeMeshes[meshIdx];
-            if (m == null || m.nodes == null || m.nodes.Count == 0)
-                continue;
-
-            for (int i = 0; i < m.nodes.Count; i++) {
-                float2 p = m.nodes[i].pos;
-                boundsMin = math.min(boundsMin, p);
-                boundsMax = math.max(boundsMax, p);
+        if (hierarchy != null && hierarchy.TryGetLayerDt(0, out DT layer0Dt) && layer0Dt != null) {
+            if (layer0Dt.TryGetLatestWorldBounds(out float2 gpuMin, out float2 gpuMax)) {
+                boundsMin = gpuMin;
+                boundsMax = gpuMax;
                 hasPoint = true;
             }
+
+            if (TryGetStableReadSlot(out int readSlot)) {
+                layer0Dt.RequestWorldBoundsAsync(readSlot, hierarchy.NormCenter, hierarchy.NormInvHalfExtent);
+            }
         }
+
+        if (!hasPoint)
+            hasPoint = TryComputeBatchBoundsCpuFallback(activeMeshes, out boundsMin, out boundsMax);
 
         if (!hasPoint)
             return false;
@@ -509,6 +511,27 @@ public sealed class SimulationController : MonoBehaviour {
         }
 
         return true;
+    }
+
+    bool TryComputeBatchBoundsCpuFallback(List<Meshless> activeMeshes, out float2 boundsMin, out float2 boundsMax) {
+        boundsMin = new float2(float.PositiveInfinity, float.PositiveInfinity);
+        boundsMax = new float2(float.NegativeInfinity, float.NegativeInfinity);
+
+        bool hasPoint = false;
+        for (int meshIdx = 0; meshIdx < activeMeshes.Count; meshIdx++) {
+            Meshless m = activeMeshes[meshIdx];
+            if (m == null || m.nodes == null || m.nodes.Count == 0)
+                continue;
+
+            for (int i = 0; i < m.nodes.Count; i++) {
+                float2 p = m.nodes[i].pos;
+                boundsMin = math.min(boundsMin, p);
+                boundsMax = math.max(boundsMax, p);
+                hasPoint = true;
+            }
+        }
+
+        return hasPoint;
     }
 
     void LogAsyncSubmitIssue(string message) {

@@ -10,7 +10,7 @@
 // =============================================================================
 
 // Must match targetParentCount used in RebuildParentsAtLayer.
-#define MAX_PROPAGATION_PARENTS 4
+#define MAX_PROPAGATION_PARENTS 2
 
 // ---------------------------------------------------------------------------
 // Types

@@ -4,7 +4,7 @@
     #include "Utils.hlsl"
 
     #define targetNeighborCount 16
-    #define targetParentCount 4
+    #define targetParentCount 2
     #define xferColDirectionalBins 4u
     #define xferColManifoldSlots (1u + xferColDirectionalBins)
 
@@ -139,6 +139,7 @@
     float _MaxStep;
     int _ParentKNearest;
     float _ParentWeightEpsilon;
+    float _ParentRelationMaxDistance;
 
     // Constants
     static const float EPS = 1e-6;

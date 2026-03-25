@@ -192,6 +192,9 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
 
     uint usedCount = 0u;
     float maxDist = 0.0;
+    float maxParentDist = max(_ParentRelationMaxDistance, 0.0);
+    float maxParentDistSq = maxParentDist * maxParentDist;
+    int dominantParent = -1;
     [unroll]
     for (uint s = 0u; s < targetParentCount; s++)
     {
@@ -200,16 +203,20 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
         int p = selectedParent[s];
         if (p < 0)
             continue;
+        if (maxParentDist > EPS && selectedDistSq[s] > maxParentDistSq)
+        {
+            selectedParent[s] = -1;
+            selectedDistSq[s] = 1e30;
+            continue;
+        }
         usedCount++;
         maxDist = max(maxDist, sqrt(max(selectedDistSq[s], 0.0)));
     }
 
     if (usedCount == 0u)
     {
-        selectedParent[0] = cur;
-        selectedDistSq[0] = best;
-        usedCount = 1u;
-        maxDist = sqrt(max(best, 0.0));
+        _ParentIndex[gi] = -1;
+        return;
     }
 
     float invMaxDist = (maxDist > EPS) ? (1.0 / maxDist) : 0.0;
@@ -261,9 +268,11 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
 
         _ParentIndices[parentBase + s] = p;
         _ParentWeights[parentBase + s] = rawWeight[s] / weightSum;
+        if (dominantParent < 0)
+            dominantParent = p;
     }
 
-    _ParentIndex[gi] = cur;
+    _ParentIndex[gi] = dominantParent;
 }
 
 // ----------------------------------------------------------------------------

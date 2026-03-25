@@ -326,10 +326,18 @@ namespace GPU.Delaunay {
             _boundaryNormals = null;
             _ownerByVertex?.Dispose();
             _ownerByVertex = null;
+            _boundsPartials?.Dispose();
+            _boundsPartials = null;
+            _boundsResult?.Dispose();
+            _boundsResult = null;
 
             _positionScratch = null;
             _vertexCount = _realVertexCount = _halfEdgeCount = _triCount = _neighborCount = 0;
             _renderSlot = 0;
+            _boundsReadbackPending = false;
+            _hasLatestWorldBounds = false;
+            _latestWorldBoundsMin = 0f;
+            _latestWorldBoundsMax = 0f;
         }
     }
 }

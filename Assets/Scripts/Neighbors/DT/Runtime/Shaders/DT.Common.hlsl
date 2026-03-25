@@ -24,6 +24,8 @@ RWStructuredBuffer<uint> _TriInternal;
 RWStructuredBuffer<uint> _BoundaryEdgeFlags;
 RWStructuredBuffer<float2> _BoundaryNormals;
 StructuredBuffer<int> _OwnerByVertex;
+RWStructuredBuffer<float4> _BoundsPartials;
+RWStructuredBuffer<float4> _BoundsResult;
 
 int _VertexCount;
 int _RealVertexCount;
@@ -32,6 +34,7 @@ int _TriCount;
 int _NeighborCount;
 int _UseSupportRadiusFilter;
 float _SupportRadius2;
+int _BoundsPartialCount;
 
 static float Orient2D(float2 a, float2 b, float2 c)
 {

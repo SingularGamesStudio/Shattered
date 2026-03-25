@@ -14,6 +14,8 @@
 #pragma kernel ClassifyInternalTriangles
 #pragma kernel MarkBoundaryEdges
 #pragma kernel BuildBoundaryNormals
+#pragma kernel ReduceBounds 
+#pragma kernel FinalizeBounds
 
 #include "DT.Common.hlsl"
 #include "DT.Adjacency.hlsl"

@@ -140,7 +140,7 @@ namespace GPU.Solver {
                 return;
             }
 
-            int coarseParentsPerNode = math.clamp(Const.ParentKNearest, 1, 4);
+            int coarseParentsPerNode = 2;
             int fineContactCapacity = collisionEvents.count;
 
             session.AsyncCb.SetComputeIntParam(shader, "_FineContactCount", fineContactCapacity);

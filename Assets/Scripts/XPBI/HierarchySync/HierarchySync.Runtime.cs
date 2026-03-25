@@ -25,6 +25,7 @@ namespace GPU.Solver {
             public readonly int BaseIndex;
             public readonly int ActiveCount;
             public readonly int FineCount;
+            public readonly float ParentRelationMaxDistance;
             public readonly LayerCacheRuntime.DtMappingContext Mapping;
 
             public ParentRebuildContext(
@@ -32,12 +33,14 @@ namespace GPU.Solver {
                 int baseIndex,
                 int activeCount,
                 int fineCount,
+                float parentRelationMaxDistance,
                 LayerCacheRuntime.DtMappingContext mapping
             ) {
                 NeighborSearch = neighborSearch;
                 BaseIndex = baseIndex;
                 ActiveCount = activeCount;
                 FineCount = fineCount;
+                ParentRelationMaxDistance = parentRelationMaxDistance;
                 Mapping = mapping;
             }
         }
@@ -52,6 +55,7 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_ParentRangeStart", baseIndex + activeCount);
             cb.SetComputeIntParam(shader, "_ParentRangeEnd", baseIndex + fineCount);
             cb.SetComputeIntParam(shader, "_ParentCoarseCount", activeCount);
+            cb.SetComputeFloatParam(shader, "_ParentRelationMaxDistance", math.max(0f, context.ParentRelationMaxDistance));
 
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);

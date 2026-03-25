@@ -45,7 +45,10 @@ namespace GPU.Solver {
                         null)
                     : new LayerCacheRuntime.DtMappingContext(false, 0, null, null, null, null);
 
-                PrepareParentRebuildBuffers(session.AsyncCb, session.Pos, solver.parentIndex, solver.parentIndices, solver.parentWeights, new ParentRebuildContext(dtLayer, 0, activeCount, fineCount, mapping));
+                float parentMaxDistance = 0f;
+                if (session.Request.GlobalDTHierarchy.TryGetLayerExecutionContext(layer, out _, out _, out float layerKernelH))
+                    parentMaxDistance = math.max(0f, Const.ParentRelationMaxSupportScale * Const.WendlandSupport * layerKernelH);
+                PrepareParentRebuildBuffers(session.AsyncCb, session.Pos, solver.parentIndex, solver.parentIndices, solver.parentWeights, new ParentRebuildContext(dtLayer, 0, activeCount, fineCount, parentMaxDistance, mapping));
                 Dispatch(session.AsyncCb, "XPBI.RebuildParentsAtLayer", shader, kRebuildParentsAtLayer, XPBISolver.Groups256(fineCount - activeCount), 1, 1);
             }
         }

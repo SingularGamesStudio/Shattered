@@ -586,7 +586,7 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_QueryPairCount", queryPairCount);
             cb.SetComputeIntParam(shader, "_QuerySwap", 0);
             cb.SetComputeIntParam(shader, "_MaxCoarseContacts", coarseContacts != null ? coarseContacts.count : 0);
-            cb.SetComputeIntParam(shader, "_CoarseParentsPerNode", math.clamp(Const.ParentKNearest, 1, 4));
+            cb.SetComputeIntParam(shader, "_CoarseParentsPerNode", 2);
 
             cb.SetComputeFloatParam(shader, "_LayerKernelH", layer0KernelH);
             cb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);

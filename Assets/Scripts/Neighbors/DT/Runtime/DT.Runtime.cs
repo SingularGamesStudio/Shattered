@@ -1,4 +1,5 @@
 using System;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
@@ -22,6 +23,8 @@ namespace GPU.Delaunay {
         private readonly int _kernelClassifyInternalTriangles;
         private readonly int _kernelMarkBoundaryEdges;
         private readonly int _kernelBuildBoundaryNormals;
+        private readonly int _kernelReduceBounds;
+        private readonly int _kernelFinalizeBounds;
 
         //---------------------------------------------------------------------------
         // Buffers – triple buffered for rendering, single working buffers for topology ops
@@ -41,6 +44,13 @@ namespace GPU.Delaunay {
         private ComputeBuffer _boundaryEdgeFlags;   // 1 if half-edge classified boundary
         private ComputeBuffer _boundaryNormals;     // per-real-vertex outward normal
         private ComputeBuffer _ownerByVertex;       // owner id per real vertex
+        private ComputeBuffer _boundsPartials;      // per-group bounds partials
+        private ComputeBuffer _boundsResult;        // single float4: min.xy, max.xy
+
+        private bool _boundsReadbackPending;
+        private bool _hasLatestWorldBounds;
+        private float2 _latestWorldBoundsMin;
+        private float2 _latestWorldBoundsMax;
 
         //---------------------------------------------------------------------------
         // Construction
@@ -73,6 +83,80 @@ namespace GPU.Delaunay {
             _kernelClassifyInternalTriangles = _shader.FindKernel("ClassifyInternalTriangles");
             _kernelMarkBoundaryEdges = _shader.FindKernel("MarkBoundaryEdges");
             _kernelBuildBoundaryNormals = _shader.FindKernel("BuildBoundaryNormals");
+            _kernelReduceBounds = _shader.FindKernel("ReduceBounds");
+            _kernelFinalizeBounds = _shader.FindKernel("FinalizeBounds");
+        }
+
+        public bool TryGetLatestWorldBounds(out float2 min, out float2 max) {
+            min = default;
+            max = default;
+            if (!_hasLatestWorldBounds)
+                return false;
+
+            min = _latestWorldBoundsMin;
+            max = _latestWorldBoundsMax;
+            return true;
+        }
+
+        public void RequestWorldBoundsAsync(int slot, float2 normCenter, float normInvHalfExtent) {
+            if (_boundsReadbackPending)
+                return;
+
+            if (slot < 0 || slot > 2)
+                return;
+
+            if (_positions[slot] == null || !_positions[slot].IsValid())
+                return;
+
+            if (_realVertexCount <= 0)
+                return;
+
+            int groups = (_realVertexCount + 255) / 256;
+            EnsureBoundsBuffers(groups);
+            if (_boundsPartials == null || _boundsResult == null)
+                return;
+
+            _shader.SetInt("_VertexCount", _vertexCount);
+            _shader.SetInt("_RealVertexCount", _realVertexCount);
+            _shader.SetInt("_BoundsPartialCount", groups);
+
+            _shader.SetBuffer(_kernelReduceBounds, "_Positions", _positions[slot]);
+            _shader.SetBuffer(_kernelReduceBounds, "_BoundsPartials", _boundsPartials);
+            _shader.SetBuffer(_kernelFinalizeBounds, "_BoundsPartials", _boundsPartials);
+            _shader.SetBuffer(_kernelFinalizeBounds, "_BoundsResult", _boundsResult);
+
+            _shader.Dispatch(_kernelReduceBounds, groups, 1, 1);
+            _shader.Dispatch(_kernelFinalizeBounds, 1, 1, 1);
+
+            _boundsReadbackPending = true;
+            AsyncGPUReadback.Request(_boundsResult, req => {
+                _boundsReadbackPending = false;
+                if (req.hasError || _boundsResult == null || !_boundsResult.IsValid())
+                    return;
+
+                var data = req.GetData<float4>();
+                if (data.Length < 1)
+                    return;
+
+                float4 r = data[0];
+                float inv = normInvHalfExtent > 1e-8f ? (1f / normInvHalfExtent) : 1f;
+                _latestWorldBoundsMin = r.xy * inv + normCenter;
+                _latestWorldBoundsMax = r.zw * inv + normCenter;
+                _hasLatestWorldBounds = true;
+            });
+        }
+
+        private void EnsureBoundsBuffers(int groupCount) {
+            int needed = math.max(1, groupCount);
+            if (_boundsPartials == null || !_boundsPartials.IsValid() || _boundsPartials.count != needed) {
+                _boundsPartials?.Dispose();
+                _boundsPartials = new ComputeBuffer(needed, sizeof(float) * 4, ComputeBufferType.Structured);
+            }
+
+            if (_boundsResult == null || !_boundsResult.IsValid() || _boundsResult.count != 1) {
+                _boundsResult?.Dispose();
+                _boundsResult = new ComputeBuffer(1, sizeof(float) * 4, ComputeBufferType.Structured);
+            }
         }
 
         private void PrepareBuildBuffers(

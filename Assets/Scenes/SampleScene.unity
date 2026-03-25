@@ -720,7 +720,7 @@ MonoBehaviour:
   layerKernelH:
   - 0.13527517
   - 0.44248813
-  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: d6b21ec14eb075149b37affa6b66faef, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:

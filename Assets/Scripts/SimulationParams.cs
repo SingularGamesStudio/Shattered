@@ -95,7 +95,6 @@ public sealed class SimulationParams {
         public bool useAffineProlongation = true;
         [Range(0f, 2f)] public float restrictResidualDeltaVScale = 0.35f;
         [Range(0f, 1f)] public float postProlongSmoothing = 0.2f;
-        [Min(1)] public int parentKNearest = 2;
         [Min(1e-6f)] public float parentWeightEpsilon = 1e-3f;
     }
 
