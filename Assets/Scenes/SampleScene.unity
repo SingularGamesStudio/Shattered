@@ -201,8 +201,15 @@ MonoBehaviour:
       positionCorrectionMaxFraction: 0.25
     collision:
       collisionSupportScale: 0.3
-      collisionCompliance: 0.01
-      collisionFriction: 0.457
+      collisionSkinScale: 0.1
+      collisionCompliance: 0.001
+      collisionSlop: 0.01
+      collisionPenBias: 0.35
+      collisionMaxBias: 0.005
+      collisionMaxPush: 0.02
+      collisionRelaxation: 0.5
+      collisionMaxDv: 1.5
+      collisionFriction: 1
       collisionRestitution: 0.1
       collisionRestitutionThreshold: 0.005
       collisionSdfBandHalfWidthScale: 4
@@ -510,7 +517,7 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: -8695416825521746284, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: -8653719598885068355, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_Name
@@ -570,15 +577,19 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: -3171497925476864427, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: -1240721892719223032, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 1769465101944927738, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
       propertyPath: m_IsActive
       value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 5048886476232553963, guid: 182499511eda5fd4d85381b53a9e3361, type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects:
@@ -742,7 +753,7 @@ MonoBehaviour:
   - 0.075099945
   layerKernelH:
   - 0.15019989
-  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 8163245270d98284db028d0b240cf619, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 1528506848}
   size:

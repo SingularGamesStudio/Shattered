@@ -15,7 +15,7 @@
 //   EPS
 //   _Dt
 //   _CollisionCompliance
-//   _CollisionSupportScale
+//   _CollisionSkinScale
 // ============================================================================
 
 int ownerICollision = (li < active) ? _DtCollisionOwnerByLocal[li] : -1;
@@ -25,7 +25,7 @@ float dt = max(_Dt, EPS);
 float dt2 = dt * dt;
 
 float alphaCollision = max(_CollisionCompliance, 0.0);
-float targetSeparation = max(EPS, _CollisionSupportScale * support);
+float targetSeparation = max(EPS, _CollisionSkinScale * support);
 
 bool useFineContacts = (_ActiveCount == _FineCount);
 
@@ -357,7 +357,8 @@ for (uint cid = 0u; cid < contactCount; cid++)
 
     uint  nodeLiCache[COLLISION_MAX_NODES];
     uint  nodeGiCache[COLLISION_MAX_NODES];
-    float betaCache[COLLISION_MAX_NODES];
+    float betaScaledCache[COLLISION_MAX_NODES];
+    float betaUnscaledCache[COLLISION_MAX_NODES];
     float invMassCache[COLLISION_MAX_NODES];
     bool  fixedCache[COLLISION_MAX_NODES];
 
@@ -366,7 +367,8 @@ for (uint cid = 0u; cid < contactCount; cid++)
     {
         nodeLiCache[cInit] = COLLISION_INVALID_U32;
         nodeGiCache[cInit] = COLLISION_INVALID_U32;
-        betaCache[cInit] = 0.0;
+        betaScaledCache[cInit] = 0.0;
+        betaUnscaledCache[cInit] = 0.0;
         invMassCache[cInit] = 0.0;
         fixedCache[cInit] = true;
     }
@@ -397,7 +399,8 @@ for (uint cid = 0u; cid < contactCount; cid++)
 
         nodeLiCache[s] = nodeLi;
         nodeGiCache[s] = nodeGi;
-        betaCache[s] = betaScaled;
+        betaScaledCache[s] = betaScaled;
+        betaUnscaledCache[s] = beta;
         invMassCache[s] = invMass;
         fixedCache[s] = fixedNode;
 
@@ -412,13 +415,17 @@ for (uint cid = 0u; cid < contactCount; cid++)
     if (anchorGi == COLLISION_INVALID_U32 || anchorGi != gi)
         continue;
 
-    float Cn = projected - scale * targetSeparation;
+    float slop = max(_CollisionSlop, 0.0) * support;
+    if (penRaw <= slop)
+        continue;
 
-    if (penRaw > EPS)
-    {
-        float penScaled = scale * penRaw;
-        Cn = max(Cn, -penScaled);
-    }
+    float penEff = max(penRaw - slop, 0.0);
+    float bias = min(max(_CollisionPenBias, 0.0) * penEff, max(_CollisionMaxBias, 0.0));
+    float maxPush = max(_CollisionMaxPush, 0.0);
+
+    float Cn = projected - scale * targetSeparation;
+    Cn -= scale * bias;
+    Cn = max(Cn, -scale * (penEff + maxPush));
 
     if (Cn >= 0.0)
         continue;
@@ -429,10 +436,44 @@ for (uint cid = 0u; cid < contactCount; cid++)
     uint lambdaIdx = lambdaBase + cid;
     float lambdaPrev = XPBI_COL_READ_LAMBDA(lambdaIdx);
     float dLambda = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
-    float lambdaNew = max(0.0, lambdaPrev + dLambda);
-    float appliedDLambda = lambdaNew - lambdaPrev;
+    float lambdaNewRaw = max(0.0, lambdaPrev + dLambda);
+    float appliedDLambda = lambdaNewRaw - lambdaPrev;
+    float relax = saturate(_CollisionRelaxation);
+    appliedDLambda *= relax;
     if (appliedDLambda <= 0.0)
         continue;
+
+    float lambdaNew = lambdaPrev + appliedDLambda;
+
+    float2 vRel = 0.0;
+    float wEff = 0.0;
+    [unroll]
+    for (uint sRel = 0u; sRel < COLLISION_MAX_NODES; sRel++)
+    {
+        uint relGi = nodeGiCache[sRel];
+        if (relGi == COLLISION_INVALID_U32)
+            continue;
+
+        uint relLi = nodeLiCache[sRel];
+        float betaUnscaled = betaUnscaledCache[sRel];
+        vRel += betaUnscaled * XPBI_VEL(relLi, relGi);
+        wEff += invMassCache[sRel] * betaUnscaled * betaUnscaled;
+    }
+
+    float vn = dot(vRel, nrm);
+    float2 vt = vRel - vn * nrm;
+    float vtLen = length(vt);
+
+    float restitution = saturate(_CollisionRestitution);
+    float restitutionThreshold = max(_CollisionRestitutionThreshold, 0.0);
+    float restitutionDeltaVn = restitution * max(-vn - restitutionThreshold, 0.0);
+    float friction = saturate(_CollisionFriction);
+    float maxDv = max(_CollisionMaxDv, 0.0);
+    float wEffSafe = max(wEff, EPS);
+    float restitutionImpulse = (wEff > EPS) ? (restitutionDeltaVn / wEffSafe) : 0.0;
+    float maxFrictionDeltaV = friction * max(-vn, 0.0);
+    float frictionImpulse = (wEff > EPS) ? (min(vtLen, maxFrictionDeltaV) / wEffSafe) : 0.0;
+    float2 vtDir = (vtLen > EPS) ? (vt / vtLen) : 0.0;
 
     [unroll]
     for (uint sApply = 0u; sApply < COLLISION_MAX_NODES; sApply++)
@@ -445,9 +486,24 @@ for (uint cid = 0u; cid < contactCount; cid++)
 
         uint nodeLi = nodeLiCache[sApply];
         float invMass = invMassCache[sApply];
-        float betaScaled = betaCache[sApply];
+        float betaScaled = betaScaledCache[sApply];
+        float betaUnscaled = betaUnscaledCache[sApply];
 
         float2 dV = -invMass * betaScaled * dt * appliedDLambda * nrm;
+        dV += invMass * betaUnscaled * restitutionImpulse * nrm;
+
+        if (frictionImpulse > EPS && vtLen > EPS)
+        {
+            dV += -invMass * betaUnscaled * frictionImpulse * vtDir;
+        }
+
+        if (maxDv > EPS)
+        {
+            float dVLen = length(dV);
+            if (dVLen > maxDv)
+                dV *= maxDv / dVLen;
+        }
+
         if (!all(isfinite(dV)))
             continue;
 

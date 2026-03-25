@@ -609,10 +609,11 @@ Shader "Unlit/TriangulationAccum"
                 half4 c2 = UNITY_SAMPLE_TEX2DARRAY(_AlbedoArray, float3(uv, i.mats.z));
 
                 half4 col = c0 * i.bary.x + c1 * i.bary.y + c2 * i.bary.z;
+                half alpha = saturate(col.a);
 
                 // Accum RT:
-                // rgb = sum(color), a = sum(weight)
-                return half4(col.rgb, 1.0h);
+                // rgb = sum(premultiplied color), a = sum(alpha weight)
+                return half4(col.rgb * alpha, alpha);
             }
             ENDHLSL
         }

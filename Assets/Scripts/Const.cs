@@ -54,7 +54,14 @@ public static class Const {
 
     // Collisions
     public static float CollisionSupportScale => SimulationParamSource.Current.collision.collisionSupportScale;
+    public static float CollisionSkinScale => SimulationParamSource.Current.collision.collisionSkinScale;
     public static float CollisionCompliance => SimulationParamSource.Current.collision.collisionCompliance;
+    public static float CollisionSlop => SimulationParamSource.Current.collision.collisionSlop;
+    public static float CollisionPenBias => SimulationParamSource.Current.collision.collisionPenBias;
+    public static float CollisionMaxBias => SimulationParamSource.Current.collision.collisionMaxBias;
+    public static float CollisionMaxPush => SimulationParamSource.Current.collision.collisionMaxPush;
+    public static float CollisionRelaxation => SimulationParamSource.Current.collision.collisionRelaxation;
+    public static float CollisionMaxDv => SimulationParamSource.Current.collision.collisionMaxDv;
     public static float CollisionFriction => SimulationParamSource.Current.collision.collisionFriction;
     public static float CollisionRestitution => SimulationParamSource.Current.collision.collisionRestitution;
     public static float CollisionRestitutionThreshold => SimulationParamSource.Current.collision.collisionRestitutionThreshold;

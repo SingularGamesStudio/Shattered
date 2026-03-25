@@ -397,10 +397,17 @@ void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
     if (hit.valid == 0u) return;
     if (hit.phi >= support) return;
 
+    float2 d = x - hit.cp; 
+    float unsignedDist = length(d);
+    if (unsignedDist >= support) return;
+
     float2 n = SafeNormalize(hit.grad);
     if (dot(n, n) <= 1e-20) return;
 
-    float pen = support - hit.phi;
+    // optional consistency check
+    float signedSep = dot(d, n);
+
+    float pen = support - unsignedDist;
     if (pen <= 0.0) return;
 
     EmitContact(ownerA, ownerB, vGi, heA, hit.id, n, pen, x, hit.cp);

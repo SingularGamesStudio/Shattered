@@ -157,7 +157,14 @@ namespace GPU.Solver {
                 asyncCb.SetComputeFloatParam(target, "_PositionCorrectionCompliance", Const.PositionCorrectionCompliance);
                 asyncCb.SetComputeFloatParam(target, "_PositionCorrectionMaxFraction", positionCorrectionMaxFraction);
                 asyncCb.SetComputeFloatParam(target, "_CollisionSupportScale", Const.CollisionSupportScale);
+                asyncCb.SetComputeFloatParam(target, "_CollisionSkinScale", Const.CollisionSkinScale);
                 asyncCb.SetComputeFloatParam(target, "_CollisionCompliance", Const.CollisionCompliance);
+                asyncCb.SetComputeFloatParam(target, "_CollisionSlop", Const.CollisionSlop);
+                asyncCb.SetComputeFloatParam(target, "_CollisionPenBias", Const.CollisionPenBias);
+                asyncCb.SetComputeFloatParam(target, "_CollisionMaxBias", Const.CollisionMaxBias);
+                asyncCb.SetComputeFloatParam(target, "_CollisionMaxPush", Const.CollisionMaxPush);
+                asyncCb.SetComputeFloatParam(target, "_CollisionRelaxation", Const.CollisionRelaxation);
+                asyncCb.SetComputeFloatParam(target, "_CollisionMaxDv", Const.CollisionMaxDv);
                 asyncCb.SetComputeFloatParam(target, "_CollisionFriction", Const.CollisionFriction);
                 asyncCb.SetComputeFloatParam(target, "_CollisionRestitution", Const.CollisionRestitution);
                 asyncCb.SetComputeFloatParam(target, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);

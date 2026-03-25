@@ -107,7 +107,14 @@
     float _LayerKernelH;
     float _WendlandSupport;
     float _CollisionSupportScale;
+    float _CollisionSkinScale;
     float _CollisionCompliance;
+    float _CollisionSlop;
+    float _CollisionPenBias;
+    float _CollisionMaxBias;
+    float _CollisionMaxPush;
+    float _CollisionRelaxation;
+    float _CollisionMaxDv;
     float _CollisionFriction;
     float _CollisionRestitution;
     float _CollisionRestitutionThreshold;

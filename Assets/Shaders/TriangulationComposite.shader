@@ -54,8 +54,11 @@ Shader "Hidden/TriangulationComposite"
                 float4 acc = tex2D(_AccumTex, uv);
                 float w = max(acc.a, 1e-4);
                 fixed3 col = acc.rgb / w;
+                fixed alpha = saturate(acc.a);
 
-                return fixed4(col, 1.0);
+                fixed3 outRgb = lerp(bg.rgb, col, alpha);
+
+                return fixed4(outRgb, bg.a);
             }
             ENDHLSL
         }

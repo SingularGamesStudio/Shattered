@@ -123,7 +123,14 @@ public sealed class SimulationParams {
     [Serializable]
     public sealed class CollisionParams {
         [Range(0f, 2f)] public float collisionSupportScale = 0.3f;
+        [Range(0f, 2f)] public float collisionSkinScale = 0.02f;
         [Min(0f)] public float collisionCompliance = 0.1f;
+        [Range(0f, 0.2f)] public float collisionSlop = 0.01f;
+        [Range(0f, 4f)] public float collisionPenBias = 0.35f;
+        [Min(0f)] public float collisionMaxBias = 0.005f;
+        [Min(0f)] public float collisionMaxPush = 0.02f;
+        [Range(0f, 1f)] public float collisionRelaxation = 0.5f;
+        [Min(0f)] public float collisionMaxDv = 1.5f;
         [Range(0f, 1f)] public float collisionFriction = 0.2f;
         [Range(0f, 1f)] public float collisionRestitution = 0f;
         [Min(0f)] public float collisionRestitutionThreshold = 0.005f;
