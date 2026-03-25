@@ -14,13 +14,16 @@ struct CollisionFineContact
 {
     uint ownerA;
     uint ownerB;
-    uint vGiA;
-    uint heA;
-    uint featB;
+    uint nodeGi0;
+    uint nodeGi1;
+    uint nodeGi2;
+    uint nodeGi3;
+    float beta0;
+    float beta1;
+    float beta2;
+    float beta3;
     float2 n;
     float pen;
-    float2 x;
-    float2 cpB;
 };
 
 struct CollisionCoarseContact
@@ -148,6 +151,31 @@ uint ColCoarseCount()
 {
     uint count = _CoarseContactCountBuffer[0u];
     return min(count, _CoarseContactCapacity);
+}
+
+uint ColExpandedFineBase()
+{
+    return 0u;
+}
+
+uint ColExpandedCoarseBase()
+{
+    return _CollisionEventCapacity;
+}
+
+uint ColExpandedCapacity()
+{
+    return _CollisionEventCapacity + _CoarseContactCapacity;
+}
+
+bool ColExpandedIsFine(uint cid)
+{
+    return cid < ColExpandedCoarseBase();
+}
+
+uint ColExpandedToLocal(uint cid)
+{
+    return ColExpandedIsFine(cid) ? cid : (cid - ColExpandedCoarseBase());
 }
 
 #endif

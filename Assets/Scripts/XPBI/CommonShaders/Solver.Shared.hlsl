@@ -65,7 +65,6 @@
     RWStructuredBuffer<uint> _XferColQBGi;
     RWStructuredBuffer<uint> _XferColOAGi;
     RWStructuredBuffer<uint> _XferColOBGi;
-    uint _UseTransferredCollisions;
 
     // Velocity delta accumulation
     RWStructuredBuffer<float2> _SavedVelPrefix;

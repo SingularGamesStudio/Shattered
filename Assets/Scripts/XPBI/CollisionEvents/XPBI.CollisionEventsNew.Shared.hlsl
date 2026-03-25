@@ -15,13 +15,19 @@ struct Contact
 {
     uint ownerA;
     uint ownerB;
-    uint vGi;
-    uint heA;
-    uint heB;
+
+    uint nodeGi0;
+    uint nodeGi1;
+    uint nodeGi2;
+    uint nodeGi3;
+
+    float beta0;
+    float beta1;
+    float beta2;
+    float beta3;
+
     float2 n;
     float pen;
-    float2 pA;
-    float2 pB;
 };
 
 struct FeatureHit
@@ -80,6 +86,10 @@ StructuredBuffer<uint> _OwnerBinBase;
 
 StructuredBuffer<uint2> _OwnerPairs;
 
+StructuredBuffer<int> _DtGlobalToLayerLocalMap;
+uint _UseDtGlobalNodeMap;
+uint _DtLocalBase;
+
 RWStructuredBuffer<uint> _OwnerBoundaryEdgeCounts;
 RWStructuredBuffer<uint> _OwnerBoundaryOverflow;
 RWStructuredBuffer<uint> _OwnerBoundaryEdgeRefs;
@@ -115,3 +125,33 @@ RWStructuredBuffer<uint> _SdfFeatId;
 
 RWStructuredBuffer<Contact> _Contacts;
 RWStructuredBuffer<uint> _ContactCount;
+
+RWStructuredBuffer<uint>  _ColAnchorGi;
+
+RWStructuredBuffer<uint>  _ColNodeGi0;
+RWStructuredBuffer<uint>  _ColNodeGi1;
+RWStructuredBuffer<uint>  _ColNodeGi2;
+RWStructuredBuffer<uint>  _ColNodeGi3;
+
+RWStructuredBuffer<float> _ColBeta0;
+RWStructuredBuffer<float> _ColBeta1;
+RWStructuredBuffer<float> _ColBeta2;
+RWStructuredBuffer<float> _ColBeta3;
+
+RWStructuredBuffer<float> _ColNX;
+RWStructuredBuffer<float> _ColNY;
+
+RWStructuredBuffer<float> _ColPen;
+RWStructuredBuffer<float> _ColScale;
+
+RWStructuredBuffer<uint>  _ColOwnerA;
+RWStructuredBuffer<uint>  _ColOwnerB;
+
+RWStructuredBuffer<uint> _NodeCollisionRefCount;
+RWStructuredBuffer<uint> _NodeCollisionRefWrite;
+RWStructuredBuffer<uint> _NodeCollisionRefStart;
+RWStructuredBuffer<uint> _NodeCollisionRefs;
+
+uint _ActiveCount;
+uint _CollisionEventCapacity;
+uint _CoarseContactCapacity;

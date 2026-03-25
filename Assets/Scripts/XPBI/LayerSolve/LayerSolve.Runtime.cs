@@ -64,6 +64,23 @@ namespace GPU.Solver {
         private ComputeBuffer fineContactCount => solver.collisionEvent.CollisionEventCountBuffer;
         private ComputeBuffer coarseContacts => solver.collisionEvent.CoarseContactsBuffer;
         private ComputeBuffer coarseContactCount => solver.collisionEvent.CoarseContactCountBuffer;
+        private ComputeBuffer colAnchorGi => solver.collisionEvent.ColAnchorGiBuffer;
+        private ComputeBuffer colNodeGi0 => solver.collisionEvent.ColNodeGi0Buffer;
+        private ComputeBuffer colNodeGi1 => solver.collisionEvent.ColNodeGi1Buffer;
+        private ComputeBuffer colNodeGi2 => solver.collisionEvent.ColNodeGi2Buffer;
+        private ComputeBuffer colNodeGi3 => solver.collisionEvent.ColNodeGi3Buffer;
+        private ComputeBuffer colBeta0 => solver.collisionEvent.ColBeta0Buffer;
+        private ComputeBuffer colBeta1 => solver.collisionEvent.ColBeta1Buffer;
+        private ComputeBuffer colBeta2 => solver.collisionEvent.ColBeta2Buffer;
+        private ComputeBuffer colBeta3 => solver.collisionEvent.ColBeta3Buffer;
+        private ComputeBuffer colNX => solver.collisionEvent.ColNXBuffer;
+        private ComputeBuffer colNY => solver.collisionEvent.ColNYBuffer;
+        private ComputeBuffer colPen => solver.collisionEvent.ColPenBuffer;
+        private ComputeBuffer colScale => solver.collisionEvent.ColScaleBuffer;
+        private ComputeBuffer colOwnerA => solver.collisionEvent.ColOwnerABuffer;
+        private ComputeBuffer colOwnerB => solver.collisionEvent.ColOwnerBBuffer;
+        private ComputeBuffer nodeCollisionRefStart => solver.collisionEvent.NodeCollisionRefStartBuffer;
+        private ComputeBuffer nodeCollisionRefs => solver.collisionEvent.NodeCollisionRefsBuffer;
         private ComputeBuffer boundaryEdgeV0Gi => solver.collisionEvent.BoundaryEdgeV0Buffer;
         private ComputeBuffer boundaryEdgeV1Gi => solver.collisionEvent.BoundaryEdgeV1Buffer;
         private ComputeBuffer boundaryVertexGi => solver.collisionEvent.BoundaryVertexGiBuffer;
@@ -248,10 +265,6 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_CollisionEnable", enabled ? 1 : 0);
         }
 
-        internal void SetUseTransferredCollisionsParam(CommandBuffer cb, bool enabled) {
-            cb.SetComputeIntParam(shader, "_UseTransferredCollisions", enabled ? 1 : 0);
-        }
-
         internal void SetPersistentRelaxParams(CommandBuffer cb, int persistentIterations, int baseDebugIter) {
             cb.SetComputeIntParam(shader, "_PersistentIters", persistentIterations);
             cb.SetComputeIntParam(shader, "_PersistentBaseDebugIter", baseDebugIter);
@@ -323,6 +336,23 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_BoundaryVertexGi", boundaryVertexGi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_NodeCollisionRefStart", nodeCollisionRefStart);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_NodeCollisionRefs", nodeCollisionRefs);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColAnchorGi", colAnchorGi);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeGi0", colNodeGi0);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeGi1", colNodeGi1);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeGi2", colNodeGi2);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeGi3", colNodeGi3);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColBeta0", colBeta0);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColBeta1", colBeta1);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColBeta2", colBeta2);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColBeta3", colBeta3);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNX", colNX);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNY", colNY);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColPen", colPen);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColScale", colScale);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColOwnerA", colOwnerA);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_ColOwnerB", colOwnerB);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColCount", xferColCount);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_XferColNYBits", xferColNYBits);
@@ -355,6 +385,23 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_BoundaryVertexGi", boundaryVertexGi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_NodeCollisionRefStart", nodeCollisionRefStart);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_NodeCollisionRefs", nodeCollisionRefs);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColAnchorGi", colAnchorGi);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeGi0", colNodeGi0);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeGi1", colNodeGi1);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeGi2", colNodeGi2);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeGi3", colNodeGi3);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColBeta0", colBeta0);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColBeta1", colBeta1);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColBeta2", colBeta2);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColBeta3", colBeta3);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNX", colNX);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNY", colNY);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColPen", colPen);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColScale", colScale);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColOwnerA", colOwnerA);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColOwnerB", colOwnerB);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColCount", xferColCount);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNXBits", xferColNXBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_XferColNYBits", xferColNYBits);
@@ -437,6 +484,23 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_BoundaryVertexGi", boundaryVertexGi);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_NodeCollisionRefStart", nodeCollisionRefStart);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_NodeCollisionRefs", nodeCollisionRefs);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColAnchorGi", colAnchorGi);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeGi0", colNodeGi0);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeGi1", colNodeGi1);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeGi2", colNodeGi2);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeGi3", colNodeGi3);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColBeta0", colBeta0);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColBeta1", colBeta1);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColBeta2", colBeta2);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColBeta3", colBeta3);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNX", colNX);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNY", colNY);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColPen", colPen);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColScale", colScale);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColOwnerA", colOwnerA);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColOwnerB", colOwnerB);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRLambdaDelta", jrLambdaDelta);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);

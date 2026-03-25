@@ -46,9 +46,16 @@ void ClearState(uint3 tid : SV_DispatchThreadID)
         Contact c = (Contact)0;
         c.ownerA = INVALID_U32;
         c.ownerB = INVALID_U32;
-        c.vGi = INVALID_U32;
-        c.heA = INVALID_U32;
-        c.heB = INVALID_U32;
+        c.nodeGi0 = INVALID_U32;
+        c.nodeGi1 = INVALID_U32;
+        c.nodeGi2 = INVALID_U32;
+        c.nodeGi3 = INVALID_U32;
+        c.beta0 = 0.0;
+        c.beta1 = 0.0;
+        c.beta2 = 0.0;
+        c.beta3 = 0.0;
+        c.n = 0.0;
+        c.pen = 0.0;
         _Contacts[i] = c;
     }
 
@@ -397,20 +404,17 @@ void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
     if (hit.valid == 0u) return;
     if (hit.phi >= support) return;
 
-    float2 d = x - hit.cp; 
-    float unsignedDist = length(d);
-    if (unsignedDist >= support) return;
-
     float2 n = SafeNormalize(hit.grad);
     if (dot(n, n) <= 1e-20) return;
 
-    // optional consistency check
-    float signedSep = dot(d, n);
-
-    float pen = support - unsignedDist;
+    float pen = support - hit.phi;
     if (pen <= 0.0) return;
 
-    EmitContact(ownerA, ownerB, vGi, heA, hit.id, n, pen, x, hit.cp);
+    Contact c;
+    if (!BuildVertexFeatureFineContact(ownerA, ownerB, vGi, hit.id, n, pen, hit.cp, c))
+        return;
+
+    AppendFineContact(c);
 }
 
 [numthreads(64, 1, 1)]
@@ -552,7 +556,11 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
                     continue;
                 }
 
-                EmitContact(ownerA, ownerB, INVALID_U32, heA, heB, n, pen, xI, xI);
+                Contact c;
+                if (!BuildEdgeEdgeFineContact(ownerA, ownerB, heA, heB, sI, tI, n, pen, c))
+                    continue;
+
+                AppendFineContact(c);
             }
         }
     }

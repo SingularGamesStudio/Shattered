@@ -141,7 +141,10 @@ namespace GPU.Solver {
 
                 SetCommonShaderParams(session.Request.DtPerTick, session.TotalCount, 0, Const.MaxDisplacementPerTick);
                 hierarchySync.RecordPreSolveParentRebuild(session);
+
+                // Emit raw layer-0 fine contacts only.
                 collisionEvent.RecordLayer0Build(session, tickContext);
+
                 gameplayForce.RecordApplyForces(session, tickContext);
 
                 for (int layer = session.MaxSolveLayer; layer >= 0; layer--) {
@@ -149,7 +152,14 @@ namespace GPU.Solver {
                         continue;
 
                     layerCachePass.RecordCache(session, tickContext, layerContext, out bool injectRestrictedGameplay, out bool injectRestrictedResidual);
-                    collisionEvent.RecordTransferredRestriction(session, layerContext);
+
+                    if (layerContext.Layer > 0) {
+                        collisionEvent.RecordTransferredRestriction(session, layerContext);
+                    }
+                    else {
+                        collisionEvent.RecordLayer0StencilBuild(session, layerContext);
+                    }
+
                     layerSolvePass.RecordSolve(session, tickContext, layerContext);
                     layerCachePass.RecordRestrictionCleanup(session.AsyncCb, layerContext.ActiveCount, injectRestrictedGameplay, injectRestrictedResidual);
                 }
@@ -161,6 +171,7 @@ namespace GPU.Solver {
             GraphicsFence fence = asyncCb.CreateGraphicsFence(
                 GraphicsFenceType.AsyncQueueSynchronisation,
                 SynchronisationStageFlags.ComputeProcessing);
+
             Graphics.ExecuteCommandBufferAsync(asyncCb, ComputeQueueType.Urgent);
 
             solverDebug.RecordReadbacksAndFence(session, fence);

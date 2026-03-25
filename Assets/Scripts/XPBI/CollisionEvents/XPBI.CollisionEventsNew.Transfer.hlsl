@@ -19,16 +19,18 @@
 // Layout must match what EmitContact writes in the collision pass.
 struct FineContact
 {
-    uint   ownerA;
-    uint   ownerB;
-    uint   vGiA;     // INVALID_U32 for edge-edge contacts
-    uint   heA;      // half-edge on A (both vertex- and edge-contacts)
-    uint   featB;    // vertex contact: SDF feature id on B
-                     // edge   contact: half-edge id on B (heB)
-    float2 n;        // contact normal, pointing B → A
-    float  pen;      // penetration depth (> 0 = overlapping)
-    float2 x;        // contact world position
-    float2 cpB;      // closest point on B surface
+    uint ownerA;
+    uint ownerB;
+    uint nodeGi0;
+    uint nodeGi1;
+    uint nodeGi2;
+    uint nodeGi3;
+    float beta0;
+    float beta1;
+    float beta2;
+    float beta3;
+    float2 n;
+    float pen;
 };
 
 // Coarse contact produced by this pass.
@@ -72,6 +74,46 @@ RWBuffer<uint>                      _CoarseContactCount;  // [1], atomic
 uint ReadFineContactCount() 
 {
     return min(_FineContactCount, _FineContactCountBuffer[0]);
+}
+
+bool PickRepresentativeNodes(FineContact fc, out uint aGi, out uint bGi, out float pairWeight)
+{
+    aGi = INVALID_U32;
+    bGi = INVALID_U32;
+    pairWeight = 0.0;
+
+    uint gi[4] = { fc.nodeGi0, fc.nodeGi1, fc.nodeGi2, fc.nodeGi3 };
+    float beta[4] = { fc.beta0, fc.beta1, fc.beta2, fc.beta3 };
+
+    float bestNeg = 0.0;
+    float bestPos = 0.0;
+
+    [unroll]
+    for (uint i = 0u; i < 4u; i++)
+    {
+        if (gi[i] == INVALID_U32)
+            continue;
+
+        float b = beta[i];
+        float ab = abs(b);
+        if (ab <= 1e-12)
+            continue;
+
+        if (b < 0.0 && ab > bestNeg)
+        {
+            bestNeg = ab;
+            aGi = gi[i];
+        }
+
+        if (b > 0.0 && ab > bestPos)
+        {
+            bestPos = ab;
+            bGi = gi[i];
+        }
+    }
+
+    pairWeight = bestNeg * bestPos;
+    return (aGi != INVALID_U32) && (bGi != INVALID_U32) && (pairWeight > 1e-12);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,37 +216,43 @@ void PropagateVertexContacts(uint3 tid : SV_DispatchThreadID)
     if (contactIdx >= ReadFineContactCount()) return;
 
     FineContact fc = _FineContacts[contactIdx];
-    if (fc.vGiA == INVALID_U32)                       return; // edge-edge, skip
-    if (fc.ownerA == INVALID_U32 || fc.ownerB == INVALID_U32) return;
-
-    // ── A-side: pA-th coarse parent of the contacting fine vertex ────────────
-    int   coarseGiA;
-    float wA;
-    if (!GetCoarseParent(fc.vGiA, pA, coarseGiA, wA))
+    if (fc.ownerA == INVALID_U32 || fc.ownerB == INVALID_U32)
         return;
 
-    // ── B-side: nearest coarse parent of the B boundary vertex ───────────────
-    // Use v0 of the feature half-edge; v1 as fallback for interior params.
-    uint fineGiB = ResolveBSideFineVertex(fc.featB, 0u);
+    uint fineGiA;
+    uint fineGiB;
+    float betaPairWeight;
+    if (!PickRepresentativeNodes(fc, fineGiA, fineGiB, betaPairWeight))
+        return;
 
-    int   coarseGiB = -1;
-    float wB        = 1.0;
-    if (fineGiB != INVALID_U32)
+    int coarseGiA;
+    float wA;
+    if (!GetCoarseParent(fineGiA, pA, coarseGiA, wA))
+        return;
+
+    int coarseGiB = -1;
+    float wB = 1.0;
     {
-        int   g; float w;
+        int g;
+        float w;
         if (GetCoarseParent(fineGiB, 0u, g, w))
         {
             coarseGiB = g;
-            wB        = w;
+            wB = w;
         }
     }
 
-    float weight = wA * wB;
-    if (weight <= 1e-9) return;
+    float weight = betaPairWeight * wA * wB;
+    if (weight <= 1e-9)
+        return;
+
+    float2 xA = PredPos(fineGiA);
+    float2 xB = PredPos(fineGiB);
+    float2 xC = 0.5 * (xA + xB);
 
     EmitCoarseContact(fc.ownerA, fc.ownerB,
                       coarseGiA, coarseGiB,
-                      fc.n, fc.pen, weight, fc.x);
+                      fc.n, fc.pen, weight, xC);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,46 +275,5 @@ void PropagateVertexContacts(uint3 tid : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void PropagateEdgeContacts(uint3 tid : SV_DispatchThreadID)
 {
-    const uint stride = 4u;
-
-    uint workIdx    = tid.x;
-    uint contactIdx = workIdx / stride;
-    uint pairIdx    = workIdx - contactIdx * stride;
-    uint pA         = pairIdx >> 1u;
-    uint pB         = pairIdx &  1u;
-
-    if (contactIdx >= ReadFineContactCount()) return;
-
-    FineContact fc = _FineContacts[contactIdx];
-    if (fc.vGiA != INVALID_U32)                       return; // vertex-edge, skip
-    if (fc.ownerA == INVALID_U32 || fc.ownerB == INVALID_U32) return;
-
-    // ── Resolve fine vertex GIs for the chosen endpoints ─────────────────────
-    uint fineGiA = (pA == 0u) ? _BoundaryEdgeV0Gi[fc.heA]    : _BoundaryEdgeV1Gi[fc.heA];
-    uint fineGiB = (pB == 0u) ? _BoundaryEdgeV0Gi[fc.featB]  : _BoundaryEdgeV1Gi[fc.featB];
-
-    if (fineGiA == INVALID_U32 || fineGiB == INVALID_U32) return;
-
-    // ── Slot-0 coarse parents for both endpoints ──────────────────────────────
-    int   coarseGiA; float wA;
-    if (!GetCoarseParent(fineGiA, 0u, coarseGiA, wA)) return;
-
-    int   coarseGiB = -1;
-    float wB        = 1.0; 
-    {
-        int g; float w;
-        if (GetCoarseParent(fineGiB, 0u, g, w))
-        {
-            coarseGiB = g;
-            wB        = w;
-        }
-    }
-
-    // 0.25 = 1/4 endpoints; total weight across all 4 sub-contacts sums to wA*wB
-    float weight = 0.25 * wA * wB;
-    if (weight <= 1e-9) return;
-
-    EmitCoarseContact(fc.ownerA, fc.ownerB,
-                      coarseGiA, coarseGiB,
-                      fc.n, fc.pen, weight, fc.x);
+    
 }

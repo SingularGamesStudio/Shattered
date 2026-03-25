@@ -54,10 +54,6 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRestrictGameplayDeltaVFromEvents, "_ForceEvents", solver.gameplayForce.ForceEventsBuffer);
         }
 
-        internal void SetUseTransferredCollisionsParam(CommandBuffer cb, bool enabled) {
-            actualRuntime.SetUseTransferredCollisionsParam(cb, enabled);
-        }
-
         internal void SetRestrictedDeltaVScale(CommandBuffer cb, float scale) {
             cb.SetComputeFloatParam(shader, "_RestrictedDeltaVScale", scale);
         }

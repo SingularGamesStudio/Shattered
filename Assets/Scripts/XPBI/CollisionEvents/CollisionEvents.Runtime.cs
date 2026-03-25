@@ -17,6 +17,26 @@ namespace GPU.Solver {
         private ComputeBuffer coarseContacts;
         private ComputeBuffer coarseContactCount;
 
+        private ComputeBuffer colAnchorGi;
+        private ComputeBuffer colNodeGi0;
+        private ComputeBuffer colNodeGi1;
+        private ComputeBuffer colNodeGi2;
+        private ComputeBuffer colNodeGi3;
+        private ComputeBuffer colBeta0;
+        private ComputeBuffer colBeta1;
+        private ComputeBuffer colBeta2;
+        private ComputeBuffer colBeta3;
+        private ComputeBuffer colNX;
+        private ComputeBuffer colNY;
+        private ComputeBuffer colPen;
+        private ComputeBuffer colScale;
+        private ComputeBuffer colOwnerA;
+        private ComputeBuffer colOwnerB;
+        private ComputeBuffer nodeCollisionRefCount;
+        private ComputeBuffer nodeCollisionRefWrite;
+        private ComputeBuffer nodeCollisionRefStart;
+        private ComputeBuffer nodeCollisionRefs;
+
         private ComputeBuffer xferColCount;
         private ComputeBuffer xferColNXBits;
         private ComputeBuffer xferColNYBits;
@@ -108,11 +128,37 @@ namespace GPU.Solver {
         internal int kClearCoarseContacts;
         internal int kPropagateVertexContacts;
         internal int kPropagateEdgeContacts;
+        internal int kClearNodeCollisionRefAux;
+        internal int kBuildFineContactStencils;
+        internal int kBuildCoarseContactStencils;
+        internal int kExclusiveScanNodeCollisionRefCount;
+        internal int kClearNodeCollisionRefWrite;
+        internal int kScatterFineContactRefs;
+        internal int kScatterCoarseContactRefs;
 
         internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
         internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
         internal ComputeBuffer CoarseContactsBuffer => coarseContacts;
         internal ComputeBuffer CoarseContactCountBuffer => coarseContactCount;
+        internal ComputeBuffer ColAnchorGiBuffer => colAnchorGi;
+        internal ComputeBuffer ColNodeGi0Buffer => colNodeGi0;
+        internal ComputeBuffer ColNodeGi1Buffer => colNodeGi1;
+        internal ComputeBuffer ColNodeGi2Buffer => colNodeGi2;
+        internal ComputeBuffer ColNodeGi3Buffer => colNodeGi3;
+        internal ComputeBuffer ColBeta0Buffer => colBeta0;
+        internal ComputeBuffer ColBeta1Buffer => colBeta1;
+        internal ComputeBuffer ColBeta2Buffer => colBeta2;
+        internal ComputeBuffer ColBeta3Buffer => colBeta3;
+        internal ComputeBuffer ColNXBuffer => colNX;
+        internal ComputeBuffer ColNYBuffer => colNY;
+        internal ComputeBuffer ColPenBuffer => colPen;
+        internal ComputeBuffer ColScaleBuffer => colScale;
+        internal ComputeBuffer ColOwnerABuffer => colOwnerA;
+        internal ComputeBuffer ColOwnerBBuffer => colOwnerB;
+        internal ComputeBuffer NodeCollisionRefCountBuffer => nodeCollisionRefCount;
+        internal ComputeBuffer NodeCollisionRefWriteBuffer => nodeCollisionRefWrite;
+        internal ComputeBuffer NodeCollisionRefStartBuffer => nodeCollisionRefStart;
+        internal ComputeBuffer NodeCollisionRefsBuffer => nodeCollisionRefs;
         internal ComputeBuffer BoundaryChunkCountBuffer => boundaryEdgeCount;
         internal ComputeBuffer BoundaryChunksBuffer => boundaryEdgeV0Gi;
         internal ComputeBuffer BoundaryEdgeOwnerBuffer => boundaryEdgeOwner;
@@ -169,6 +215,10 @@ namespace GPU.Solver {
 
             identityGlobalNodeMap.SetData(identityGlobalNodeMapCpu, 0, 0, required);
             return identityGlobalNodeMap;
+        }
+
+        private void BindDtGlobalMappingParams(CommandBuffer cb, int kernel, bool useDtGlobalNodeMap, int dtLocalBase, ComputeBuffer dtGlobalNodeMap, ComputeBuffer dtGlobalToLayerLocalMap) {
+            solver.layerMappingCache.BindDtGlobalMappingParams(cb, shader, kernel, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
         }
 
         private static int NextPow2(int v) {
@@ -260,17 +310,39 @@ namespace GPU.Solver {
         internal void AllocateRuntimeBuffers(int newCapacity) {
             int collisionCapacity = math.max(4096, newCapacity * 32);
             int transferCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
+            int stencilCapacity = collisionCapacity + transferCapacity;
 
             boundaryEdgeCapacity = math.max(2048, newCapacity * 12);
             pairCapacity = math.max(256, newCapacity * 2);
 
-            // Contact in XPBI.CollisionEventsNew.compute is 48 bytes.
-            collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 5 + sizeof(float) * 7, ComputeBufferType.Structured);
+            // Contact in XPBI.CollisionEventsNew.compute is 52 bytes.
+            collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 6 + sizeof(float) * 4 + sizeof(float) * 2 + sizeof(float), ComputeBufferType.Structured);
             collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
             // CoarseContact in XPBI.CollisionEventsNew.Transfer.hlsl is 40 bytes.
             coarseContacts = new ComputeBuffer(transferCapacity, sizeof(uint) * 4 + sizeof(float) * 6, ComputeBufferType.Structured);
             coarseContactCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+
+            colAnchorGi = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colNodeGi0 = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colNodeGi1 = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colNodeGi2 = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colNodeGi3 = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colBeta0 = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colBeta1 = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colBeta2 = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colBeta3 = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colNX = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colNY = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colPen = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colScale = new ComputeBuffer(stencilCapacity, sizeof(float), ComputeBufferType.Structured);
+            colOwnerA = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+            colOwnerB = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
+
+            nodeCollisionRefCount = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
+            nodeCollisionRefWrite = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
+            nodeCollisionRefStart = new ComputeBuffer(newCapacity + 1, sizeof(uint), ComputeBufferType.Structured);
+            nodeCollisionRefs = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
 
             xferColCount = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
             xferColNXBits = new ComputeBuffer(transferCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -321,6 +393,26 @@ namespace GPU.Solver {
             ReleaseBuffer(ref collisionEventCount);
             ReleaseBuffer(ref coarseContacts);
             ReleaseBuffer(ref coarseContactCount);
+
+            ReleaseBuffer(ref colAnchorGi);
+            ReleaseBuffer(ref colNodeGi0);
+            ReleaseBuffer(ref colNodeGi1);
+            ReleaseBuffer(ref colNodeGi2);
+            ReleaseBuffer(ref colNodeGi3);
+            ReleaseBuffer(ref colBeta0);
+            ReleaseBuffer(ref colBeta1);
+            ReleaseBuffer(ref colBeta2);
+            ReleaseBuffer(ref colBeta3);
+            ReleaseBuffer(ref colNX);
+            ReleaseBuffer(ref colNY);
+            ReleaseBuffer(ref colPen);
+            ReleaseBuffer(ref colScale);
+            ReleaseBuffer(ref colOwnerA);
+            ReleaseBuffer(ref colOwnerB);
+            ReleaseBuffer(ref nodeCollisionRefCount);
+            ReleaseBuffer(ref nodeCollisionRefWrite);
+            ReleaseBuffer(ref nodeCollisionRefStart);
+            ReleaseBuffer(ref nodeCollisionRefs);
 
             ReleaseBuffer(ref xferColCount);
             ReleaseBuffer(ref xferColNXBits);
@@ -404,9 +496,46 @@ namespace GPU.Solver {
             kClearCoarseContacts = shader.FindKernel("ClearCoarseContacts");
             kPropagateVertexContacts = shader.FindKernel("PropagateVertexContacts");
             kPropagateEdgeContacts = shader.FindKernel("PropagateEdgeContacts");
+            kClearNodeCollisionRefAux = shader.FindKernel("ClearNodeCollisionRefAux");
+            kBuildFineContactStencils = shader.FindKernel("BuildFineContactStencils");
+            kBuildCoarseContactStencils = shader.FindKernel("BuildCoarseContactStencils");
+            kExclusiveScanNodeCollisionRefCount = shader.FindKernel("ExclusiveScanNodeCollisionRefCount");
+            kClearNodeCollisionRefWrite = shader.FindKernel("ClearNodeCollisionRefWrite");
+            kScatterFineContactRefs = shader.FindKernel("ScatterFineContactRefs");
+            kScatterCoarseContactRefs = shader.FindKernel("ScatterCoarseContactRefs");
+        }
+
+        private void BindStencilKernelBuffers(CommandBuffer cb, int kernel) {
+            cb.SetComputeBufferParam(shader, kernel, "_Contacts", collisionEvents);
+            cb.SetComputeBufferParam(shader, kernel, "_ContactCount", collisionEventCount);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContactCountBuffer", coarseContactCount);
+
+            cb.SetComputeBufferParam(shader, kernel, "_ColAnchorGi", colAnchorGi);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNodeGi0", colNodeGi0);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNodeGi1", colNodeGi1);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNodeGi2", colNodeGi2);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNodeGi3", colNodeGi3);
+            cb.SetComputeBufferParam(shader, kernel, "_ColBeta0", colBeta0);
+            cb.SetComputeBufferParam(shader, kernel, "_ColBeta1", colBeta1);
+            cb.SetComputeBufferParam(shader, kernel, "_ColBeta2", colBeta2);
+            cb.SetComputeBufferParam(shader, kernel, "_ColBeta3", colBeta3);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNX", colNX);
+            cb.SetComputeBufferParam(shader, kernel, "_ColNY", colNY);
+            cb.SetComputeBufferParam(shader, kernel, "_ColPen", colPen);
+            cb.SetComputeBufferParam(shader, kernel, "_ColScale", colScale);
+            cb.SetComputeBufferParam(shader, kernel, "_ColOwnerA", colOwnerA);
+            cb.SetComputeBufferParam(shader, kernel, "_ColOwnerB", colOwnerB);
+
+            cb.SetComputeBufferParam(shader, kernel, "_NodeCollisionRefCount", nodeCollisionRefCount);
+            cb.SetComputeBufferParam(shader, kernel, "_NodeCollisionRefWrite", nodeCollisionRefWrite);
+            cb.SetComputeBufferParam(shader, kernel, "_NodeCollisionRefStart", nodeCollisionRefStart);
+            cb.SetComputeBufferParam(shader, kernel, "_NodeCollisionRefs", nodeCollisionRefs);
         }
 
         private void BindTransferKernelBuffers(CommandBuffer cb, int kernel) {
+            cb.SetComputeBufferParam(shader, kernel, "_Pos", solver.pos);
+            cb.SetComputeBufferParam(shader, kernel, "_Vel", solver.vel);
             cb.SetComputeBufferParam(shader, kernel, "_FineContacts", collisionEvents);
             cb.SetComputeBufferParam(shader, kernel, "_FineContactCountBuffer", collisionEventCount);
             cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
@@ -470,7 +599,9 @@ namespace GPU.Solver {
             DT layer0Dt,
             int dtReadSlot,
             ComputeBuffer dtOwnerByLocal,
-            ComputeBuffer dtGlobalNodeMap
+            ComputeBuffer dtGlobalNodeMap,
+            ComputeBuffer dtGlobalToLayerLocalMap,
+            bool useDtGlobalNodeMap
         ) {
             cb.SetComputeBufferParam(shader, kernel, "_Pos", solver.pos);
             cb.SetComputeBufferParam(shader, kernel, "_Vel", solver.vel);
@@ -481,6 +612,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kernel, "_DtGlobalVertexByLocal", dtGlobalNodeMap ?? solver.layerMappingCache.DefaultDtGlobalNodeMap);
             cb.SetComputeBufferParam(shader, kernel, "_DtTriInternal", layer0Dt.TriInternalBuffer);
             cb.SetComputeBufferParam(shader, kernel, "_DtBoundaryNormals", layer0Dt.BoundaryNormalsBuffer);
+
+            BindDtGlobalMappingParams(cb, kernel, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kernel, "_OwnerGridOrigin", ownerGridOrigin);
             cb.SetComputeBufferParam(shader, kernel, "_OwnerGridDim", ownerGridDim);
@@ -609,11 +742,27 @@ namespace GPU.Solver {
             if (globalVertexByLocal == null || !globalVertexByLocal.IsValid())
                 globalVertexByLocal = EnsureIdentityGlobalNodeMap(layer0ActiveCount);
             for (int i = 0; i < kernels.Length; i++)
-                BindKernelBuffers(cb, kernels[i], layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal);
+                BindKernelBuffers(cb, kernels[i], layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal, dtGlobalToLayerLocalMap, useDtGlobalNodeMap);
 
             BindTransferKernelBuffers(cb, kClearCoarseContacts);
             BindTransferKernelBuffers(cb, kPropagateVertexContacts);
             BindTransferKernelBuffers(cb, kPropagateEdgeContacts);
+
+            int[] stencilKernels = {
+                kClearNodeCollisionRefAux,
+                kBuildFineContactStencils,
+                kBuildCoarseContactStencils,
+                kExclusiveScanNodeCollisionRefCount,
+                kClearNodeCollisionRefWrite,
+                kScatterFineContactRefs,
+                kScatterCoarseContactRefs,
+            };
+
+            for (int i = 0; i < stencilKernels.Length; i++) {
+                int k = stencilKernels[i];
+                BindKernelBuffers(cb, k, layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal, dtGlobalToLayerLocalMap, useDtGlobalNodeMap);
+                BindStencilKernelBuffers(cb, k);
+            }
 
             _ = layer0NeighborSearch;
             _ = dtGlobalToLayerLocalMap;

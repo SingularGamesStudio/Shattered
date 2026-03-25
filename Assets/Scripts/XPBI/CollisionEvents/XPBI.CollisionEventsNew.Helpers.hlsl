@@ -216,28 +216,221 @@ bool QueryOwnerBoundaryExact(uint owner, float2 x, out FeatureHit best)
     return abs(best.phi) <= _SdfBandWorld;
 }
 
-void EmitContact(uint ownerA, uint ownerB, uint vGi, uint heA, uint heB, float2 n, float pen, float2 pA, float2 pB)
-{
-    if (pen <= 0.0) return;
+static const float COL_GEOM_EPS = 1e-12;
+static const float COL_PARAM_EPS = 1e-4;
 
-    float nl2 = dot(n, n);
-    if (nl2 <= 1e-20) return;
+void FineContactInit(out Contact c)
+{
+    c.ownerA = INVALID_U32;
+    c.ownerB = INVALID_U32;
+    c.nodeGi0 = INVALID_U32;
+    c.nodeGi1 = INVALID_U32;
+    c.nodeGi2 = INVALID_U32;
+    c.nodeGi3 = INVALID_U32;
+    c.beta0 = 0.0;
+    c.beta1 = 0.0;
+    c.beta2 = 0.0;
+    c.beta3 = 0.0;
+    c.n = 0.0;
+    c.pen = 0.0;
+}
+
+void FineContactSetSlot(inout Contact c, uint slot, uint gi, float beta)
+{
+    switch (slot)
+    {
+        case 0u: c.nodeGi0 = gi; c.beta0 = beta; break;
+        case 1u: c.nodeGi1 = gi; c.beta1 = beta; break;
+        case 2u: c.nodeGi2 = gi; c.beta2 = beta; break;
+        case 3u: c.nodeGi3 = gi; c.beta3 = beta; break;
+        default: break;
+    }
+}
+
+void AppendFineContact(Contact c)
+{
+    if (c.pen <= 0.0)
+        return;
+
+    float nl2 = dot(c.n, c.n);
+    if (nl2 <= 1e-20)
+        return;
+
+    c.n *= rsqrt(nl2);
 
     uint dst;
-    InterlockedAdd(_ContactCount[0], 1, dst);
-    if (dst >= _MaxContacts) return;
+    InterlockedAdd(_ContactCount[0], 1u, dst);
+    if (dst >= _MaxContacts)
+        return;
 
-    Contact c;
+    _Contacts[dst] = c;
+}
+
+bool BuildVertexFeatureFineContact(
+    uint ownerA,
+    uint ownerB,
+    uint vGiA,
+    uint featB,
+    float2 n,
+    float pen,
+    float2 cpB,
+    out Contact c)
+{
+    FineContactInit(c);
+
+    if (vGiA == INVALID_U32)
+        return false;
+
     c.ownerA = ownerA;
     c.ownerB = ownerB;
-    c.vGi = vGi;
-    c.heA = heA;
-    c.heB = heB;
-    c.n = n * rsqrt(nl2);
+    c.n = n;
     c.pen = pen;
-    c.pA = pA;
-    c.pB = pB;
-    _Contacts[dst] = c;
+
+    FineContactSetSlot(c, 0u, vGiA, -1.0);
+
+    uint b0 = _BoundaryEdgeV0Gi[featB];
+    uint b1 = _BoundaryEdgeV1Gi[featB];
+    uint bv = _BoundaryVertexGi[featB];
+
+    bool haveB0 = (b0 != INVALID_U32);
+    bool haveB1 = (b1 != INVALID_U32);
+
+    if (haveB0 && haveB1 && b0 != b1)
+    {
+        float2 x0 = PredPos(b0);
+        float2 x1 = PredPos(b1);
+        float2 e = x1 - x0;
+        float e2 = dot(e, e);
+
+        if (e2 > COL_GEOM_EPS)
+        {
+            float t = saturate(dot(cpB - x0, e) / e2);
+
+            if (t <= COL_PARAM_EPS)
+            {
+                FineContactSetSlot(c, 1u, b0, 1.0);
+            }
+            else if (t >= (1.0 - COL_PARAM_EPS))
+            {
+                FineContactSetSlot(c, 1u, b1, 1.0);
+            }
+            else
+            {
+                FineContactSetSlot(c, 1u, b0, 1.0 - t);
+                FineContactSetSlot(c, 2u, b1, t);
+            }
+            return true;
+        }
+
+        float d0 = dot(cpB - x0, cpB - x0);
+        float d1 = dot(cpB - x1, cpB - x1);
+        FineContactSetSlot(c, 1u, (d0 <= d1) ? b0 : b1, 1.0);
+        return true;
+    }
+
+    if (bv != INVALID_U32)
+    {
+        FineContactSetSlot(c, 1u, bv, 1.0);
+        return true;
+    }
+
+    if (haveB0 || haveB1)
+    {
+        FineContactSetSlot(c, 1u, haveB0 ? b0 : b1, 1.0);
+        return true;
+    }
+
+    return false;
+}
+
+bool BuildEdgeEdgeFineContact(
+    uint ownerA,
+    uint ownerB,
+    uint heA,
+    uint heB,
+    float s,
+    float t,
+    float2 n,
+    float pen,
+    out Contact c)
+{
+    FineContactInit(c);
+
+    uint a0 = _BoundaryEdgeV0Gi[heA];
+    uint a1 = _BoundaryEdgeV1Gi[heA];
+    uint b0 = _BoundaryEdgeV0Gi[heB];
+    uint b1 = _BoundaryEdgeV1Gi[heB];
+
+    if (a0 == INVALID_U32 || a1 == INVALID_U32 || b0 == INVALID_U32 || b1 == INVALID_U32)
+        return false;
+
+    c.ownerA = ownerA;
+    c.ownerB = ownerB;
+    c.n = n;
+    c.pen = pen;
+
+    float2 a0p = PredPos(a0);
+    float2 a1p = PredPos(a1);
+    float2 b0p = PredPos(b0);
+    float2 b1p = PredPos(b1);
+
+    float aLen2 = dot(a1p - a0p, a1p - a0p);
+    float bLen2 = dot(b1p - b0p, b1p - b0p);
+
+    bool aDeg = (a0 == a1) || !(aLen2 > COL_GEOM_EPS);
+    bool bDeg = (b0 == b1) || !(bLen2 > COL_GEOM_EPS);
+
+    s = saturate(s);
+    t = saturate(t);
+
+    if (!aDeg && !bDeg)
+    {
+        FineContactSetSlot(c, 0u, a0, -(1.0 - s));
+        FineContactSetSlot(c, 1u, a1, -s);
+        FineContactSetSlot(c, 2u, b0, 1.0 - t);
+        FineContactSetSlot(c, 3u, b1, t);
+        return true;
+    }
+
+    if (aDeg && !bDeg)
+    {
+        FineContactSetSlot(c, 0u, a0, -1.0);
+
+        if (t <= COL_PARAM_EPS)
+            FineContactSetSlot(c, 1u, b0, 1.0);
+        else if (t >= (1.0 - COL_PARAM_EPS))
+            FineContactSetSlot(c, 1u, b1, 1.0);
+        else
+        {
+            FineContactSetSlot(c, 1u, b0, 1.0 - t);
+            FineContactSetSlot(c, 2u, b1, t);
+        }
+        return true;
+    }
+
+    if (!aDeg && bDeg)
+    {
+        if (s <= COL_PARAM_EPS)
+        {
+            FineContactSetSlot(c, 0u, a0, -1.0);
+        }
+        else if (s >= (1.0 - COL_PARAM_EPS))
+        {
+            FineContactSetSlot(c, 0u, a1, -1.0);
+        }
+        else
+        {
+            FineContactSetSlot(c, 0u, a0, -(1.0 - s));
+            FineContactSetSlot(c, 1u, a1, -s);
+        }
+
+        FineContactSetSlot(c, 2u, b0, 1.0);
+        return true;
+    }
+
+    FineContactSetSlot(c, 0u, a0, -1.0);
+    FineContactSetSlot(c, 1u, b0, 1.0);
+    return true;
 }
 
 bool BBoxOverlap(float2 amin, float2 amax, float2 bmin, float2 bmax)

@@ -10,9 +10,17 @@
 #pragma kernel ClearCoarseContacts
 #pragma kernel PropagateVertexContacts
 #pragma kernel PropagateEdgeContacts
+#pragma kernel ClearNodeCollisionRefAux
+#pragma kernel BuildFineContactStencils
+#pragma kernel BuildCoarseContactStencils
+#pragma kernel ExclusiveScanNodeCollisionRefCount
+#pragma kernel ClearNodeCollisionRefWrite
+#pragma kernel ScatterFineContactRefs
+#pragma kernel ScatterCoarseContactRefs
 
 #include "XPBI.CollisionEventsNew.Shared.hlsl"
 
 #include "XPBI.CollisionEventsNew.Helpers.hlsl"
 #include "XPBI.CollisionEventsNew.Kernels.hlsl"
 #include "XPBI.CollisionEventsNew.Transfer.hlsl"
+#include "XPBI.CollisionEventsNew.Stencils.hlsl"

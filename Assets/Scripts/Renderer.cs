@@ -151,7 +151,7 @@ public sealed class Renderer : MonoBehaviour {
     readonly Dictionary<int, GlobalLayerState> layerStates = new Dictionary<int, GlobalLayerState>(8);
     CameraResources cr;
 
-    const int WireframeNodeCap = 3000;
+    const int WireframeNodeCap = 10000;
 
     int kInitKernel = -1;
     int kJfaKernel = -1;
@@ -665,6 +665,8 @@ public sealed class Renderer : MonoBehaviour {
             }
 
             int materialId = node.materialId;
+            if (uvMode == 1)
+                materialId = ownerMesh != null ? ownerMesh.GetBaseMaterialId() : materialId;
             if (st.materialIdsCpu[li] != materialId) {
                 st.materialIdsCpu[li] = materialId;
                 materialIdsChanged = true;

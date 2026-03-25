@@ -6,10 +6,23 @@ using UnityEngine;
 public sealed class SpriteMesh : Box {
     static readonly Dictionary<Sprite, MaterialDef> RuntimeDefsBySprite = new Dictionary<Sprite, MaterialDef>(64);
 
+    [System.Serializable]
+    public struct ColorMaterialAssignment {
+        public Color32 color;
+        public MaterialDef material;
+    }
+
     [Header("Sprite")]
     public SpriteRenderer spriteRenderer;
     public MaterialDef physicsTemplate;
     public bool generateOnAwakeIfMissing = true;
+
+    [Header("Material Map")]
+    [Tooltip("Optional low-color map matching the sprite size. Point materials are sampled from this map by node UV.")]
+    public Texture2D materialMap;
+    [HideInInspector]
+    [Tooltip("Per-color material assignment used when materialMap is set.")]
+    public List<ColorMaterialAssignment> materialMapAssignments = new List<ColorMaterialAssignment>();
 
     public override bool UsesSpriteUv => true;
 
@@ -39,9 +52,14 @@ public sealed class SpriteMesh : Box {
 
         EnsureRuntimeMaterial();
 
+        int defaultMaterialId = GetBaseMaterialId();
+        MaterialMapReadback mapReadback = BuildMaterialMapReadback();
+
         if (!GenerateFromSpriteShape()) {
             base.Generate(count, material);
             BakeSpriteUvs();
+            ApplyMaterialsFromMap(mapReadback, defaultMaterialId);
+            RecomputeMassFromDensity();
             return;
         }
 
@@ -51,6 +69,15 @@ public sealed class SpriteMesh : Box {
         Build();
 
         BakeSpriteUvs();
+        ApplyMaterialsFromMap(mapReadback, defaultMaterialId);
+        RecomputeMassFromDensity();
+    }
+
+    struct MaterialMapReadback {
+        public bool valid;
+        public int width;
+        public int height;
+        public Color32[] pixels;
     }
 
     bool GenerateFromSpriteShape() {
@@ -484,6 +511,54 @@ public sealed class SpriteMesh : Box {
         if (spriteRenderer == null || spriteRenderer.sprite == null || nodes == null || nodes.Count == 0)
             return;
 
+        Sprite sprite = spriteRenderer.sprite;
+        Vector2[] verts = sprite.vertices;
+        Vector2[] spriteUvs = sprite.uv;
+        ushort[] tris = sprite.triangles;
+
+        if (verts == null || spriteUvs == null || tris == null || verts.Length == 0 || spriteUvs.Length != verts.Length || tris.Length < 3) {
+            BakeSpriteUvsFromBoundsFallback();
+            return;
+        }
+
+        bool flipX = spriteRenderer.flipX;
+        bool flipY = spriteRenderer.flipY;
+
+        var localVerts = new float2[verts.Length];
+        var localUvs = new float2[spriteUvs.Length];
+
+        Rect texRect = sprite.textureRect;
+        float texInvW = sprite.texture != null && sprite.texture.width > 0 ? (1f / sprite.texture.width) : 0f;
+        float texInvH = sprite.texture != null && sprite.texture.height > 0 ? (1f / sprite.texture.height) : 0f;
+        float uMin = texRect.x * texInvW;
+        float vMin = texRect.y * texInvH;
+        float uScale = texRect.width > 1e-6f ? (1f / (texRect.width * texInvW)) : 0f;
+        float vScale = texRect.height > 1e-6f ? (1f / (texRect.height * texInvH)) : 0f;
+
+        for (int i = 0; i < verts.Length; i++) {
+            Vector2 v = verts[i];
+            if (flipX) v.x = -v.x;
+            if (flipY) v.y = -v.y;
+            localVerts[i] = new float2(v.x, v.y);
+
+            Vector2 uv = spriteUvs[i];
+            float localU = (uv.x - uMin) * uScale;
+            float localV = (uv.y - vMin) * vScale;
+            localUvs[i] = new float2(math.saturate(localU), math.saturate(localV));
+        }
+
+        Transform tr = spriteRenderer.transform;
+        for (int i = 0; i < nodes.Count; i++) {
+            Node node = nodes[i];
+            Vector3 local3 = tr.InverseTransformPoint(new Vector3(node.originalPos.x, node.originalPos.y, 0f));
+            float2 localPoint = new float2(local3.x, local3.y);
+
+            node.materialUv = EvaluateSpriteUvFromTriangles(localPoint, localVerts, localUvs, tris);
+            nodes[i] = node;
+        }
+    }
+
+    void BakeSpriteUvsFromBoundsFallback() {
         Bounds localBounds = spriteRenderer.sprite.bounds;
         Vector3 min = localBounds.min;
         Vector3 size3 = localBounds.size;
@@ -509,4 +584,206 @@ public sealed class SpriteMesh : Box {
             nodes[i] = node;
         }
     }
+
+    static float2 EvaluateSpriteUvFromTriangles(float2 p, float2[] verts, float2[] uvs, ushort[] tris) {
+        float bestD2 = float.PositiveInfinity;
+        float2 bestUv = new float2(0.5f, 0.5f);
+
+        for (int t = 0; t + 2 < tris.Length; t += 3) {
+            int i0 = tris[t + 0];
+            int i1 = tris[t + 1];
+            int i2 = tris[t + 2];
+            if ((uint)i0 >= (uint)verts.Length || (uint)i1 >= (uint)verts.Length || (uint)i2 >= (uint)verts.Length)
+                continue;
+
+            float2 a = verts[i0];
+            float2 b = verts[i1];
+            float2 c = verts[i2];
+
+            if (!TryBarycentric2D(p, a, b, c, out float3 bary))
+                continue;
+
+            float minW = math.min(bary.x, math.min(bary.y, bary.z));
+            if (minW >= -1e-4f) {
+                float2 uvInside = uvs[i0] * bary.x + uvs[i1] * bary.y + uvs[i2] * bary.z;
+                return new float2(math.saturate(uvInside.x), math.saturate(uvInside.y));
+            }
+
+            float2 triCenter = (a + b + c) / 3f;
+            float d2 = math.lengthsq(p - triCenter);
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                float3 w = math.max(bary, new float3(0f, 0f, 0f));
+                float sum = w.x + w.y + w.z;
+                if (sum > 1e-6f)
+                    w /= sum;
+                else
+                    w = new float3(1f, 0f, 0f);
+
+                float2 uvNear = uvs[i0] * w.x + uvs[i1] * w.y + uvs[i2] * w.z;
+                bestUv = new float2(math.saturate(uvNear.x), math.saturate(uvNear.y));
+            }
+        }
+
+        return bestUv;
+    }
+
+    static bool TryBarycentric2D(float2 p, float2 a, float2 b, float2 c, out float3 bary) {
+        float2 v0 = b - a;
+        float2 v1 = c - a;
+        float2 v2 = p - a;
+
+        float d00 = math.dot(v0, v0);
+        float d01 = math.dot(v0, v1);
+        float d11 = math.dot(v1, v1);
+        float d20 = math.dot(v2, v0);
+        float d21 = math.dot(v2, v1);
+
+        float denom = d00 * d11 - d01 * d01;
+        if (math.abs(denom) <= 1e-12f) {
+            bary = default;
+            return false;
+        }
+
+        float inv = 1f / denom;
+        float v = (d11 * d20 - d01 * d21) * inv;
+        float w = (d00 * d21 - d01 * d20) * inv;
+        float u = 1f - v - w;
+        bary = new float3(u, v, w);
+        return true;
+    }
+
+    MaterialMapReadback BuildMaterialMapReadback() {
+        if (materialMap == null)
+            return default;
+
+        int width = materialMap.width;
+        int height = materialMap.height;
+        if (width <= 0 || height <= 0)
+            return default;
+
+        Color32[] pixels = ReadTexturePixels(materialMap);
+        if (pixels == null || pixels.Length != width * height)
+            return default;
+
+        return new MaterialMapReadback {
+            valid = true,
+            width = width,
+            height = height,
+            pixels = pixels
+        };
+    }
+
+    void ApplyMaterialsFromMap(MaterialMapReadback mapReadback, int defaultMaterialId) {
+        if (!mapReadback.valid || nodes == null || nodes.Count == 0)
+            return;
+
+        var lib = MaterialLibrary.Instance;
+        var lookup = new Dictionary<Color32, int>(materialMapAssignments != null ? materialMapAssignments.Count : 0);
+        if (materialMapAssignments != null) {
+            for (int i = 0; i < materialMapAssignments.Count; i++) {
+                ColorMaterialAssignment entry = materialMapAssignments[i];
+                int matId = defaultMaterialId;
+                if (lib != null && entry.material != null)
+                    matId = lib.GetMaterialIndex(entry.material);
+
+                lookup[entry.color] = matId;
+            }
+        }
+
+        int width = mapReadback.width;
+        int height = mapReadback.height;
+        Color32[] pixels = mapReadback.pixels;
+
+        for (int i = 0; i < nodes.Count; i++) {
+            Node node = nodes[i];
+            float2 uv = node.materialUv;
+
+            int x = math.clamp((int)math.floor(uv.x * width), 0, width - 1);
+            int y = math.clamp((int)math.floor(uv.y * height), 0, height - 1);
+            Color32 sampled = pixels[y * width + x];
+
+            node.materialId = lookup.TryGetValue(sampled, out int matId) ? matId : defaultMaterialId;
+            nodes[i] = node;
+        }
+    }
+
+    static Color32[] ReadTexturePixels(Texture2D tex) {
+        if (tex == null)
+            return null;
+
+        try {
+            return tex.GetPixels32();
+        } catch (System.Exception) {
+            try {
+                int width = tex.width;
+                int height = tex.height;
+                if (width <= 0 || height <= 0)
+                    return null;
+
+                var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32,
+                    QualitySettings.activeColorSpace == ColorSpace.Linear ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Default);
+
+                Texture2D readback = null;
+                RenderTexture old = RenderTexture.active;
+                try {
+                    readback = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+                    Graphics.Blit(tex, rt);
+
+                    RenderTexture.active = rt;
+                    readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                    readback.Apply(false, false);
+                    return readback.GetPixels32();
+                } finally {
+                    RenderTexture.active = old;
+                    DestroyObjectSafe(readback);
+                    RenderTexture.ReleaseTemporary(rt);
+                }
+            } catch (System.Exception ex) {
+                Debug.LogWarning($"SpriteMesh: Failed to read texture pixels from '{tex.name}'. Assign a regular Texture2D asset for materialMap. {ex.Message}");
+                return null;
+            }
+        }
+    }
+
+    static void DestroyObjectSafe(Object obj) {
+        if (obj == null)
+            return;
+
+        if (Application.isPlaying)
+            Object.Destroy(obj);
+        else
+            Object.DestroyImmediate(obj);
+    }
+
+#if UNITY_EDITOR
+    public Color32[] CollectMaterialMapColors() {
+        if (materialMap == null)
+            return System.Array.Empty<Color32>();
+
+        Color32[] pixels = ReadTexturePixels(materialMap);
+        if (pixels == null || pixels.Length == 0)
+            return System.Array.Empty<Color32>();
+
+        var unique = new HashSet<Color32>();
+        for (int i = 0; i < pixels.Length; i++)
+            unique.Add(pixels[i]);
+
+        var colors = new List<Color32>(unique.Count);
+        foreach (Color32 c in unique)
+            colors.Add(c);
+
+        colors.Sort((a, b) => {
+            int cmp = a.r.CompareTo(b.r);
+            if (cmp != 0) return cmp;
+            cmp = a.g.CompareTo(b.g);
+            if (cmp != 0) return cmp;
+            cmp = a.b.CompareTo(b.b);
+            if (cmp != 0) return cmp;
+            return a.a.CompareTo(b.a);
+        });
+
+        return colors.ToArray();
+    }
+#endif
 }

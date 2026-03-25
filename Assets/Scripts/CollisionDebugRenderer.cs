@@ -154,13 +154,16 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     struct CollisionEventGpu {
         public uint ownerA;
         public uint ownerB;
-        public uint vGi;
-        public uint heA;
-        public uint heB;
+        public uint nodeGi0;
+        public uint nodeGi1;
+        public uint nodeGi2;
+        public uint nodeGi3;
+        public float beta0;
+        public float beta1;
+        public float beta2;
+        public float beta3;
         public float2 normal;
         public float penetration;
-        public float2 pA;
-        public float2 pB;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -357,15 +360,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (boundaryCountBuffer == null || boundaryOwnerBuffer == null || boundaryV0Buffer == null || boundaryV1Buffer == null || boundaryNormalBuffer == null || boundaryP0Buffer == null || boundaryP1Buffer == null || collisionCountBuffer == null || collisionBuffer == null || coarseCollisionCountBuffer == null || coarseCollisionBuffer == null)
             return false;
 
-        int totalCount = 0;
-        if (meshes != null) {
-            for (int i = 0; i < meshes.Count; i++) {
-                Meshless m = meshes[i];
-                if (m == null || m.nodes == null)
-                    continue;
-                totalCount += m.nodes.Count;
-            }
-        }
+        int totalCount = math.min(globalPositionsBuffer.count, invMassBuffer.count);
 
         if (totalCount <= 0)
             return false;
@@ -938,21 +933,16 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     : i;
 
                 CollisionEventGpu evt = collisionEvents[sourceIndex];
-                float2 worldPA = ToWorld(evt.pA, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
-                float2 worldPB = ToWorld(evt.pB, lastGlobalLooksNormalized, invHalfExtent, lastNormCenter);
-
-                // Use contact-space point directly to avoid index-space mismatches in debug rendering.
-                float2 c = worldPA;
+                if (!TryResolveFineContactOrigin(evt, invHalfExtent, out float2 c)) {
+                    lastArrowSkippedDegenerate++;
+                    continue;
+                }
 
                 float2 n = evt.normal;
                 float nLen = math.length(n);
                 if (!(nLen > 1e-6f)) {
-                    n = worldPA - worldPB;
-                    nLen = math.length(n);
-                    if (!(nLen > 1e-6f)) {
-                        lastArrowSkippedDegenerate++;
-                        continue;
-                    }
+                    lastArrowSkippedDegenerate++;
+                    continue;
                 }
                 n /= nLen;
 
@@ -979,7 +969,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                 else
                     lastArrowSkippedProjection++;
 
-                if (highlightEdgeIntersections && evt.vGi == InvalidU32 && evt.heA != InvalidU32 && evt.heB != InvalidU32) {
+                if (highlightEdgeIntersections && IsLikelyEdgeEdgeFineContact(evt)) {
                     if (TryWorldToGuiPoint(cam, c, out Vector2 gC)) {
                         DrawCrossMarker(gC, intersectionMarkerPixels, intersectionColor, thickness);
                         lastIntersectionMarkers++;
@@ -1002,7 +992,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     continue;
                 n /= nLen;
 
-                float2 c = evt.point;
+                if (!TryResolveCoarseContactOrigin(evt, invHalfExtent, out float2 c))
+                    continue;
+
                 float shaftLength = math.max(minArrowLength, evt.penetration * arrowScale);
                 if (cam != null && cam.orthographic) {
                     float worldPerPixel = (2f * cam.orthographicSize) / math.max(1f, Screen.height);
@@ -1136,6 +1128,148 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
         world = ToWorld(dtPositions[index], lastDtLooksNormalized, invHalfExtent, lastNormCenter);
         return true;
+    }
+
+    bool IsFinite(float2 v) =>
+    math.all(math.isfinite(v));
+
+bool IsValidGi(uint gi) =>
+    gi != InvalidU32;
+
+bool TryResolveContactSidePoint(
+    uint[] gi,
+    float[] beta,
+    float invHalfExtent,
+    bool wantPositive,
+    out float2 point)
+{
+    point = default;
+
+    float w = 0f;
+    float2 acc = 0f;
+
+    for (int i = 0; i < 4; i++) {
+        uint g = gi[i];
+        if (!IsValidGi(g))
+            continue;
+
+        float b = beta[i];
+        if (wantPositive) {
+            if (b <= 1e-12f)
+                continue;
+        } else {
+            if (b >= -1e-12f)
+                continue;
+            b = -b;
+        }
+
+        if (!TryGetWorldPoint((int)g, invHalfExtent, out float2 p))
+            continue;
+        if (!IsFinite(p))
+            continue;
+
+        acc += p * b;
+        w += b;
+    }
+
+    if (w <= 1e-12f)
+        return false;
+
+    point = acc / w;
+    return IsFinite(point);
+}
+
+bool TryResolveFineContactOrigin(CollisionEventGpu evt, float invHalfExtent, out float2 origin) {
+    origin = default;
+
+    float2 n = evt.normal;
+    float n2 = math.lengthsq(n);
+    bool hasNormal = n2 > 1e-20f;
+    if (hasNormal)
+        n *= math.rsqrt(n2);
+    else
+        n = 0f;
+
+    uint[] gi = { evt.nodeGi0, evt.nodeGi1, evt.nodeGi2, evt.nodeGi3 };
+    float[] beta = { evt.beta0, evt.beta1, evt.beta2, evt.beta3 };
+
+    bool hasA = TryResolveContactSidePoint(gi, beta, invHalfExtent, wantPositive: false, out float2 pA);
+    bool hasB = TryResolveContactSidePoint(gi, beta, invHalfExtent, wantPositive: true, out float2 pB);
+
+    if (hasA && hasB) {
+        origin = 0.5f * (pA + pB);
+        return IsFinite(origin);
+    }
+
+    float pen = math.max(evt.penetration, 0f);
+
+    if (hasA) {
+        origin = hasNormal ? (pA + 0.5f * pen * n) : pA;
+        return IsFinite(origin);
+    }
+
+    if (hasB) {
+        origin = hasNormal ? (pB - 0.5f * pen * n) : pB;
+        return IsFinite(origin);
+    }
+
+    return false;
+}
+
+bool TryResolveCoarseContactOrigin(CoarseContactGpu evt, float invHalfExtent, out float2 origin) {
+    origin = default;
+
+    float2 n = evt.normal;
+    float n2 = math.lengthsq(n);
+    bool hasNormal = n2 > 1e-20f;
+    if (hasNormal)
+        n *= math.rsqrt(n2);
+    else
+        n = 0f;
+
+    if (IsFinite(evt.point)) {
+        origin = evt.point;
+        return true;
+    }
+
+    bool hasA = false;
+    bool hasB = false;
+    float2 a = 0f;
+    float2 b = 0f;
+
+    if (evt.coarseGiA != InvalidU32)
+        hasA = TryGetWorldPoint((int)evt.coarseGiA, invHalfExtent, out a) && IsFinite(a);
+
+    if (evt.coarseGiB != InvalidU32)
+        hasB = TryGetWorldPoint((int)evt.coarseGiB, invHalfExtent, out b) && IsFinite(b);
+
+    if (hasA && hasB) {
+        origin = 0.5f * (a + b);
+        return IsFinite(origin);
+    }
+
+    float pen = math.max(evt.penetration, 0f);
+
+    if (hasA) {
+        origin = hasNormal ? (a + 0.5f * pen * n) : a;
+        return IsFinite(origin);
+    }
+
+    if (hasB) {
+        origin = hasNormal ? (b - 0.5f * pen * n) : b;
+        return IsFinite(origin);
+    }
+
+    return false;
+}
+
+    static bool IsLikelyEdgeEdgeFineContact(CollisionEventGpu evt) {
+        int validNodes = 0;
+        if (evt.nodeGi0 != InvalidU32) validNodes++;
+        if (evt.nodeGi1 != InvalidU32) validNodes++;
+        if (evt.nodeGi2 != InvalidU32) validNodes++;
+        if (evt.nodeGi3 != InvalidU32) validNodes++;
+        return validNodes >= 4;
     }
 
     bool DrawCollisionArrow(Camera cam, float2 origin, float2 direction, float shaftLength, float thickness, Color arrowColor) {
