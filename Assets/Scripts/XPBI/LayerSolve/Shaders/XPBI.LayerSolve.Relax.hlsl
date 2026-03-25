@@ -286,6 +286,11 @@ if (pred2 > maxSpeedHalf2) return;
         if (dVj2 > maxDv2) dVj *= maxDeltaVPerIter * rsqrt(max(dVj2, EPS * EPS));
         XPBI_SCATTER_DV(gj, dVj);
     }
+
+    if (_CollisionEnable != 0u)
+    {
+        #include "XPBI.LayerSolve.Collision.hlsl"
+    }
 #else
     float2 dVi = invMassI * velScale * gradC_vi;
     float dVi2 = dot(dVi, dVi);
