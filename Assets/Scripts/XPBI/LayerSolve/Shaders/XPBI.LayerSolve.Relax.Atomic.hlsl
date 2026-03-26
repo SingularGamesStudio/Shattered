@@ -59,10 +59,6 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #define XPBI_APPLY_MODE_JR 1
     #define XPBI_SCATTER_DV(gi_, dv_) AtomicAddFloat2(_JRVelDeltaBits, gi_, (dv_))
     #define XPBI_SCATTER_DL(gi_, dl_) (_JRLambdaDelta[gi_] = (dl_))
-    #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
-    #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
-    #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SCATTER_DV(gi_, (dv_))
-
     #include "XPBI.LayerSolve.Relax.hlsl"
 
     #undef XPBI_SCATTER_DL
@@ -79,9 +75,6 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #undef XPBI_VEL
     #undef XPBI_POS
     #undef XPBI_GET_GJ
-    #undef XPBI_COL_READ_LAMBDA
-    #undef XPBI_COL_WRITE_LAMBDA
-    #undef XPBI_COL_APPLY_DV
 }
 
 [numthreads(256,1,1)]
@@ -139,12 +132,6 @@ void JR_Apply(uint3 id : SV_DispatchThreadID)
         _Vel[gi] *= maxSpeedLocal * invLen;
     }
 
-    float mu = 0.0;
-    float lambda = 0.0;
-    ComputeMaterialLame(gi, mu, lambda);
-    float2 dampedVel = _Vel[gi];
-    ApplySingleAnchorRadialDampingOnVel(gi, mu, lambda, _Pos[gi], dampedVel);
-    _Vel[gi] = dampedVel;
 }
 
 #endif // XPBI_LAYER_ACTUAL_SOLVE_RELAX_ATOMIC_INCLUDED

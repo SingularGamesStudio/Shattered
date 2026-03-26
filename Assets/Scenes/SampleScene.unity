@@ -164,7 +164,7 @@ MonoBehaviour:
       simulationSpeed: 1
       maxTicksPerBatch: 32
     interaction:
-      manual: 1
+      manual: 0
       holdThreshold: 0.2
       useHierarchicalSolver: 1
       neighborSearchMode: 0

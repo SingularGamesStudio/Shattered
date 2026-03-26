@@ -7,6 +7,9 @@
 #pragma kernel JR_SavePrevAndClear
 #pragma kernel JR_ComputeDeltas
 #pragma kernel JR_Apply
+#pragma kernel RelaxCollisionDirect
+#pragma kernel RelaxCollisionAtomic
+#pragma kernel RelaxPostCollisionDamping
 #pragma kernel ClearConvergenceDebugStats
 #pragma kernel CopyConvergenceDebug
 #pragma kernel SmoothProlongatedFineVel
@@ -67,6 +70,101 @@ static float WendlandC2Value(float2 xij, float h)
 	float s2 = s * s;
 	float s4 = s2 * s2;
 	return Alpha2D(hSafe) * s4 * (2.0 * q + 1.0);
+}
+
+static void JRAccumulateCollisionDelta(uint gi, float2 dV)
+{
+	uint jrBase = gi * 2u;
+	float2 prevDV = float2(asfloat(_JRVelDeltaBits[jrBase + 0u]), asfloat(_JRVelDeltaBits[jrBase + 1u]));
+	float2 nextDV = prevDV + dV;
+	_JRVelDeltaBits[jrBase + 0u] = asuint(nextDV.x);
+	_JRVelDeltaBits[jrBase + 1u] = asuint(nextDV.y);
+}
+
+[numthreads(256, 1, 1)]
+void RelaxCollisionDirect(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	uint active = _ActiveCount;
+	if (li >= active)
+		return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u)
+		return;
+
+	float h = max(_LayerKernelH, 1e-4);
+	float support = WendlandSupportRadius(h);
+	if (support <= EPS)
+		return;
+	float supportSq = support * support;
+
+	#define XPBI_NEIGHBOR_FIXED(li_, gi_) IsLayerFixed(gi_)
+	#define XPBI_INV_MASS(li_, gi_) ReadEffectiveInvMass(gi_)
+	#define XPBI_POS(li_, gi_) _Pos[gi_]
+	#define XPBI_VEL(li_, gi_) _Vel[gi_]
+	#define XPBI_SET_VEL(li_, gi_, v_) (_Vel[gi_] = (v_))
+
+	#include "XPBI.LayerSolve.CollisionNew.hlsl"
+
+	#undef XPBI_SET_VEL
+	#undef XPBI_VEL
+	#undef XPBI_POS
+	#undef XPBI_INV_MASS
+	#undef XPBI_NEIGHBOR_FIXED
+}
+
+[numthreads(256, 1, 1)]
+void RelaxCollisionAtomic(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	uint active = _ActiveCount;
+	if (li >= active)
+		return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u)
+		return;
+
+	float h = max(_LayerKernelH, 1e-4);
+	float support = WendlandSupportRadius(h);
+	if (support <= EPS)
+		return;
+	float supportSq = support * support;
+
+	#define XPBI_NEIGHBOR_FIXED(li_, gi_) IsLayerFixed(gi_)
+	#define XPBI_INV_MASS(li_, gi_) ReadEffectiveInvMass(gi_)
+	#define XPBI_POS(li_, gi_) _Pos[gi_]
+	#define XPBI_VEL(li_, gi_) _VelPrev[gi_]
+	#define XPBI_SET_VEL(li_, gi_, v_) JRAccumulateCollisionDelta((gi_), ((v_) - _VelPrev[gi_]))
+
+	#include "XPBI.LayerSolve.CollisionNew.hlsl"
+
+	#undef XPBI_SET_VEL
+	#undef XPBI_VEL
+	#undef XPBI_POS
+	#undef XPBI_INV_MASS
+	#undef XPBI_NEIGHBOR_FIXED
+}
+
+[numthreads(256, 1, 1)]
+void RelaxPostCollisionDamping(uint3 id : SV_DispatchThreadID)
+{
+	uint li = id.x;
+	if (li >= _ActiveCount)
+		return;
+
+	uint gi = GlobalIndexFromLocal(li);
+	if (gi == ~0u || IsLayerFixed(gi) || _RestVolume[gi] <= EPS)
+		return;
+
+	float mu = 0.0;
+	float lambda = 0.0;
+	ComputeMaterialLame(gi, mu, lambda);
+
+	float2 dampedVel = _Vel[gi];
+	ApplySingleAnchorRadialDampingOnVel(gi, mu, lambda, _Pos[gi], dampedVel);
+	_Vel[gi] = dampedVel;
 }
 
 [numthreads(256, 1, 1)]

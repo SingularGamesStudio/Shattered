@@ -43,6 +43,9 @@ namespace GPU.Solver {
         internal int kJRSavePrevAndClear;
         internal int kJRComputeDeltas;
         internal int kJRApply;
+        internal int kRelaxCollisionDirect;
+        internal int kRelaxCollisionAtomic;
+        internal int kRelaxPostCollisionDamping;
         internal int kProlongate;
         internal int kCommitDeformation;
         internal int kSmoothProlongatedFineVel;
@@ -161,6 +164,9 @@ namespace GPU.Solver {
         internal int KJRSavePrevAndClear => kJRSavePrevAndClear;
         internal int KJRComputeDeltas => kJRComputeDeltas;
         internal int KJRApply => kJRApply;
+        internal int KRelaxCollisionDirect => kRelaxCollisionDirect;
+        internal int KRelaxCollisionAtomic => kRelaxCollisionAtomic;
+        internal int KRelaxPostCollisionDamping => kRelaxPostCollisionDamping;
         internal int KProlongate => kProlongate;
         internal int KCommitDeformation => kCommitDeformation;
         internal int KSmoothProlongatedFineVel => kSmoothProlongatedFineVel;
@@ -222,6 +228,9 @@ namespace GPU.Solver {
             kJRSavePrevAndClear = shader.FindKernel("JR_SavePrevAndClear");
             kJRComputeDeltas = shader.FindKernel("JR_ComputeDeltas");
             kJRApply = shader.FindKernel("JR_Apply");
+            kRelaxCollisionDirect = shader.FindKernel("RelaxCollisionDirect");
+            kRelaxCollisionAtomic = shader.FindKernel("RelaxCollisionAtomic");
+            kRelaxPostCollisionDamping = shader.FindKernel("RelaxPostCollisionDamping");
             kProlongate = shader.FindKernel("Prolongate");
             kCommitDeformation = shader.FindKernel("CommitDeformation");
             kSmoothProlongatedFineVel = shader.FindKernel("SmoothProlongatedFineVel");
@@ -241,10 +250,6 @@ namespace GPU.Solver {
 
         internal void SetConvergenceDebugDisabled(CommandBuffer cb) {
             cb.SetComputeIntParam(shader, "_ConvergenceDebugEnable", 0);
-        }
-
-        internal void SetCollisionEnable(CommandBuffer cb, bool enabled) {
-            cb.SetComputeIntParam(shader, "_CollisionEnable", enabled ? 1 : 0);
         }
 
         internal void SetPersistentRelaxParams(CommandBuffer cb, int persistentIterations, int baseDebugIter) {
@@ -433,9 +438,52 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRApply, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRApply, "_JRLambdaDelta", jrLambdaDelta);
 
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_RestVolume", restVolume);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_CurrentVolumeBits", currentVolumeBits);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_CurrentTotalMassBits", currentTotalMassBits);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_CollisionLambda", collisionLambda);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_ColNodeContacts", colNodeContacts);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_ColNodeContactCount", colNodeContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_ColNodeContactLambda", colNodeLambda);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_ColReadPos", pos);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_ColReadVel", velPrev);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionDirect, "_CoarseFixed", coarseFixed);
+
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_VelPrev", velPrev);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_RestVolume", restVolume);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_CurrentVolumeBits", currentVolumeBits);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_CurrentTotalMassBits", currentTotalMassBits);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_CollisionLambda", collisionLambda);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_ColNodeContacts", colNodeContacts);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_ColNodeContactCount", colNodeContactCount);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_ColNodeContactLambda", colNodeLambda);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_ColReadPos", pos);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_ColReadVel", velPrev);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_JRVelDeltaBits", jrVelDeltaBits);
+            cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_CoarseFixed", coarseFixed);
+
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_Pos", pos);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_Vel", vel);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_MaterialIds", materialIds);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_InvMass", invMass);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_RestVolume", restVolume);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_CurrentVolumeBits", currentVolumeBits);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_CurrentTotalMassBits", currentTotalMassBits);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_FixedChildPosBits", fixedChildPosBits);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_FixedChildCount", fixedChildCount);
+            cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_CoarseFixed", coarseFixed);
+
             BindDtGlobalMappingParams(cb, kJRSavePrevAndClear, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(cb, kJRComputeDeltas, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
             BindDtGlobalMappingParams(cb, kJRApply, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(cb, kRelaxCollisionDirect, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(cb, kRelaxCollisionAtomic, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
+            BindDtGlobalMappingParams(cb, kRelaxPostCollisionDamping, useDtGlobalNodeMap, dtLocalBase, dtGlobalNodeMap, dtGlobalToLayerLocalMap);
 
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
@@ -494,6 +542,7 @@ namespace GPU.Solver {
                 cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kJRApply, "_PhysicalParams", physicalParams);
+                cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kProlongate, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kCommitDeformation, "_PhysicalParams", physicalParams);
             }

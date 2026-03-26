@@ -287,10 +287,6 @@ if (pred2 > maxSpeedHalf2) return;
         XPBI_SCATTER_DV(gj, dVj);
     }
 
-    if (_CollisionEnable != 0u)
-    {
-        #include "XPBI.LayerSolve.CollisionNew.hlsl"
-    }
 #else
     float2 dVi = invMassI * velScale * gradC_vi;
     float dVi2 = dot(dVi, dVi);
@@ -339,14 +335,5 @@ if (pred2 > maxSpeedHalf2) return;
         }
         XPBI_SET_VEL(gjLi, gj, vJ);
     }
-
-    if (_CollisionEnable != 0u)
-    {
-        #include "XPBI.LayerSolve.CollisionNew.hlsl"
-    }
-
     XPBI_SET_LAMBDA(li, gi, lambdaBefore + dLambda);
-    float2 dampedVel = XPBI_VEL(li, gi);
-    ApplySingleAnchorRadialDampingOnVel(gi, mu, lambda, XPBI_POS(li, gi), dampedVel);
-    XPBI_SET_VEL(li, gi, dampedVel);
 #endif

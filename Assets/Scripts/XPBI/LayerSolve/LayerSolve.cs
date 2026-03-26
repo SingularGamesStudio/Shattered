@@ -145,11 +145,15 @@ namespace GPU.Solver {
             }
 
             if (gsIterations > 0 && layerColoring != null) {
-                runtime.SetCollisionEnable(session.AsyncCb, true);
-
                 if (usePersistentCoarseGs) {
                     runtime.SetPersistentRelaxParams(session.AsyncCb, gsIterations, 0);
                     Dispatch(session.AsyncCb, "XPBI.RelaxColoredPersistentCoarse", shader, runtime.KRelaxColoredPersistentCoarse, 1, 1, 1);
+
+                    for (int iter = 0; iter < gsIterations; iter++) {
+                        Dispatch(session.AsyncCb, "XPBI.CopyVelToPrev.CollisionSnapshot", shader, runtime.KCopyVelToPrev, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.RelaxCollision.NonParallel", shader, runtime.KRelaxCollisionDirect, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.RelaxPostCollisionDamping.NonParallel", shader, runtime.KRelaxPostCollisionDamping, XPBISolver.Groups256(activeCount), 1, 1);
+                    }
                 } else {
                     for (int iter = 0; iter < gsIterations; iter++) {
                         if (debugEnabled)
@@ -166,12 +170,15 @@ namespace GPU.Solver {
                                     layerColoring.RelaxArgsBuffer,
                                     (uint)color * 12);
                         }
+
+                        Dispatch(session.AsyncCb, "XPBI.CopyVelToPrev.CollisionSnapshot", shader, runtime.KCopyVelToPrev, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.RelaxCollision.Colored", shader, runtime.KRelaxCollisionDirect, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.RelaxPostCollisionDamping.Colored", shader, runtime.KRelaxPostCollisionDamping, XPBISolver.Groups256(activeCount), 1, 1);
                     }
                 }
             }
 
             if (jrIterations > 0) {
-                runtime.SetCollisionEnable(session.AsyncCb, true);
                 runtime.SetJRParams(session.AsyncCb);
 
                 for (int iter = 0; iter < jrIterations; iter++) {
@@ -180,7 +187,9 @@ namespace GPU.Solver {
 
                     Dispatch(session.AsyncCb, "XPBI.JR.SavePrevAndClear", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(activeCount), 1, 1);
                     Dispatch(session.AsyncCb, "XPBI.JR.ComputeDeltas", shader, runtime.KJRComputeDeltas, XPBISolver.Groups256(activeCount), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.RelaxCollision.Atomic", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
                     Dispatch(session.AsyncCb, "XPBI.JR.Apply", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.RelaxPostCollisionDamping.Atomic", shader, runtime.KRelaxPostCollisionDamping, XPBISolver.Groups256(activeCount), 1, 1);
                 }
             }
 
