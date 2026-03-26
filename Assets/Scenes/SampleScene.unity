@@ -170,7 +170,7 @@ MonoBehaviour:
       neighborSearchMode: 0
     solverCore:
       gravity: -1
-      compliance: 1
+      compliance: 0.1
     neighbors:
       layerKernelHFromPoissonRadius: 2
       wendlandSupport: 2
@@ -225,10 +225,10 @@ MonoBehaviour:
       dtLegalizeIterations: 2
     uiAndReadback:
       showTpsOverlay: 1
-      convergenceDebugEnabled: 0
+      convergenceDebugEnabled: 1
       enableContinuousCpuReadback: 1
       cpuReadbackInterval: 0.02
-      prolongationConstraintDebugEnabled: 0
+      prolongationConstraintDebugEnabled: 1
   simulationPreset: {fileID: 0}
   applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}
@@ -294,9 +294,6 @@ MonoBehaviour:
   boundaryNormalLength: 0.02
   drawCollisionArrows: 1
   collisionArrowColor: {r: 1, g: 0.35, b: 0.15, a: 1}
-  colorFineArrowsByContactType: 1
-  vertexContactArrowColor: {r: 0.2, g: 1, b: 0.35, a: 1}
-  edgeEdgeContactArrowColor: {r: 1, g: 0.35, b: 0.15, a: 1}
   drawCoarseCollisionArrows: 1
   coarseCollisionArrowColor: {r: 0.1, g: 0.75, b: 1, a: 1}
   colorArrowsByOwnerPair: 1
@@ -374,7 +371,7 @@ MonoBehaviour:
   - color:
       serializedVersion: 2
       rgba: 4278190335
-    material: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
+    material: {fileID: 0}
   - color:
       serializedVersion: 2
       rgba: 16777215
@@ -515,7 +512,7 @@ Camera:
   far clip plane: 1000
   field of view: 60
   orthographic: 1
-  orthographic size: 3.5852172
+  orthographic size: 4.8437595
   m_Depth: -1
   m_CullingMask:
     serializedVersion: 2
@@ -540,7 +537,7 @@ Transform:
   m_GameObject: {fileID: 519420028}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.51, y: 2.35, z: -10}
+  m_LocalPosition: {x: 0, y: 0, z: -10}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -611,7 +608,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 97ff0c8fbc25b1f4a8f8643fd6c522db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scenario: 5
+  scenario: 1
   generateOnStart: 1
   hangCenter: {x: 0, y: 0}
   hangSize: {x: 3.4, y: 2.2}

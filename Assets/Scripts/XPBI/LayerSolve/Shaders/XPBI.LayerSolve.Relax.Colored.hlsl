@@ -66,8 +66,8 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #define XPBI_INV_MASS(gjLi_, gj_) ReadEffectiveInvMass(gj_)
     #define XPBI_ACTIVE_I(li_, gi_) (!IsLayerFixed(gi_) && _RestVolume[gi_] > EPS)
     #define XPBI_APPLY_MODE_JR 0
-    #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
-    #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+    #define XPBI_SCATTER_DV(gi_, dv_) {}
+    #define XPBI_SCATTER_DL(gi_, dl_) {}
     #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
     #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
     #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SET_VEL(li_, gi_, XPBI_VEL(li_, gi_) + (dv_))

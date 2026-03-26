@@ -11,7 +11,8 @@ void ClearState(uint3 tid : SV_DispatchThreadID)
 
     if (_OwnerCount > 0u)
     {
-        uint totalBins = _OwnerBinBase[_OwnerCount - 1] + _OwnerBinDim[_OwnerCount - 1].x * _OwnerBinDim[_OwnerCount - 1].y;
+        uint totalBins = _OwnerBinBase[_OwnerCount - 1] +
+                         _OwnerBinDim[_OwnerCount - 1].x * _OwnerBinDim[_OwnerCount - 1].y;
 
         if (i < totalBins)
         {
@@ -41,28 +42,15 @@ void ClearState(uint3 tid : SV_DispatchThreadID)
         _BoundaryVertexPseudoN[i] = 0.0;
     }
 
-    if (i < _MaxContacts)
+    if (i < _MaxFineNodeContacts)
     {
-        Contact c = (Contact)0;
-        c.ownerA = INVALID_U32;
-        c.ownerB = INVALID_U32;
-        c.nodeGi0 = INVALID_U32;
-        c.nodeGi1 = INVALID_U32;
-        c.nodeGi2 = INVALID_U32;
-        c.nodeGi3 = INVALID_U32;
-        c.beta0 = 0.0;
-        c.beta1 = 0.0;
-        c.beta2 = 0.0;
-        c.beta3 = 0.0;
-        c.n = 0.0;
-        c.pen = 0.0;
-        _Contacts[i] = c;
+        FineNodeContact c;
+        FineNodeContactInit(c);
+        _FineNodeContacts[i] = c;
     }
 
     if (i == 0u)
-    {
-        _ContactCount[0] = 0;
-    }
+        _FineNodeContactCount[0] = 0u;
 }
 
 [numthreads(64, 1, 1)]
@@ -364,14 +352,14 @@ bool SampleOwnerFieldLinear(uint owner, float2 x, out float phi, out float2 grad
 }
 
 [numthreads(64, 1, 1)]
-void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
+void QueryNodeSurfaceContacts(uint3 tid : SV_DispatchThreadID)
 {
     uint workPerPair = _MaxBoundaryEdgesPerOwner;
     if (workPerPair == 0u) return;
 
-    uint workItem = tid.x;
+    uint workItem  = tid.x;
     uint pairIndex = workItem / workPerPair;
-    uint k = workItem - pairIndex * workPerPair;
+    uint k         = workItem - pairIndex * workPerPair;
     if (pairIndex >= _QueryPairCount) return;
 
     uint2 pair = _OwnerPairs[pairIndex];
@@ -381,7 +369,6 @@ void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
 
     float support = _LayerKernelH * _CollisionSupportScale;
     if (!OwnerPairAabbOverlap(ownerA, ownerB, support)) return;
-
     if (_OwnerBoundaryOverflow[ownerA] != 0u) return;
     if (_OwnerBoundaryOverflow[ownerB] != 0u) return;
 
@@ -404,81 +391,50 @@ void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
     if (hit.valid == 0u) return;
     if (hit.phi >= support) return;
 
-    float2 n = SafeNormalize(hit.grad);
-    if (dot(n, n) <= 1e-20) return;
-
-    float pen = support - hit.phi;
-    if (pen <= 0.0) return;
-
-    Contact c;
-    if (!BuildVertexFeatureFineContact(ownerA, ownerB, vGi, hit.id, n, pen, hit.cp, c))
+    FineNodeContact c;
+    if (!BuildVertexSurfaceNodeContact(ownerA, ownerB, vGi, hit, support, c))
         return;
 
-    AppendFineContact(c);
+    AppendFineNodeContact(c);
 }
-
 [numthreads(64, 1, 1)]
-void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
+void QueryEdgeEdgeNodeContacts(uint3 tid : SV_DispatchThreadID)
 {
     uint workPerPair = _MaxBoundaryEdgesPerOwner;
     if (workPerPair == 0u) return;
 
-    uint workItem = tid.x;
+    uint workItem  = tid.x;
     uint pairIndex = workItem / workPerPair;
-    uint k = workItem - pairIndex * workPerPair;
-    if (pairIndex >= _QueryPairCount)
-    {
-        return;
-    }
-
-    if (_QuerySwap != 0u)
-    {
-        return;
-    }
+    uint k         = workItem - pairIndex * workPerPair;
+    if (pairIndex >= _QueryPairCount) return;
 
     uint2 pair = _OwnerPairs[pairIndex];
     uint ownerA = pair.x;
     uint ownerB = pair.y;
-    if (ownerA == ownerB)
-    {
-        return;
-    }
+    if (ownerA == ownerB) return;
 
     float support = _LayerKernelH * _CollisionSupportScale;
-    if (!OwnerPairAabbOverlap(ownerA, ownerB, support))
-    {
-        return;
-    }
-
-    if (_OwnerBoundaryOverflow[ownerA] != 0u || _OwnerBoundaryOverflow[ownerB] != 0u)
-    {
-        return;
-    }
+    if (!OwnerPairAabbOverlap(ownerA, ownerB, support)) return;
+    if (_OwnerBoundaryOverflow[ownerA] != 0u || _OwnerBoundaryOverflow[ownerB] != 0u) return;
 
     uint countA = min(_OwnerBoundaryEdgeCounts[ownerA], _MaxBoundaryEdgesPerOwner);
-    if (k >= countA)
-    {
-        return;
-    }
+    if (k >= countA) return;
 
     uint heA = _OwnerBoundaryEdgeRefs[OwnerEdgeRefIndex(ownerA, k)];
-    uint aV0Gi = _BoundaryEdgeV0Gi[heA];
-    uint aV1Gi = _BoundaryEdgeV1Gi[heA];
-    if (aV0Gi == INVALID_U32 || aV1Gi == INVALID_U32)
-    {
-        return;
-    }
+    uint a0Gi = _BoundaryEdgeV0Gi[heA];
+    uint a1Gi = _BoundaryEdgeV1Gi[heA];
+    if (a0Gi == INVALID_U32 || a1Gi == INVALID_U32) return;
 
-    float2 a0 = PredPos(aV0Gi);
-    float2 a1 = PredPos(aV1Gi);
+    float2 a0 = PredPos(a0Gi);
+    float2 a1 = PredPos(a1Gi);
 
     float2 amin = min(a0, a1) - support;
     float2 amax = max(a0, a1) + support;
 
-    float2 originB = _OwnerBinOrigin[ownerB];
-    uint2 dimB = _OwnerBinDim[ownerB];
-    uint baseB = _OwnerBinBase[ownerB];
-    float binSizeB = _OwnerGridTexel[ownerB] * _OwnerBinSizeScale;
+    float2 originB  = _OwnerBinOrigin[ownerB];
+    uint2  dimB     = _OwnerBinDim[ownerB];
+    uint   baseB    = _OwnerBinBase[ownerB];
+    float  binSizeB = _OwnerGridTexel[ownerB] * _OwnerBinSizeScale;
 
     int2 c0 = clamp((int2)floor((amin - originB) / binSizeB), 0, (int2)dimB - 1);
     int2 c1 = clamp((int2)floor((amax - originB) / binSizeB), 0, (int2)dimB - 1);
@@ -493,75 +449,108 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
             for (uint i = 0u; i < ec; ++i)
             {
                 uint heB = _EdgeBinRefs[EdgeBinRefIndex(binIndex, i)];
-                if (_BoundaryEdgeOwner[heB] != ownerB)
-                {
-                    continue;
-                }
+                if (_BoundaryEdgeOwner[heB] != ownerB) continue;
 
-                uint bV0Gi = _BoundaryEdgeV0Gi[heB];
-                uint bV1Gi = _BoundaryEdgeV1Gi[heB];
-                if (bV0Gi == INVALID_U32 || bV1Gi == INVALID_U32)
-                {
-                    continue;
-                }
+                uint b0Gi = _BoundaryEdgeV0Gi[heB];
+                uint b1Gi = _BoundaryEdgeV1Gi[heB];
+                if (b0Gi == INVALID_U32 || b1Gi == INVALID_U32) continue;
 
-                float2 b0 = PredPos(bV0Gi);
-                float2 b1 = PredPos(bV1Gi);
+                float2 b0 = PredPos(b0Gi);
+                float2 b1 = PredPos(b1Gi);
 
                 float2 bmin = min(b0, b1) - support;
                 float2 bmax = max(b0, b1) + support;
-                if (!BBoxOverlap(amin, amax, bmin, bmax))
-                {
-                    continue;
-                }
+                if (!BBoxOverlap(amin, amax, bmin, bmax)) continue;
 
                 float sI, tI;
                 float2 xI;
                 uint hitKind;
                 bool intersects = SegmentIntersection2D(a0, a1, b0, b1, sI, tI, xI, hitKind);
-                if (!intersects)
-                {
-                    continue;
-                }
-                if (hitKind != SEG_HIT_POINT)
-                {
-                    continue;
-                }
-                if (!IsInteriorParam(sI) || !IsInteriorParam(tI))
-                {
-                    continue;
-                }
-                if (!IsCanonicalBinForPoint(ownerB, binIndex, xI))
-                {
-                    continue;
-                }
+                if (!intersects) continue;
+                if (hitKind != SEG_HIT_POINT) continue;
+                if (!IsInteriorParam(sI) || !IsInteriorParam(tI)) continue;
+                if (!IsCanonicalBinForPoint(ownerB, binIndex, xI)) continue;
 
-                float2 n = FeatureNormalFromOwnerB(heB, tI);
-                float nl2 = dot(n, n);
-                if (nl2 <= 1e-20)
-                {
-                    continue;
-                }
-                n *= rsqrt(nl2);
+                float2 nAB = FeatureNormalFromOwnerB(heB, tI);
+                float nl2 = dot(nAB, nAB);
+                if (nl2 <= 1e-20) continue;
+                nAB *= rsqrt(nl2);
 
                 float2 midA = 0.5 * (a0 + a1);
                 float2 midB = 0.5 * (b0 + b1);
-                if (dot(n, midA - midB) < 0.0)
-                    n = -n;
+                if (dot(nAB, midA - midB) < 0.0) nAB = -nAB;
 
-                float sep = abs(dot(midA - midB, n));
+                float sep = abs(dot(midA - midB, nAB));
                 float pen = support - sep;
-                if (pen <= 0.0)
-                {
-                    continue;
-                }
+                if (pen <= 0.0) continue;
 
-                Contact c;
-                if (!BuildEdgeEdgeFineContact(ownerA, ownerB, heA, heB, sI, tI, n, pen, c))
-                    continue;
-
-                AppendFineContact(c);
+                EmitEdgeEdgeNodeContacts(
+                    ownerA, ownerB,
+                    a0Gi, a1Gi,
+                    b0Gi, b1Gi,
+                    saturate(sI), saturate(tI),
+                    nAB, pen, xI);
             }
         }
     }
+}
+
+
+#define FINE_NODE_MANIFOLD_CAP 2
+
+RWBuffer<uint> _FineNodeManifoldCount;      // size = _ActiveCount
+RWBuffer<uint> _FineNodeManifoldOverflow;   // size = _ActiveCount
+RWStructuredBuffer<FineNodeContact> _FineNodeManifold; // size = _ActiveCount * FINE_NODE_MANIFOLD_CAP
+
+uint LocalIndexFromGlobal(uint gi)
+{
+    if (_UseDtGlobalNodeMap != 0u)
+    {
+        int li = _DtGlobalToLayerLocalMap[gi];
+        return (li >= 0) ? (uint)li : INVALID_U32;
+    }
+
+    int liUnmapped = (int)gi - (int)_DtLocalBase;
+    return (liUnmapped >= 0) ? (uint)liUnmapped : INVALID_U32;
+}
+
+[numthreads(64,1,1)]
+void ClearFineNodeManifolds(uint3 tid : SV_DispatchThreadID)
+{
+    uint i = tid.x;
+    if (i < _ActiveCount)
+    {
+        _FineNodeManifoldCount[i] = 0u;
+        _FineNodeManifoldOverflow[i] = 0u;
+    }
+
+    uint total = _ActiveCount * FINE_NODE_MANIFOLD_CAP;
+    if (i < total)
+    {
+        FineNodeContact c;
+        FineNodeContactInit(c);
+        _FineNodeManifold[i] = c;
+    }
+}
+
+[numthreads(64,1,1)]
+void ScatterFineNodeContactsToManifolds(uint3 tid : SV_DispatchThreadID)
+{
+    uint idx = tid.x;
+    uint count = min(_FineNodeContactCount[0], _MaxFineNodeContacts);
+    if (idx >= count) return;
+
+    FineNodeContact c = _FineNodeContacts[idx];
+    uint li = LocalIndexFromGlobal(c.slaveGi);
+    if (li == INVALID_U32 || li >= _ActiveCount) return;
+
+    uint slot;
+    InterlockedAdd(_FineNodeManifoldCount[li], 1u, slot);
+    if (slot >= FINE_NODE_MANIFOLD_CAP)
+    {
+        _FineNodeManifoldOverflow[li] = 1u;
+        return;
+    }
+
+    _FineNodeManifold[li * FINE_NODE_MANIFOLD_CAP + slot] = c;
 }

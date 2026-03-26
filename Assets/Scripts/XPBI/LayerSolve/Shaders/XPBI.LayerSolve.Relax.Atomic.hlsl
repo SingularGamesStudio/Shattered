@@ -48,9 +48,9 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #define XPBI_GET_GJ(gjLi) GlobalIndexFromLocal(gjLi)
     #define XPBI_POS(li_, gi_) _Pos[gi_]
     #define XPBI_VEL(li_, gi_) _VelPrev[gi_]
-    #define XPBI_SET_VEL(li_, gi_, v_) ((void)0)
+    #define XPBI_SET_VEL(li_, gi_, v_) do {} while(0)
     #define XPBI_LAMBDA(li_, gi_) _LambdaPrev[gi_]
-    #define XPBI_SET_LAMBDA(li_, gi_, l_) ((void)0)
+    #define XPBI_SET_LAMBDA(li_, gi_, l_) do {} while(0)
     #define XPBI_L_FROM_I(li_, gi_) _L[gi_]
     #define XPBI_F0_FROM_I(li_, gi_) _F0[gi_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) IsLayerFixed(gj_)

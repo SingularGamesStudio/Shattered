@@ -45,8 +45,8 @@ static void RelaxPersistentCoarseRow(
     #define XPBI_INV_MASS(gjLi_, gj_) ReadEffectiveInvMass(gj_)
     #define XPBI_ACTIVE_I(li_, gi_) ((_SCoarseFlags[li_] & 2u) != 0u)
     #define XPBI_APPLY_MODE_JR 0
-    #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
-    #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+    #define XPBI_SCATTER_DV(gi_, dv_) {}
+    #define XPBI_SCATTER_DL(gi_, dl_) {}
     #define XPBI_DEBUG_ITER debugIter
     #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
     #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))

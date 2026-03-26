@@ -11,25 +11,25 @@ struct DT_HalfEdge
     int t;
 };
 
-struct Contact
+#define CONTACT_SRC_VERTEX 0u
+#define CONTACT_SRC_EDGE   1u
+
+struct FineNodeContact
 {
-    uint ownerA;
-    uint ownerB;
+    uint   ownerSlave;
+    uint   ownerMaster;
+    uint   slaveGi;
 
-    uint nodeGi0;
-    uint nodeGi1;
-    uint nodeGi2;
-    uint nodeGi3;
+    uint   masterGi0;
+    uint   masterGi1;     // INVALID_U32 if master is a single vertex
+    float  masterW1;      // 0..1, weight of masterGi1, masterGi0 gets (1-masterW1)
 
-    float beta0;
-    float beta1;
-    float beta2;
-    float beta3;
-
-    float2 n;
-    float pen;
+    float2 n;             // master -> slave
+    float  pen;           // support - phi
+    float  scale;         // contact weight; 1 for normal vertex-feature, bary weight for edge-edge
+    float2 x;             // contact point / closest point for debug and coarse manifold point
+    uint   srcKind;       // CONTACT_SRC_VERTEX / CONTACT_SRC_EDGE
 };
-
 struct FeatureHit
 {
     float phi;
@@ -65,6 +65,12 @@ cbuffer Params
     float _OwnerBinSizeScale;
 }
 
+RWStructuredBuffer<FineNodeContact> _FineNodeContacts;
+RWBuffer<uint> _FineNodeContactCount;
+uint _MaxFineNodeContacts;
+
+
+
 RWStructuredBuffer<float2> _Pos;
 RWStructuredBuffer<float2> _Vel;
 
@@ -89,6 +95,7 @@ StructuredBuffer<uint2> _OwnerPairs;
 StructuredBuffer<int> _DtGlobalToLayerLocalMap;
 uint _UseDtGlobalNodeMap;
 uint _DtLocalBase;
+uint _ActiveCount;
 
 RWStructuredBuffer<uint> _OwnerBoundaryEdgeCounts;
 RWStructuredBuffer<uint> _OwnerBoundaryOverflow;
@@ -122,36 +129,3 @@ RWStructuredBuffer<float> _SdfPhi;
 RWStructuredBuffer<float2> _SdfGrad;
 RWStructuredBuffer<uint> _SdfFeatType;
 RWStructuredBuffer<uint> _SdfFeatId;
-
-RWStructuredBuffer<Contact> _Contacts;
-RWStructuredBuffer<uint> _ContactCount;
-
-RWStructuredBuffer<uint>  _ColAnchorGi;
-
-RWStructuredBuffer<uint>  _ColNodeGi0;
-RWStructuredBuffer<uint>  _ColNodeGi1;
-RWStructuredBuffer<uint>  _ColNodeGi2;
-RWStructuredBuffer<uint>  _ColNodeGi3;
-
-RWStructuredBuffer<float> _ColBeta0;
-RWStructuredBuffer<float> _ColBeta1;
-RWStructuredBuffer<float> _ColBeta2;
-RWStructuredBuffer<float> _ColBeta3;
-
-RWStructuredBuffer<float> _ColNX;
-RWStructuredBuffer<float> _ColNY;
-
-RWStructuredBuffer<float> _ColPen;
-RWStructuredBuffer<float> _ColScale;
-
-RWStructuredBuffer<uint>  _ColOwnerA;
-RWStructuredBuffer<uint>  _ColOwnerB;
-
-RWStructuredBuffer<uint> _NodeCollisionRefCount;
-RWStructuredBuffer<uint> _NodeCollisionRefWrite;
-RWStructuredBuffer<uint> _NodeCollisionRefStart;
-RWStructuredBuffer<uint> _NodeCollisionRefs;
-
-uint _ActiveCount;
-uint _CollisionEventCapacity;
-uint _CoarseContactCapacity;

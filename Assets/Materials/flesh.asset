@@ -16,6 +16,6 @@ MonoBehaviour:
   physical:
     youngModulus: 10000
     poissonRatio: 0.44
-    yieldHencky: 0.014
-    volumetricHenckyLimit: 0.14
-    density: 4
+    yieldHencky: 0.2
+    volumetricHenckyLimit: 0.014
+    density: 10

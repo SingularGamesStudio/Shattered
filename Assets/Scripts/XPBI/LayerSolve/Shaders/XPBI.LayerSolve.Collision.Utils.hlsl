@@ -1,181 +1,155 @@
-// ============================================================================
-// CollisionStencilUtils.hlsl
-// Shared declarations + generic helpers for collision stencils.
-// No XPBI_* macros, no solve-path defines.
-// ============================================================================
-
-#ifndef COLLISION_STENCIL_UTILS_INCLUDED
-#define COLLISION_STENCIL_UTILS_INCLUDED
+#ifndef XPBI_COLLISION_NODE_OWNED_HELPERS_INCLUDED
+#define XPBI_COLLISION_NODE_OWNED_HELPERS_INCLUDED
 
 static const uint COLLISION_INVALID_U32 = 0xffffffffu;
-static const uint COLLISION_MAX_NODES   = 4u;
 
-struct CollisionFineContact
+struct XPBI_NodeContact
 {
-    uint ownerA;
-    uint ownerB;
-    uint nodeGi0;
-    uint nodeGi1;
-    uint nodeGi2;
-    uint nodeGi3;
-    float beta0;
-    float beta1;
-    float beta2;
-    float beta3;
-    float2 n;
-    float pen;
-};
+    uint   ownerSlave;
+    uint   ownerMaster;
+    uint   slaveGi;
 
-struct CollisionCoarseContact
-{
-    uint ownerA;
-    uint ownerB;
-    uint coarseGiA;
-    uint coarseGiB;
+    uint   masterGi0;
+    uint   masterGi1;
+    float  masterW1;
+
     float2 n;
-    float pen;
-    float weight;
+    float  pen;
+    float  scale;
     float2 x;
+    uint   flags;
 };
 
-// ---------------------------------------------------------------------------
-// Per-node -> contact CSR
-// Each contact is owned by exactly one anchor node.
-// _NodeCollisionRefStart is size (_ActiveCount + 1) for the current layer.
-// ---------------------------------------------------------------------------
-StructuredBuffer<uint> _NodeCollisionRefStart;
-StructuredBuffer<uint> _NodeCollisionRefs;
+StructuredBuffer<XPBI_NodeContact> _ColNodeContacts;
+StructuredBuffer<uint>             _ColNodeContactCount;
+RWStructuredBuffer<float>          _ColNodeContactLambda;
 
-// ---------------------------------------------------------------------------
-// Per-contact stencil data for the CURRENT solve layer.
-// Layer 0  : built from raw contacts.
-// Layer >0 : built from propagated coarse contacts.
-// ---------------------------------------------------------------------------
-StructuredBuffer<uint>  _ColAnchorGi;
+StructuredBuffer<float2>           _ColReadPos;
+StructuredBuffer<float2>           _ColReadVel;
 
-StructuredBuffer<uint>  _ColNodeGi0;
-StructuredBuffer<uint>  _ColNodeGi1;
-StructuredBuffer<uint>  _ColNodeGi2;
-StructuredBuffer<uint>  _ColNodeGi3;
+uint _ColNodeContactStride;
 
-StructuredBuffer<float> _ColBeta0;
-StructuredBuffer<float> _ColBeta1;
-StructuredBuffer<float> _ColBeta2;
-StructuredBuffer<float> _ColBeta3;
-
-StructuredBuffer<float> _ColNX;
-StructuredBuffer<float> _ColNY;
-
-StructuredBuffer<float> _ColPen;      // raw penetration cap for this stencil
-StructuredBuffer<float> _ColScale;    // fine: 1.0, coarse: sqrt(weight)
-
-StructuredBuffer<uint>  _ColOwnerA;
-StructuredBuffer<uint>  _ColOwnerB;
-
-StructuredBuffer<CollisionFineContact> _FineContacts;
-StructuredBuffer<uint> _FineContactCountBuffer;
-
-StructuredBuffer<CollisionCoarseContact> _CoarseContacts;
-StructuredBuffer<uint> _CoarseContactCountBuffer;
-
-StructuredBuffer<uint> _BoundaryEdgeV0Gi;
-StructuredBuffer<uint> _BoundaryEdgeV1Gi;
-StructuredBuffer<uint> _BoundaryVertexGi;
-
-uint _CoarseContactCapacity;
-
-// ---------------------------------------------------------------------------
-// Generic readers
-// ---------------------------------------------------------------------------
-bool ColReadNode(uint cid, uint slot, out uint nodeGi, out float beta)
+float XPBI_ColSafeRsqrt(float x)
 {
-    nodeGi = COLLISION_INVALID_U32;
-    beta   = 0.0;
-
-    switch (slot)
-    {
-        case 0u: nodeGi = _ColNodeGi0[cid]; beta = _ColBeta0[cid]; return true;
-        case 1u: nodeGi = _ColNodeGi1[cid]; beta = _ColBeta1[cid]; return true;
-        case 2u: nodeGi = _ColNodeGi2[cid]; beta = _ColBeta2[cid]; return true;
-        case 3u: nodeGi = _ColNodeGi3[cid]; beta = _ColBeta3[cid]; return true;
-        default: return false;
-    }
+    return rsqrt(max(x, 1e-20));
 }
 
-float2 ColReadNormal(uint cid)
+float2 XPBI_ColSafeNormalize(float2 v)
 {
-    return float2(_ColNX[cid], _ColNY[cid]);
+    return v * XPBI_ColSafeRsqrt(dot(v, v));
 }
 
-bool ColReadNormalizedNormal(uint cid, out float2 nrm)
+uint XPBI_ColNodeContactIndex(uint li, uint slot)
 {
-    nrm = ColReadNormal(cid);
-    float n2 = dot(nrm, nrm);
-    if (!(n2 > 1e-12))
+    return li * _ColNodeContactStride + slot;
+}
+
+uint XPBI_ColNodeContactCountOf(uint li)
+{
+    return min(_ColNodeContactCount[li], _ColNodeContactStride);
+}
+
+bool XPBI_ColReadContact(uint li, uint slot, out XPBI_NodeContact c)
+{
+    c = (XPBI_NodeContact)0;
+
+    if (slot >= _ColNodeContactStride)
+        return false;
+
+    uint idx = XPBI_ColNodeContactIndex(li, slot);
+    c = _ColNodeContacts[idx];
+
+    if (c.ownerSlave == COLLISION_INVALID_U32) return false;
+    if (c.ownerMaster == COLLISION_INVALID_U32) return false;
+    if (c.slaveGi == COLLISION_INVALID_U32) return false;
+    if (!(c.pen > 0.0)) return false;
+    if (!(c.scale > 1e-9)) return false;
+
+    return true;
+}
+
+float XPBI_ColReadLambda(uint li, uint slot)
+{
+    return _ColNodeContactLambda[XPBI_ColNodeContactIndex(li, slot)];
+}
+
+void XPBI_ColWriteLambda(uint li, uint slot, float value)
+{
+    _ColNodeContactLambda[XPBI_ColNodeContactIndex(li, slot)] = value;
+}
+
+float2 XPBI_ColReadFrozenPos(uint gi)
+{
+    return _ColReadPos[gi];
+}
+
+float2 XPBI_ColReadFrozenVel(uint gi)
+{
+    return _ColReadVel[gi];
+}
+
+float2 XPBI_ColReadFrozenPredPos(uint gi, float dt)
+{
+    return XPBI_ColReadFrozenPos(gi) + XPBI_ColReadFrozenVel(gi) * dt;
+}
+
+bool XPBI_ColReadNormal(XPBI_NodeContact c, out float2 nrm)
+{
+    float n2 = dot(c.n, c.n);
+    if (!(n2 > 1e-20))
     {
         nrm = 0.0;
         return false;
     }
 
-    nrm *= rsqrt(n2);
+    nrm = c.n * rsqrt(n2);
     return true;
 }
 
-float ColReadScale(uint cid)
+float2 XPBI_ColSampleMasterPredPos(XPBI_NodeContact c, float dt)
 {
-    return max(_ColScale[cid], 0.0);
+    if (c.masterGi0 == COLLISION_INVALID_U32)
+        return c.x;
+
+    if (c.masterGi1 == COLLISION_INVALID_U32)
+        return XPBI_ColReadFrozenPredPos(c.masterGi0, dt);
+
+    float w1 = saturate(c.masterW1);
+    float w0 = 1.0 - w1;
+
+    float2 x0 = XPBI_ColReadFrozenPredPos(c.masterGi0, dt);
+    float2 x1 = XPBI_ColReadFrozenPredPos(c.masterGi1, dt);
+    return w0 * x0 + w1 * x1;
 }
 
-float ColReadPen(uint cid)
+float2 XPBI_ColSampleMasterVel(XPBI_NodeContact c)
 {
-    return max(_ColPen[cid], 0.0);
+    if (c.masterGi0 == COLLISION_INVALID_U32)
+        return 0.0;
+
+    if (c.masterGi1 == COLLISION_INVALID_U32)
+        return XPBI_ColReadFrozenVel(c.masterGi0);
+
+    float w1 = saturate(c.masterW1);
+    float w0 = 1.0 - w1;
+
+    float2 v0 = XPBI_ColReadFrozenVel(c.masterGi0);
+    float2 v1 = XPBI_ColReadFrozenVel(c.masterGi1);
+    return w0 * v0 + w1 * v1;
 }
 
-uint ColRefBegin(uint li)
+float2 XPBI_ColClampDeltaV(float2 dv, float maxDv, float eps)
 {
-    return _NodeCollisionRefStart[li];
-}
+    if (!(maxDv > eps))
+        return dv;
 
-uint ColRefEnd(uint li)
-{
-    return _NodeCollisionRefStart[li + 1u];
-}
+    float dv2 = dot(dv, dv);
+    float maxDv2 = maxDv * maxDv;
 
-uint ColFineCount()
-{
-    uint count = _FineContactCountBuffer[0u];
-    return min(count, _CollisionEventCapacity);
-}
+    if (dv2 > maxDv2)
+        dv *= maxDv * rsqrt(max(dv2, eps * eps));
 
-uint ColCoarseCount()
-{
-    uint count = _CoarseContactCountBuffer[0u];
-    return min(count, _CoarseContactCapacity);
-}
-
-uint ColExpandedFineBase()
-{
-    return 0u;
-}
-
-uint ColExpandedCoarseBase()
-{
-    return _CollisionEventCapacity;
-}
-
-uint ColExpandedCapacity()
-{
-    return _CollisionEventCapacity + _CoarseContactCapacity;
-}
-
-bool ColExpandedIsFine(uint cid)
-{
-    return cid < ColExpandedCoarseBase();
-}
-
-uint ColExpandedToLocal(uint cid)
-{
-    return ColExpandedIsFine(cid) ? cid : (cid - ColExpandedCoarseBase());
+    return dv;
 }
 
 #endif

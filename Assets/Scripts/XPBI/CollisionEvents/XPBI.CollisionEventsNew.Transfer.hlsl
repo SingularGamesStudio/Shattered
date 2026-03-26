@@ -1,279 +1,373 @@
-// =============================================================================
-// ContactPropagation.compute
+// ============================================================================
+// ContactPropagation.NodeOwned.compute
 //
-// Propagates layer-0 (fine) contacts up to coarser multigrid layers.
+// Propagates fine slave-owned node contacts to a coarser layer as
+// slave-owned node contacts again.
 //
-// Dispatch per coarse layer L (C# loop, see bottom of file):
-//   1. ClearCoarseContacts        – ceil(_MaxCoarseContacts / 64) groups
-//   2. PropagateVertexContacts    – ceil(_FineContactCount * _CoarseParentsPerNode / 64)
-//   3. PropagateEdgeContacts      – ceil(_FineContactCount * 4 / 64)
-// =============================================================================
+// This file is for the unified fully parallel collision architecture:
+// - fine layer uses per-node slave-owned manifolds
+// - coarse layers also use per-node slave-owned manifolds
+// - the same collision solve include can run on either layer by rebinding
+//   the current layer's contact buffers
+//
+// Expected dispatch order per coarse layer:
+//   1. ClearCoarseNodeContacts
+//      groups = ceil(max(_ActiveCount, _ActiveCount * _CoarseNodeContactStride) / 64)
+//   2. PropagateFineContactsToCoarse
+//      groups = ceil(_FineContactCount * _CoarseParentsPerNode / 64)
+//
+// Assumptions:
+// - fine contacts are already one-sided slave-owned node contacts
+// - if symmetric response is desired, detection emitted both directions
+// - parent map buffers are rebound for the current target coarse layer
+// ============================================================================
 
-// Must match targetParentCount used in RebuildParentsAtLayer.
-#define MAX_PROPAGATION_PARENTS 2
+#ifndef CONTACT_PROPAGATION_NODE_OWNED_INCLUDED
+#define CONTACT_PROPAGATION_NODE_OWNED_INCLUDED
+
+#define INVALID_U32 0xffffffffu
+
+#ifndef COARSE_MANIFOLD_CAP
+#define COARSE_MANIFOLD_CAP 4u
+#endif
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-// Layout must match what EmitContact writes in the collision pass.
-struct FineContact
+struct XPBI_NodeContact
 {
-    uint ownerA;
-    uint ownerB;
-    uint nodeGi0;
-    uint nodeGi1;
-    uint nodeGi2;
-    uint nodeGi3;
-    float beta0;
-    float beta1;
-    float beta2;
-    float beta3;
-    float2 n;
-    float pen;
-};
+    uint   ownerSlave;
+    uint   ownerMaster;
+    uint   slaveGi;
 
-// Coarse contact produced by this pass.
-struct CoarseContact
-{
-    uint   ownerA;
-    uint   ownerB;
-    uint   coarseGiA;  // coarse node on A side
-    uint   coarseGiB;  // coarse node on B side; INVALID_U32 if unresolved
+    uint   masterGi0;
+    uint   masterGi1;
+    float  masterW1;
+
     float2 n;
-    float  pen;        // fine pen × combined parent weight
-    float  weight;     // wA × wB; solver scales constraint by this
+    float  pen;
+    float  scale;
     float2 x;
+    uint   flags;
 };
 
 // ---------------------------------------------------------------------------
 // Uniforms
 // ---------------------------------------------------------------------------
 
-uint  _FineContactCount;        // snapshot of _ContactCount[0]
-uint  _MaxCoarseContacts;       // output buffer capacity
-uint  _CoarseParentsPerNode;    // = targetParentCount from RebuildParentsAtLayer
+uint _FineContactCount;
+uint _CoarseParentsPerNode;
+uint _CoarseNodeContactStride;
 
 // ---------------------------------------------------------------------------
-// Buffers
+// Inputs
 // ---------------------------------------------------------------------------
 
-// Fine contacts (written by QueryVertexContacts / QueryEdgeEdgeContacts)
-StructuredBuffer<FineContact>       _FineContacts;
-StructuredBuffer<uint>              _FineContactCountBuffer;
+// Layout: [fineGi * _CoarseParentsPerNode + slot]
+StructuredBuffer<int>             _LayerParentIndices;
+StructuredBuffer<float>           _LayerParentWeights;
 
-// Parent map for this coarse layer – re-bound each dispatch by C#.
-// Layout: [gi * _CoarseParentsPerNode + slot]  (matches RebuildParentsAtLayer output)
-StructuredBuffer<int>               _LayerParentIndices;
-StructuredBuffer<float>             _LayerParentWeights;
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
 
-// Output
-RWStructuredBuffer<CoarseContact>   _CoarseContacts;
-RWBuffer<uint>                      _CoarseContactCount;  // [1], atomic
-
-uint ReadFineContactCount() 
-{
-    return min(_FineContactCount, _FineContactCountBuffer[0]);
-}
-
-bool PickRepresentativeNodes(FineContact fc, out uint aGi, out uint bGi, out float pairWeight)
-{
-    aGi = INVALID_U32;
-    bGi = INVALID_U32;
-    pairWeight = 0.0;
-
-    uint gi[4] = { fc.nodeGi0, fc.nodeGi1, fc.nodeGi2, fc.nodeGi3 };
-    float beta[4] = { fc.beta0, fc.beta1, fc.beta2, fc.beta3 };
-
-    float bestNeg = 0.0;
-    float bestPos = 0.0;
-
-    [unroll]
-    for (uint i = 0u; i < 4u; i++)
-    {
-        if (gi[i] == INVALID_U32)
-            continue;
-
-        float b = beta[i];
-        float ab = abs(b);
-        if (ab <= 1e-12)
-            continue;
-
-        if (b < 0.0 && ab > bestNeg)
-        {
-            bestNeg = ab;
-            aGi = gi[i];
-        }
-
-        if (b > 0.0 && ab > bestPos)
-        {
-            bestPos = ab;
-            bGi = gi[i];
-        }
-    }
-
-    pairWeight = bestNeg * bestPos;
-    return (aGi != INVALID_U32) && (bGi != INVALID_U32) && (pairWeight > 1e-12);
-}
+// Per coarse-layer node-owned manifold.
+RWStructuredBuffer<XPBI_NodeContact> _CoarseNodeContacts;
+RWBuffer<uint>                       _CoarseNodeContactCount;
+RWBuffer<uint>                       _CoarseNodeContactOverflow;
+RWStructuredBuffer<float>            _CoarseNodeContactLambda;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+uint ReadFineNodeContactCount()
+{
+    return min(_FineContactCount, min(_FineNodeContactCount[0], _MaxFineNodeContacts));
+}
+
+uint LocalIndexFromGlobalTransfer(uint gi)
+{
+    if (_UseDtGlobalNodeMap != 0u)
+    {
+        int li = _DtGlobalToLayerLocalMap[gi];
+        return (li >= 0) ? (uint)li : INVALID_U32;
+    }
+
+    int liUnmapped = (int)gi - (int)_DtLocalBase;
+    return (liUnmapped >= 0) ? (uint)liUnmapped : INVALID_U32;
+}
+
+float SafeRsqrtProp(float x)
+{
+    return rsqrt(max(x, 1e-20));
+}
+
+float2 SafeNormalizeProp(float2 v)
+{
+    return v * SafeRsqrtProp(dot(v, v));
+}
+
+uint CoarseNodeContactIndex(uint li, uint slot)
+{
+    return li * _CoarseNodeContactStride + slot;
+}
+
+void ClearNodeContact(out XPBI_NodeContact c)
+{
+    c.ownerSlave  = INVALID_U32;
+    c.ownerMaster = INVALID_U32;
+    c.slaveGi     = INVALID_U32;
+
+    c.masterGi0   = INVALID_U32;
+    c.masterGi1   = INVALID_U32;
+    c.masterW1    = 0.0;
+
+    c.n           = 0.0;
+    c.pen         = 0.0;
+    c.scale       = 0.0;
+    c.x           = 0.0;
+    c.flags       = 0u;
+}
+
 bool GetCoarseParent(uint fineGi, uint slot, out int coarseGi, out float w)
 {
     coarseGi = -1;
-    w        = 0.0;
+    w = 0.0;
+
     if (fineGi == INVALID_U32 || slot >= _CoarseParentsPerNode)
         return false;
 
     uint idx = fineGi * _CoarseParentsPerNode + slot;
     coarseGi = _LayerParentIndices[idx];
-    w        = _LayerParentWeights [idx];
+    w        = _LayerParentWeights[idx];
+
     return (coarseGi >= 0) && (w > 1e-9);
 }
 
-void EmitCoarseContact(uint ownerA, uint ownerB,
-                       int  coarseGiA, int coarseGiB,
-                       float2 n, float pen, float weight, float2 x)
+// Build one coarse master representation for the fine contact.
+// The result is still node-to-surface:
+// - either one coarse master node
+// - or a coarse master segment with two coarse nodes + masterW1
+//
+// masterScale is the attenuation induced by mapping the fine master feature
+// to the current coarse layer.
+bool ResolveMasterCoarseContact(
+    FineNodeContact fc,
+    out int masterGi0,
+    out int masterGi1,
+    out float masterW1,
+    out float masterScale)
 {
-    uint slot;
-    InterlockedAdd(_CoarseContactCount[0], 1u, slot);
-    if (slot >= _MaxCoarseContacts)
-        return;
+    masterGi0 = -1;
+    masterGi1 = -1;
+    masterW1 = 0.0;
+    masterScale = 0.0;
 
-    CoarseContact cc;
-    cc.ownerA    = ownerA;
-    cc.ownerB    = ownerB;
-    cc.coarseGiA = (uint)coarseGiA;
-    cc.coarseGiB = (coarseGiB >= 0) ? (uint)coarseGiB : INVALID_U32;
-    cc.n         = n;
-    cc.pen       = pen * weight;
-    cc.weight    = weight;
-    cc.x         = x;
-    _CoarseContacts[slot] = cc;
-}
+    if (fc.masterGi0 == INVALID_U32)
+        return false;
 
-// Resolve B-side fine vertex from a SDF feature id.
-// featB is either a half-edge id (edge feature) or a vertex half-edge id.
-uint ResolveBSideFineVertex(uint featB, uint subVert)
-{
-    // Try half-edge endpoints first (covers both edge and vertex features,
-    // since vertex features are also stored with a half-edge slot).
-    uint vGiB = (subVert == 0u) ? _BoundaryEdgeV0Gi[featB]
-                                 : _BoundaryEdgeV1Gi[featB];
-    if (vGiB == INVALID_U32 && subVert == 0u)
-        vGiB = _BoundaryVertexGi[featB];   // pure vertex feature fallback
-    return vGiB;
-}
-
-// ---------------------------------------------------------------------------
-// ClearCoarseContacts
-// ---------------------------------------------------------------------------
-
-[numthreads(64, 1, 1)]
-void ClearCoarseContacts(uint3 tid : SV_DispatchThreadID)
-{
-    if (tid.x == 0u)
-        _CoarseContactCount[0] = 0u;
-
-    if (tid.x < _MaxCoarseContacts)
+    // Single-node master feature.
+    if (fc.masterGi1 == INVALID_U32)
     {
-        CoarseContact cc = (CoarseContact)0;
-        cc.ownerA    = INVALID_U32;
-        cc.ownerB    = INVALID_U32;
-        cc.coarseGiA = INVALID_U32;
-        cc.coarseGiB = INVALID_U32;
-        _CoarseContacts[tid.x] = cc;
+        int p0;
+        float wp0;
+        if (!GetCoarseParent(fc.masterGi0, 0u, p0, wp0))
+            return false;
+
+        masterGi0 = p0;
+        masterGi1 = -1;
+        masterW1 = 0.0;
+        masterScale = wp0;
+        return (masterScale > 1e-9);
     }
-}
 
-// ---------------------------------------------------------------------------
-// PropagateVertexContacts
-// ---------------------------------------------------------------------------
-// Handles vertex-edge fine contacts.
-//
-// Thread layout:
-//   workIdx = contactIdx * _CoarseParentsPerNode + pA
-//
-// A-side: expands over all _CoarseParentsPerNode parents of vGiA so every
-//         coarse node that influences the fine contact gets a constraint copy,
-//         weighted by its parent contribution.
-//
-// B-side: uses only the best (slot-0) coarse parent of the B-boundary vertex.
-//         Expanding B-side too would create O(parents²) coarse contacts per
-//         fine contact; empirically the nearest-parent approximation on B is
-//         sufficient because the B boundary is the reference surface.
-// ---------------------------------------------------------------------------
+    // Two-node master feature.
+    float w1fine = saturate(fc.masterW1);
+    float w0fine = 1.0 - w1fine;
 
-[numthreads(64, 1, 1)]
-void PropagateVertexContacts(uint3 tid : SV_DispatchThreadID)
-{
-    uint workIdx    = tid.x;
-    uint contactIdx = workIdx / _CoarseParentsPerNode;
-    uint pA         = workIdx - contactIdx * _CoarseParentsPerNode;
+    int p0, p1;
+    float wp0, wp1;
+    bool have0 = GetCoarseParent(fc.masterGi0, 0u, p0, wp0);
+    bool have1 = GetCoarseParent(fc.masterGi1, 0u, p1, wp1);
 
-    if (contactIdx >= ReadFineContactCount()) return;
+    float c0 = have0 ? (w0fine * wp0) : 0.0;
+    float c1 = have1 ? (w1fine * wp1) : 0.0;
 
-    FineContact fc = _FineContacts[contactIdx];
-    if (fc.ownerA == INVALID_U32 || fc.ownerB == INVALID_U32)
-        return;
+    if (c0 <= 1e-9 && c1 <= 1e-9)
+        return false;
 
-    uint fineGiA;
-    uint fineGiB;
-    float betaPairWeight;
-    if (!PickRepresentativeNodes(fc, fineGiA, fineGiB, betaPairWeight))
-        return;
-
-    int coarseGiA;
-    float wA;
-    if (!GetCoarseParent(fineGiA, pA, coarseGiA, wA))
-        return;
-
-    int coarseGiB = -1;
-    float wB = 1.0;
+    if (have0 && have1)
     {
-        int g;
-        float w;
-        if (GetCoarseParent(fineGiB, 0u, g, w))
+        if (p0 == p1)
         {
-            coarseGiB = g;
-            wB = w;
+            masterGi0 = p0;
+            masterGi1 = -1;
+            masterW1 = 0.0;
+            masterScale = c0 + c1;
+            return (masterScale > 1e-9);
         }
+
+        masterGi0 = p0;
+        masterGi1 = p1;
+        masterScale = c0 + c1;
+        if (!(masterScale > 1e-9))
+            return false;
+
+        masterW1 = c1 / masterScale;
+        return true;
     }
 
-    float weight = betaPairWeight * wA * wB;
-    if (weight <= 1e-9)
+    if (c0 > 1e-9)
+    {
+        masterGi0 = p0;
+        masterGi1 = -1;
+        masterW1 = 0.0;
+        masterScale = c0;
+        return true;
+    }
+
+    masterGi0 = p1;
+    masterGi1 = -1;
+    masterW1 = 0.0;
+    masterScale = c1;
+    return true;
+}
+
+void AppendCoarseNodeContact(XPBI_NodeContact c)
+{
+    if (c.ownerSlave == INVALID_U32 || c.ownerMaster == INVALID_U32)
+        return;
+    if (c.slaveGi == INVALID_U32)
+        return;
+    if (!(c.pen > 0.0) || !(c.scale > 1e-9))
         return;
 
-    float2 xA = PredPos(fineGiA);
-    float2 xB = PredPos(fineGiB);
-    float2 xC = 0.5 * (xA + xB);
+    float n2 = dot(c.n, c.n);
+    if (!(n2 > 1e-20))
+        return;
+    c.n *= rsqrt(n2);
 
-    EmitCoarseContact(fc.ownerA, fc.ownerB,
-                      coarseGiA, coarseGiB,
-                      fc.n, fc.pen, weight, xC);
+    uint li = LocalIndexFromGlobalTransfer(c.slaveGi);
+    if (li == INVALID_U32 || li >= _ActiveCount)
+        return;
+
+    uint slot;
+    InterlockedAdd(_CoarseNodeContactCount[li], 1u, slot);
+
+    if (slot >= _CoarseNodeContactStride)
+    {
+        _CoarseNodeContactOverflow[li] = 1u;
+        return;
+    }
+
+    uint idx = CoarseNodeContactIndex(li, slot);
+    _CoarseNodeContacts[idx] = c;
 }
 
 // ---------------------------------------------------------------------------
-// PropagateEdgeContacts
-// ---------------------------------------------------------------------------
-// Handles edge-edge fine contacts.
-//
-// Thread layout:
-//   workIdx = contactIdx * 4 + pairIdx
-//   pairIdx ∈ {0,1,2,3} → (pA, pB) = (0,0),(0,1),(1,0),(1,1)
-//
-// Each edge endpoint on A is paired with each endpoint on B.
-// Weight 0.25 normalises so the 4 sub-contacts together represent the full
-// fine contact (assuming equal endpoint contributions at both ends).
-//
-// We only use slot-0 parents here; edge-edge contacts are naturally lower-
-// frequency events, so a single dominant parent per endpoint is adequate.
+// ClearCoarseNodeContacts
 // ---------------------------------------------------------------------------
 
 [numthreads(64, 1, 1)]
-void PropagateEdgeContacts(uint3 tid : SV_DispatchThreadID)
+void ClearCoarseNodeContacts(uint3 tid : SV_DispatchThreadID)
 {
-    
+    uint i = tid.x;
+
+    if (i < _ActiveCount)
+    {
+        _CoarseNodeContactCount[i] = 0u;
+        _CoarseNodeContactOverflow[i] = 0u;
+    }
+
+    uint total = _ActiveCount * _CoarseNodeContactStride;
+    if (i < total)
+    {
+        XPBI_NodeContact c;
+        ClearNodeContact(c);
+        _CoarseNodeContacts[i] = c;
+        _CoarseNodeContactLambda[i] = 0.0;
+    }
 }
+
+// ---------------------------------------------------------------------------
+// PropagateFineContactsToCoarse
+// ---------------------------------------------------------------------------
+// Thread layout:
+//   workIdx = fineIdx * _CoarseParentsPerNode + pS
+//
+// Each thread expands one fine slave-owned contact through one slave-parent slot.
+// The master side is mapped once to a coarse node or coarse segment and the
+// resulting coarse node-owned contact is appended directly to the slave coarse
+// node manifold.
+// ---------------------------------------------------------------------------
+
+[numthreads(64, 1, 1)]
+void PropagateFineContactsToCoarse(uint3 tid : SV_DispatchThreadID)
+{
+    uint workIdx = tid.x;
+
+    if (_CoarseParentsPerNode == 0u)
+        return;
+
+    uint fineIdx = workIdx / _CoarseParentsPerNode;
+    uint pS      = workIdx - fineIdx * _CoarseParentsPerNode;
+
+    uint fineCount = ReadFineNodeContactCount();
+    if (fineIdx >= fineCount)
+        return;
+
+    FineNodeContact fc = _FineNodeContacts[fineIdx];
+
+    if (fc.ownerSlave == INVALID_U32 || fc.ownerMaster == INVALID_U32)
+        return;
+    if (fc.ownerSlave == fc.ownerMaster)
+        return;
+    if (fc.slaveGi == INVALID_U32)
+        return;
+    if (!(fc.pen > 0.0) || !(fc.scale > 1e-9))
+        return;
+
+    float n2 = dot(fc.n, fc.n);
+    if (!(n2 > 1e-20))
+        return;
+
+    int coarseSlaveGi;
+    float wS;
+    if (!GetCoarseParent(fc.slaveGi, pS, coarseSlaveGi, wS))
+        return;
+
+    int coarseMasterGi0, coarseMasterGi1;
+    float coarseMasterW1, masterScale;
+    if (!ResolveMasterCoarseContact(
+            fc,
+            coarseMasterGi0, coarseMasterGi1,
+            coarseMasterW1, masterScale))
+        return;
+
+    float scale = fc.scale * wS * masterScale;
+    if (!(scale > 1e-9))
+        return;
+
+    XPBI_NodeContact cc;
+    ClearNodeContact(cc);
+
+    cc.ownerSlave  = fc.ownerSlave;
+    cc.ownerMaster = fc.ownerMaster;
+    cc.slaveGi     = (uint)coarseSlaveGi;
+
+    cc.masterGi0   = (uint)coarseMasterGi0;
+    cc.masterGi1   = (coarseMasterGi1 >= 0) ? (uint)coarseMasterGi1 : INVALID_U32;
+    cc.masterW1    = coarseMasterW1;
+
+    cc.n           = SafeNormalizeProp(fc.n);
+    cc.pen         = fc.pen;
+    cc.scale       = scale;
+    cc.x           = fc.x;
+    cc.flags       = fc.srcKind;
+
+    AppendCoarseNodeContact(cc);
+}
+
+#endif

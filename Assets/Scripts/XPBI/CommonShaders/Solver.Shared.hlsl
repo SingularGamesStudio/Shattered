@@ -486,7 +486,7 @@
         }
 
         nCount = outCount;
-        [unroll] for (uint clearIdx3 = outCount; clearIdx3 < targetNeighborCount; clearIdx3++) ns[clearIdx3] = ~0u;
+        [unroll(targetNeighborCount)] for (uint clearIdx3 = outCount; clearIdx3 < targetNeighborCount; clearIdx3++) ns[clearIdx3] = ~0u;
     }
 
     // ----------------------------------------------------------------------------
