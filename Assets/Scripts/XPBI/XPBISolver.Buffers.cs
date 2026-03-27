@@ -84,8 +84,12 @@ namespace GPU.Solver {
             Fp.SetData(FpCpu, 0, 0, totalCount);
 
             float[] zeroDamage = new float[totalCount];
+            float[] zeroLambdaVolumeComp = new float[totalCount];
+            float[] zeroLambdaVolumeExp = new float[totalCount];
             layerSolveRuntime.Damage.SetData(zeroDamage, 0, 0, totalCount);
             layerSolveRuntime.DamageKappa.SetData(zeroDamage, 0, 0, totalCount);
+            layerSolveRuntime.LambdaVolumeComp.SetData(zeroLambdaVolumeComp, 0, 0, totalCount);
+            layerSolveRuntime.LambdaVolumeExp.SetData(zeroLambdaVolumeExp, 0, 0, totalCount);
 
             initializedCount = totalCount;
             layoutInitialized = true;
@@ -182,6 +186,11 @@ namespace GPU.Solver {
                 asyncCb.SetComputeFloatParam(target, "_DamageShellWeight", Const.DamageShellWeight);
                 asyncCb.SetComputeFloatParam(target, "_DamageMax", Const.DamageMax);
                 asyncCb.SetComputeFloatParam(target, "_CohesivePairScale", Const.CohesivePairScale);
+                asyncCb.SetComputeFloatParam(target, "_VolumeComplianceComp", Const.VolumeComplianceComp);
+                asyncCb.SetComputeFloatParam(target, "_VolumeComplianceExp", Const.VolumeComplianceExp);
+                asyncCb.SetComputeFloatParam(target, "_VolumeJLow", Const.VolumeJLow);
+                asyncCb.SetComputeFloatParam(target, "_VolumeJHigh", Const.VolumeJHigh);
+                asyncCb.SetComputeFloatParam(target, "_VolumeJMin", Const.VolumeJMin);
                 asyncCb.SetComputeIntParam(target, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
                 asyncCb.SetComputeIntParam(target, "_ParentKNearest", 2);
                 asyncCb.SetComputeFloatParam(target, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));

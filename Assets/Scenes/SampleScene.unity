@@ -196,7 +196,7 @@ MonoBehaviour:
       enablePositionCorrection: 1
       positionCorrectionIterations: 1
       positionCorrectionGapRatio: 0.25
-      positionCorrectionCompliance: 1
+      positionCorrectionCompliance: 0.1
       positionCorrectionMaxFraction: 0.25
     collision:
       collisionSupportScale: 0.3
@@ -215,8 +215,14 @@ MonoBehaviour:
       collisionSdfVertexMarginScale: 1.5
       collisionSdfFallbackDepthScale: 2.5
       collisionSdfEdgeRefineIterations: 6
+    volume:
+      volumeComplianceComp: 0.001
+      volumeComplianceExp: 0.001
+      volumeJLow: 0.98
+      volumeJHigh: 1.02
+      volumeJMin: 0.05
     fractureDamage:
-      cohesiveDamping: 0
+      cohesiveDamping: 0.2
       cohesiveOnsetRatio: 0.72
       cohesivePeakRatio: 0.88
       damageOnset: 0.01
@@ -236,7 +242,7 @@ MonoBehaviour:
       convergenceDebugEnabled: 1
       enableContinuousCpuReadback: 1
       cpuReadbackInterval: 0.02
-      prolongationConstraintDebugEnabled: 1
+      prolongationConstraintDebugEnabled: 0
   simulationPreset: {fileID: 0}
   applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}

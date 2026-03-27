@@ -60,6 +60,10 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #define XPBI_SET_VEL(li_, gi_, v_) (_Vel[gi_] = (v_))
     #define XPBI_LAMBDA(li_, gi_) _Lambda[gi_]
     #define XPBI_SET_LAMBDA(li_, gi_, l_) (_Lambda[gi_] = (l_))
+    #define XPBI_VOL_LAMBDA_COMP(li_, gi_) _LambdaVolumeComp[gi_]
+    #define XPBI_SET_VOL_LAMBDA_COMP(li_, gi_, l_) (_LambdaVolumeComp[gi_] = (l_))
+    #define XPBI_VOL_LAMBDA_EXP(li_, gi_) _LambdaVolumeExp[gi_]
+    #define XPBI_SET_VOL_LAMBDA_EXP(li_, gi_, l_) (_LambdaVolumeExp[gi_] = (l_))
     #define XPBI_L_FROM_I(li_, gi_) _L[gi_]
     #define XPBI_F0_FROM_I(li_, gi_) _F0[gi_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) IsLayerFixed(gj_)
@@ -71,8 +75,10 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #define XPBI_DAMAGE_J(gjLi_, gj_) _Damage[gj_]
     #define XPBI_ACTIVE_I(li_, gi_) (!IsLayerFixed(gi_) && _RestVolume[gi_] > EPS)
     #define XPBI_APPLY_MODE_JR 0
-    #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
-    #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+    #define XPBI_SCATTER_DV(gi_, dv_) {}
+    #define XPBI_SCATTER_DL(gi_, dl_) {}
+    #define XPBI_SCATTER_DVOL_L_COMP(gi_, dl_) {}
+    #define XPBI_SCATTER_DVOL_L_EXP(gi_, dl_) {}
     #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
     #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
     #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SET_VEL(li_, gi_, XPBI_VEL(li_, gi_) + (dv_))
@@ -81,6 +87,8 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
 
     #undef XPBI_SCATTER_DL
     #undef XPBI_SCATTER_DV
+    #undef XPBI_SCATTER_DVOL_L_COMP
+    #undef XPBI_SCATTER_DVOL_L_EXP
     #undef XPBI_APPLY_MODE_JR
     #undef XPBI_ACTIVE_I
     #undef XPBI_DAMAGE_J
@@ -94,6 +102,10 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #undef XPBI_L_FROM_I
     #undef XPBI_SET_LAMBDA
     #undef XPBI_LAMBDA
+    #undef XPBI_SET_VOL_LAMBDA_COMP
+    #undef XPBI_VOL_LAMBDA_COMP
+    #undef XPBI_SET_VOL_LAMBDA_EXP
+    #undef XPBI_VOL_LAMBDA_EXP
     #undef XPBI_SET_VEL
     #undef XPBI_VEL
     #undef XPBI_POS

@@ -424,4 +424,24 @@
         return result;
     }
 
+    Mat2 NegCofactorMat2(Mat2 m)
+{
+    // For F = [a b; c d], cof(F) = [ d -c; -b a ]
+    // Mat2 columns are c0=(-a,-c), c1=(-b,-d)
+    return Mat2FromCols(
+        float2(-m.c1.y, m.c1.x),
+        float2(m.c0.y,  -m.c0.x)
+    );
+}
+
+Mat2 NegMat2(Mat2 m)
+{
+    // For F = [a b; c d], cof(F) = [ d -c; -b a ]
+    // Mat2 columns are c0=(-a,-c), c1=(-b,-d)
+    return Mat2FromCols(
+        float2(-m.c0.x, -m.c0.y),
+        float2(-m.c1.x,  -m.c1.y)
+    );
+}
+
 #endif // XPBI_UTILS_INCLUDED

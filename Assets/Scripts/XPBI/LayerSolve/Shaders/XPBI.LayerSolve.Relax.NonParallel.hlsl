@@ -9,6 +9,8 @@ groupshared uint _SCoarseColor[COARSE_MAX_N];
 groupshared float2 _SCoarsePos[COARSE_MAX_N];
 groupshared float2 _SCoarseVel[COARSE_MAX_N];
 groupshared float _SCoarseLambda[COARSE_MAX_N];
+groupshared float _SCoarseLambdaVolComp[COARSE_MAX_N];
+groupshared float _SCoarseLambdaVolExp[COARSE_MAX_N];
 groupshared float _SCoarseDamage[COARSE_MAX_N];
 groupshared float _SCoarseKappa[COARSE_MAX_N];
 groupshared float4 _SCoarseL[COARSE_MAX_N];
@@ -41,6 +43,10 @@ static void RelaxPersistentCoarseRow(
     #define XPBI_SET_VEL(li_, gi_, v_) (_SCoarseVel[li_] = (v_))
     #define XPBI_LAMBDA(li_, gi_) _SCoarseLambda[li_]
     #define XPBI_SET_LAMBDA(li_, gi_, l_) (_SCoarseLambda[li_] = (l_))
+    #define XPBI_VOL_LAMBDA_COMP(li_, gi_) _SCoarseLambdaVolComp[li_]
+    #define XPBI_SET_VOL_LAMBDA_COMP(li_, gi_, l_) (_SCoarseLambdaVolComp[li_] = (l_))
+    #define XPBI_VOL_LAMBDA_EXP(li_, gi_) _SCoarseLambdaVolExp[li_]
+    #define XPBI_SET_VOL_LAMBDA_EXP(li_, gi_, l_) (_SCoarseLambdaVolExp[li_] = (l_))
     #define XPBI_L_FROM_I(li_, gi_) _SCoarseL[li_]
     #define XPBI_F0_FROM_I(li_, gi_) _SCoarseF0[li_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) ((_SCoarseFlags[gjLi_] & 1u) != 0u)
@@ -52,8 +58,10 @@ static void RelaxPersistentCoarseRow(
     #define XPBI_DAMAGE_J(gjLi_, gj_) _SCoarseDamage[gjLi_]
     #define XPBI_ACTIVE_I(li_, gi_) ((_SCoarseFlags[li_] & 2u) != 0u)
     #define XPBI_APPLY_MODE_JR 0
-    #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
-    #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
+    #define XPBI_SCATTER_DV(gi_, dv_) {}
+    #define XPBI_SCATTER_DL(gi_, dl_) {}
+    #define XPBI_SCATTER_DVOL_L_COMP(gi_, dl_) {}
+    #define XPBI_SCATTER_DVOL_L_EXP(gi_, dl_) {}
     #define XPBI_DEBUG_ITER debugIter
     #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
     #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
@@ -63,6 +71,8 @@ static void RelaxPersistentCoarseRow(
 
     #undef XPBI_SCATTER_DL
     #undef XPBI_SCATTER_DV
+    #undef XPBI_SCATTER_DVOL_L_COMP
+    #undef XPBI_SCATTER_DVOL_L_EXP
     #undef XPBI_DEBUG_ITER
     #undef XPBI_APPLY_MODE_JR
     #undef XPBI_ACTIVE_I
@@ -77,6 +87,10 @@ static void RelaxPersistentCoarseRow(
     #undef XPBI_L_FROM_I
     #undef XPBI_SET_LAMBDA
     #undef XPBI_LAMBDA
+    #undef XPBI_SET_VOL_LAMBDA_COMP
+    #undef XPBI_VOL_LAMBDA_COMP
+    #undef XPBI_SET_VOL_LAMBDA_EXP
+    #undef XPBI_VOL_LAMBDA_EXP
     #undef XPBI_SET_VEL
     #undef XPBI_VEL
     #undef XPBI_POS
@@ -103,6 +117,8 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
         _SCoarsePos[li] = 0.0;
         _SCoarseVel[li] = 0.0;
         _SCoarseLambda[li] = 0.0;
+        _SCoarseLambdaVolComp[li] = 0.0;
+        _SCoarseLambdaVolExp[li] = 0.0;
         _SCoarseDamage[li] = 0.0;
         _SCoarseKappa[li] = 0.0;
         _SCoarseL[li] = 0.0;
@@ -121,6 +137,8 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
             _SCoarsePos[li] = _Pos[gi];
             _SCoarseVel[li] = _Vel[gi];
             _SCoarseLambda[li] = _Lambda[gi];
+            _SCoarseLambdaVolComp[li] = _LambdaVolumeComp[gi];
+            _SCoarseLambdaVolExp[li] = _LambdaVolumeExp[gi];
             _SCoarseDamage[li] = _Damage[gi];
             _SCoarseKappa[li] = _DamageKappa[gi];
             _SCoarseL[li] = _L[gi];
@@ -161,6 +179,8 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
             {
                 _Vel[gi] = _SCoarseVel[li];
                 _Lambda[gi] = _SCoarseLambda[li];
+                _LambdaVolumeComp[gi] = _SCoarseLambdaVolComp[li];
+                _LambdaVolumeExp[gi] = _SCoarseLambdaVolExp[li];
                 _Damage[gi] = _SCoarseDamage[li];
                 _DamageKappa[gi] = _SCoarseKappa[li];
             }
@@ -205,6 +225,8 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
         {
             _Vel[gi] = _SCoarseVel[li];
             _Lambda[gi] = _SCoarseLambda[li];
+            _LambdaVolumeComp[gi] = _SCoarseLambdaVolComp[li];
+            _LambdaVolumeExp[gi] = _SCoarseLambdaVolExp[li];
             _Damage[gi] = _SCoarseDamage[li];
             _DamageKappa[gi] = _SCoarseKappa[li];
         }

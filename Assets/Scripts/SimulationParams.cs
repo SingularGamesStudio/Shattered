@@ -33,13 +33,16 @@ public sealed class SimulationParams {
     [InspectorName("10. Collisions")]
     [SerializeField] public CollisionParams collision = new CollisionParams();
 
-    [InspectorName("11. Fracture and Damage")]
+    [InspectorName("11. Volume")]
+    [SerializeField] public VolumeParams volume = new VolumeParams();
+
+    [InspectorName("12. Fracture and Damage")]
     [SerializeField] public FractureDamageParams fractureDamage = new FractureDamageParams();
 
-    [InspectorName("12. DT Maintenance")]
+    [InspectorName("13. DT Maintenance")]
     [SerializeField] public DtMaintenanceParams dtMaintenance = new DtMaintenanceParams();
 
-    [InspectorName("13. UI and CPU Readback")]
+    [InspectorName("14. UI and CPU Readback")]
     [SerializeField] public UiAndReadbackParams uiAndReadback = new UiAndReadbackParams();
 
     [Serializable]
@@ -137,6 +140,15 @@ public sealed class SimulationParams {
         [Min(0.5f)] public float collisionSdfVertexMarginScale = 1.5f;
         [Min(0.5f)] public float collisionSdfFallbackDepthScale = 2.5f;
         [Range(1, 12)] public int collisionSdfEdgeRefineIterations = 6;
+    }
+
+    [Serializable]
+    public sealed class VolumeParams {
+        [Min(0f)] public float volumeComplianceComp = 0.01f;
+        [Min(0f)] public float volumeComplianceExp = 0.003f;
+        [Range(0f, 1f)] public float volumeJLow = 0.98f;
+        [Range(1f, 2f)] public float volumeJHigh = 1.02f;
+        [Range(0f, 1f)] public float volumeJMin = 0.05f;
     }
 
     [Serializable]

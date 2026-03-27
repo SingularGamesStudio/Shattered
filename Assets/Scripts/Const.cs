@@ -75,6 +75,11 @@ public static class Const {
     public static float CohesiveDamping => SimulationParamSource.Current.fractureDamage.cohesiveDamping;
     public static float CohesiveOnsetRatio => SimulationParamSource.Current.fractureDamage.cohesiveOnsetRatio;
     public static float CohesivePeakRatio => SimulationParamSource.Current.fractureDamage.cohesivePeakRatio;
+    public static float VolumeComplianceComp => SimulationParamSource.Current.volume.volumeComplianceComp;
+    public static float VolumeComplianceExp => SimulationParamSource.Current.volume.volumeComplianceExp;
+    public static float VolumeJLow => SimulationParamSource.Current.volume.volumeJLow;
+    public static float VolumeJHigh => SimulationParamSource.Current.volume.volumeJHigh;
+    public static float VolumeJMin => SimulationParamSource.Current.volume.volumeJMin;
     public static float DamageOnset => SimulationParamSource.Current.fractureDamage.damageOnset;
     public static float DamageSoftening => SimulationParamSource.Current.fractureDamage.damageSoftening;
     public static float DamageResidualStiffness => SimulationParamSource.Current.fractureDamage.damageResidualStiffness;

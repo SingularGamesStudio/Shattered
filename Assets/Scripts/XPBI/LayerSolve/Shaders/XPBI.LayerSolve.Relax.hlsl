@@ -19,6 +19,10 @@
 //   XPBI_SET_VEL(li, gi, v)
 //   XPBI_LAMBDA(li, gi)
 //   XPBI_SET_LAMBDA(li, gi, l)
+//   XPBI_VOL_LAMBDA_COMP(li, gi)
+//   XPBI_SET_VOL_LAMBDA_COMP(li, gi, l)
+//   XPBI_VOL_LAMBDA_EXP(li, gi)
+//   XPBI_SET_VOL_LAMBDA_EXP(li, gi, l)
 //   XPBI_L_FROM_I(li, gi)
 //   XPBI_F0_FROM_I(li, gi)
 //   XPBI_NEIGHBOR_FIXED(gjLi, gj)
@@ -27,6 +31,8 @@
 //   XPBI_APPLY_MODE_JR (0/1)
 //   XPBI_SCATTER_DV(gi, dv)
 //   XPBI_SCATTER_DL(gi, dl)
+//   XPBI_SCATTER_DVOL_L_COMP(gi, dl)
+//   XPBI_SCATTER_DVOL_L_EXP(gi, dl)
 //
 //   XPBI_DAMAGE_I(li, gi)
 //   XPBI_SET_DAMAGE_I(li, gi, v)
@@ -271,6 +277,195 @@ float maxDeltaVCoh2 = maxDeltaVCohPerIter * maxDeltaVCohPerIter;
     vi = viLocal;
 }
 #endif
+
+// --- bidirectional det(F) volume-band XPBI constraint ---
+// Compression branch: J < _VolumeJLow
+// Expansion branch:   J > _VolumeJHigh
+// Uses same F pipeline as current sim volume proxy.
+
+float lambdaVolCompBefore = XPBI_VOL_LAMBDA_COMP(li, gi);
+float lambdaVolExpBefore  = XPBI_VOL_LAMBDA_EXP(li, gi);
+
+Mat2 Fvol = Ftrial;
+float Jraw = DetMat2(Fvol);
+
+if (!(Jraw > _VolumeJMin) || !isfinite(Jraw))
+{
+#if XPBI_APPLY_MODE_JR
+    if (abs(lambdaVolCompBefore) > 0.0) XPBI_SCATTER_DVOL_L_COMP(gi, -lambdaVolCompBefore);
+    if (abs(lambdaVolExpBefore)  > 0.0) XPBI_SCATTER_DVOL_L_EXP(gi,  -lambdaVolExpBefore);
+#else
+    XPBI_SET_VOL_LAMBDA_COMP(li, gi, 0.0);
+    XPBI_SET_VOL_LAMBDA_EXP(li, gi, 0.0);
+#endif
+}
+else
+{
+    bool compActive = (Jraw < _VolumeJLow);
+    bool expActive  = (Jraw > _VolumeJHigh);
+
+    if (!compActive)
+    {
+    #if XPBI_APPLY_MODE_JR
+        if (abs(lambdaVolCompBefore) > 0.0) XPBI_SCATTER_DVOL_L_COMP(gi, -lambdaVolCompBefore);
+    #else
+        XPBI_SET_VOL_LAMBDA_COMP(li, gi, 0.0);
+    #endif
+    }
+
+    if (!expActive)
+    {
+    #if XPBI_APPLY_MODE_JR
+        if (abs(lambdaVolExpBefore) > 0.0) XPBI_SCATTER_DVOL_L_EXP(gi, -lambdaVolExpBefore);
+    #else
+        XPBI_SET_VOL_LAMBDA_EXP(li, gi, 0.0);
+    #endif
+    }
+
+    if (compActive || expActive)
+    {
+        Mat2 cofF = NegCofactorMat2(Fvol);
+        Mat2 F0T = TransposeMat2(F0);
+
+        float2 gradC_vi_vol = 0.0;
+        float2 nb_qVol[MAX_N];
+        float denomNeighborsVol = 0.0;
+        float maxInvMassLocalVol = XPBI_INV_MASS(li, gi);
+        float maxGradNorm2LocalVol = 0.0;
+
+        // Compression: C = Jlow - J, so dC/dF = -cof(F)
+        // Expansion:   C = J - Jhigh, so dC/dF = +cof(F)
+        if (compActive)
+            cofF = NegMat2(cofF);
+        Mat2 MdVol = MulMat2(cofF, F0T);
+
+        [loop] for (uint nIdxV = 0u; nIdxV < MAX_N; nIdxV++)
+        {
+            if (nIdxV >= k) break;
+
+            float2 q = nb_Vb[nIdxV] * MulMat2Vec(MdVol, nb_corrGrad[nIdxV]);
+            nb_qVol[nIdxV] = q;
+
+            gradC_vi_vol -= q;
+
+            float invMassJ = nb_invMassJ[nIdxV];
+            float q2 = dot(q, q);
+            denomNeighborsVol += invMassJ * q2;
+            maxInvMassLocalVol = max(maxInvMassLocalVol, invMassJ);
+            maxGradNorm2LocalVol = max(maxGradNorm2LocalVol, q2);
+        }
+
+        float invMassI_vol = XPBI_INV_MASS(li, gi);
+        float gradNormI2Vol = dot(gradC_vi_vol, gradC_vi_vol);
+        float denomVol = invMassI_vol * gradNormI2Vol + denomNeighborsVol;
+
+        if (gradNormI2Vol > 1e-8 && denomVol > 1e-6)
+        {
+            float Cvol = compActive ? (_VolumeJLow - Jraw) : (Jraw - _VolumeJHigh);
+            float lambdaBefore = compActive ? lambdaVolCompBefore : lambdaVolExpBefore;
+            float compliance = compActive ? _VolumeComplianceComp : _VolumeComplianceExp;
+            float alphaTildeVol = (compliance / EffectiveVolumeForCompliance(gi)) * invDt2;
+
+            float dLambdaVol =
+                -(Cvol + alphaTildeVol * lambdaBefore) / (denomVol + alphaTildeVol);
+
+            if (isfinite(dLambdaVol) && abs(dLambdaVol) <= 100.0)
+            {
+                float velScaleVol = dLambdaVol * invDt;
+
+                float maxDeltaVPerIterVol = support * invDtClampLocal;
+                float maxSpeedLocalVol = (4.0 * support) * invDtClampLocal;
+
+                float maxDv2Vol = maxDeltaVPerIterVol * maxDeltaVPerIterVol;
+                float maxSpeed2Vol = maxSpeedLocalVol * maxSpeedLocalVol;
+                float maxSpeedHalf2Vol = (0.5 * maxSpeedLocalVol) * (0.5 * maxSpeedLocalVol);
+
+                float pred2Vol =
+                    (velScaleVol * velScaleVol) *
+                    (maxInvMassLocalVol * maxInvMassLocalVol) *
+                    max(maxGradNorm2LocalVol, 1e-12);
+
+                if (pred2Vol <= maxDv2Vol && pred2Vol <= maxSpeedHalf2Vol)
+                {
+                #if XPBI_APPLY_MODE_JR
+                    {
+                        float2 dVi = invMassI_vol * velScaleVol * gradC_vi_vol;
+                        float dVi2 = dot(dVi, dVi);
+                        if (dVi2 > maxDv2Vol)
+                            dVi *= maxDeltaVPerIterVol * rsqrt(max(dVi2, EPS * EPS));
+
+                        XPBI_SCATTER_DV(gi, dVi);
+                        if (compActive) XPBI_SCATTER_DVOL_L_COMP(gi, dLambdaVol);
+                        else            XPBI_SCATTER_DVOL_L_EXP(gi,  dLambdaVol);
+
+                        [loop] for (uint nIdxV2 = 0u; nIdxV2 < MAX_N; nIdxV2++)
+                        {
+                            if (nIdxV2 >= k) break;
+
+                            float invMassJ = nb_invMassJ[nIdxV2];
+                            if (invMassJ <= 0.0) continue;
+
+                            uint gjLi = nb_gjLi[nIdxV2];
+                            uint gj = XPBI_GET_GJ(gjLi);
+                            if (gj == ~0u) continue;
+
+                            float2 q = nb_qVol[nIdxV2];
+                            float2 dVj = invMassJ * velScaleVol * q;
+
+                            float dVj2 = dot(dVj, dVj);
+                            if (dVj2 > maxDv2Vol)
+                                dVj *= maxDeltaVPerIterVol * rsqrt(max(dVj2, EPS * EPS));
+
+                            XPBI_SCATTER_DV(gj, dVj);
+                        }
+                    }
+                #else
+                    {
+                        float2 dVi = invMassI_vol * velScaleVol * gradC_vi_vol;
+                        float dVi2 = dot(dVi, dVi);
+                        if (dVi2 > maxDv2Vol)
+                            dVi *= maxDeltaVPerIterVol * rsqrt(max(dVi2, EPS * EPS));
+
+                        float2 vI = XPBI_VEL(li, gi) + dVi;
+                        float vI2 = dot(vI, vI);
+                        if (vI2 > maxSpeed2Vol)
+                            vI *= maxSpeedLocalVol * rsqrt(max(vI2, EPS * EPS));
+                        XPBI_SET_VEL(li, gi, vI);
+
+                        [loop] for (uint nIdxV2 = 0u; nIdxV2 < MAX_N; nIdxV2++)
+                        {
+                            if (nIdxV2 >= k) break;
+
+                            float invMassJ = nb_invMassJ[nIdxV2];
+                            if (invMassJ <= 0.0) continue;
+
+                            uint gjLi = nb_gjLi[nIdxV2];
+                            uint gj = XPBI_GET_GJ(gjLi);
+                            if (gj == ~0u) continue;
+
+                            float2 q = nb_qVol[nIdxV2];
+                            float2 dVj = invMassJ * velScaleVol * q;
+
+                            float dVj2 = dot(dVj, dVj);
+                            if (dVj2 > maxDv2Vol)
+                                dVj *= maxDeltaVPerIterVol * rsqrt(max(dVj2, EPS * EPS));
+
+                            float2 vJ = XPBI_VEL(gjLi, gj) + dVj;
+                            float vJ2 = dot(vJ, vJ);
+                            if (vJ2 > maxSpeed2Vol)
+                                vJ *= maxSpeedLocalVol * rsqrt(max(vJ2, EPS * EPS));
+                            XPBI_SET_VEL(gjLi, gj, vJ);
+                        }
+
+                        if (compActive) XPBI_SET_VOL_LAMBDA_COMP(li, gi, lambdaVolCompBefore + dLambdaVol);
+                        else            XPBI_SET_VOL_LAMBDA_EXP(li, gi,  lambdaVolExpBefore  + dLambdaVol);
+                    }
+                #endif
+                }
+            }
+        }
+    }
+}
 
 // --- degraded bulk XPBI solve ---
 // Stiffness is reduced by local damage, and pair transmission is reduced by min(g_i, g_j).

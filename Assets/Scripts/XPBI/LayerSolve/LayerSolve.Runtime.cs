@@ -25,6 +25,8 @@ namespace GPU.Solver {
         private ComputeBuffer L;
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
+        private ComputeBuffer lambdaVolumeComp;
+        private ComputeBuffer lambdaVolumeExp;
         private ComputeBuffer damage;
         private ComputeBuffer damageKappa;
         private ComputeBuffer collisionLambda;
@@ -33,8 +35,12 @@ namespace GPU.Solver {
         private ComputeBuffer velDeltaBits;
         private ComputeBuffer velPrev;
         private ComputeBuffer lambdaPrev;
+        private ComputeBuffer lambdaVolumeCompPrev;
+        private ComputeBuffer lambdaVolumeExpPrev;
         private ComputeBuffer jrVelDeltaBits;
         private ComputeBuffer jrLambdaDelta;
+        private ComputeBuffer jrVolumeLambdaCompDelta;
+        private ComputeBuffer jrVolumeLambdaExpDelta;
         private ComputeBuffer coarseFixed;
         private ComputeBuffer restrictedDeltaVBits;
         private ComputeBuffer restrictedDeltaVCount;
@@ -111,6 +117,8 @@ namespace GPU.Solver {
         internal ComputeBuffer CorrectionL => L;
         internal ComputeBuffer CachedF0 => F0;
         internal ComputeBuffer Lambda => lambda;
+        internal ComputeBuffer LambdaVolumeComp => lambdaVolumeComp;
+        internal ComputeBuffer LambdaVolumeExp => lambdaVolumeExp;
         internal ComputeBuffer Damage => damage;
         internal ComputeBuffer DamageKappa => damageKappa;
         internal ComputeBuffer CollisionLambda => collisionLambda;
@@ -119,8 +127,12 @@ namespace GPU.Solver {
         internal ComputeBuffer VelDeltaBits => velDeltaBits;
         internal ComputeBuffer VelPrev => velPrev;
         internal ComputeBuffer LambdaPrev => lambdaPrev;
+        internal ComputeBuffer LambdaVolumeCompPrev => lambdaVolumeCompPrev;
+        internal ComputeBuffer LambdaVolumeExpPrev => lambdaVolumeExpPrev;
         internal ComputeBuffer JRVelDeltaBits => jrVelDeltaBits;
         internal ComputeBuffer JRLambdaDelta => jrLambdaDelta;
+        internal ComputeBuffer JRVolumeLambdaCompDelta => jrVolumeLambdaCompDelta;
+        internal ComputeBuffer JRVolumeLambdaExpDelta => jrVolumeLambdaExpDelta;
         internal ComputeBuffer CoarseFixed => coarseFixed;
         internal ComputeBuffer RestrictedDeltaVBits => restrictedDeltaVBits;
         internal ComputeBuffer RestrictedDeltaVCount => restrictedDeltaVCount;
@@ -204,6 +216,8 @@ namespace GPU.Solver {
             L = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            lambdaVolumeComp = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            lambdaVolumeExp = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             damage = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             damageKappa = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             collisionLambda = new ComputeBuffer(collisionLambdaCapacity, sizeof(float), ComputeBufferType.Structured);
@@ -212,8 +226,12 @@ namespace GPU.Solver {
             velDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             velPrev = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             lambdaPrev = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            lambdaVolumeCompPrev = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            lambdaVolumeExpPrev = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             jrVelDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             jrLambdaDelta = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            jrVolumeLambdaCompDelta = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            jrVolumeLambdaExpDelta = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             coarseFixed = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
             restrictedDeltaVBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             restrictedDeltaVCount = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -228,6 +246,8 @@ namespace GPU.Solver {
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
+            lambdaVolumeComp?.Dispose(); lambdaVolumeComp = null;
+            lambdaVolumeExp?.Dispose(); lambdaVolumeExp = null;
             damage?.Dispose(); damage = null;
             damageKappa?.Dispose(); damageKappa = null;
             collisionLambda?.Dispose(); collisionLambda = null;
@@ -236,8 +256,12 @@ namespace GPU.Solver {
             velDeltaBits?.Dispose(); velDeltaBits = null;
             velPrev?.Dispose(); velPrev = null;
             lambdaPrev?.Dispose(); lambdaPrev = null;
+            lambdaVolumeCompPrev?.Dispose(); lambdaVolumeCompPrev = null;
+            lambdaVolumeExpPrev?.Dispose(); lambdaVolumeExpPrev = null;
             jrVelDeltaBits?.Dispose(); jrVelDeltaBits = null;
             jrLambdaDelta?.Dispose(); jrLambdaDelta = null;
+            jrVolumeLambdaCompDelta?.Dispose(); jrVolumeLambdaCompDelta = null;
+            jrVolumeLambdaExpDelta?.Dispose(); jrVolumeLambdaExpDelta = null;
             coarseFixed?.Dispose(); coarseFixed = null;
             restrictedDeltaVBits?.Dispose(); restrictedDeltaVBits = null;
             restrictedDeltaVCount?.Dispose(); restrictedDeltaVCount = null;
@@ -340,6 +364,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_LambdaVolumeComp", lambdaVolumeComp);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_LambdaVolumeExp", lambdaVolumeExp);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_Damage", damage);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
@@ -390,6 +416,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildPosBits", fixedChildPosBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_LambdaVolumeComp", lambdaVolumeComp);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_LambdaVolumeExp", lambdaVolumeExp);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Damage", damage);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
@@ -473,10 +501,16 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_InvMass", invMass);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_CoarseFixed", coarseFixed);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_Lambda", lambda);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaVolumeComp", lambdaVolumeComp);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaVolumeExp", lambdaVolumeExp);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_VelPrev", velPrev);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaPrev", lambdaPrev);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaVolumeCompPrev", lambdaVolumeCompPrev);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_LambdaVolumeExpPrev", lambdaVolumeExpPrev);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRLambdaDelta", jrLambdaDelta);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRVolumeLambdaCompDelta", jrVolumeLambdaCompDelta);
+            cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_JRVolumeLambdaExpDelta", jrVolumeLambdaExpDelta);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_CollisionLambda", collisionLambda);
             cb.SetComputeBufferParam(shader, kJRSavePrevAndClear, "_CollisionLambdaPrev", collisionLambdaPrev);
 
@@ -492,6 +526,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_VelPrev", velPrev);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaPrev", lambdaPrev);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaVolumeCompPrev", lambdaVolumeCompPrev);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaVolumeExpPrev", lambdaVolumeExpPrev);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_Damage", damage);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CollisionLambda", collisionLambda);
@@ -521,6 +557,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColOwnerB", colOwnerB);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRLambdaDelta", jrLambdaDelta);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVolumeLambdaCompDelta", jrVolumeLambdaCompDelta);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_JRVolumeLambdaExpDelta", jrVolumeLambdaExpDelta);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
@@ -529,6 +567,8 @@ namespace GPU.Solver {
 
             cb.SetComputeBufferParam(shader, kJRApply, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kJRApply, "_Lambda", lambda);
+            cb.SetComputeBufferParam(shader, kJRApply, "_LambdaVolumeComp", lambdaVolumeComp);
+            cb.SetComputeBufferParam(shader, kJRApply, "_LambdaVolumeExp", lambdaVolumeExp);
             cb.SetComputeBufferParam(shader, kJRApply, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kJRApply, "_MaterialIds", materialIds);
             cb.SetComputeBufferParam(shader, kJRApply, "_InvMass", invMass);
@@ -539,6 +579,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRApply, "_CoarseFixed", coarseFixed);
             cb.SetComputeBufferParam(shader, kJRApply, "_JRVelDeltaBits", jrVelDeltaBits);
             cb.SetComputeBufferParam(shader, kJRApply, "_JRLambdaDelta", jrLambdaDelta);
+            cb.SetComputeBufferParam(shader, kJRApply, "_JRVolumeLambdaCompDelta", jrVolumeLambdaCompDelta);
+            cb.SetComputeBufferParam(shader, kJRApply, "_JRVolumeLambdaExpDelta", jrVolumeLambdaExpDelta);
 
             cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kRelaxCollisionAtomic, "_VelPrev", velPrev);

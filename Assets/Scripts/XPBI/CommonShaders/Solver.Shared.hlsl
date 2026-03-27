@@ -36,6 +36,8 @@
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
+    RWStructuredBuffer<float> _LambdaVolumeComp;
+    RWStructuredBuffer<float> _LambdaVolumeExp;
     RWStructuredBuffer<float> _Damage;
     RWStructuredBuffer<float> _DamageKappa;
     RWStructuredBuffer<float> _CollisionLambda;
@@ -130,6 +132,11 @@
     float _DamageShellWeight;
     float _DamageMax;
     float _CohesivePairScale;
+    float _VolumeComplianceComp;
+    float _VolumeComplianceExp;
+    float _VolumeJLow;
+    float _VolumeJHigh;
+    float _VolumeJMin;
     uint _CollisionEnable;
     uint _UseAffineProlongation; 
 
@@ -172,9 +179,13 @@
     // JR stage buffers
     RWStructuredBuffer<float2> _VelPrev;     // snapshot of _Vel
     RWStructuredBuffer<float>  _LambdaPrev;  // snapshot of _Lambda
+    RWStructuredBuffer<float>  _LambdaVolumeCompPrev;
+    RWStructuredBuffer<float>  _LambdaVolumeExpPrev;
 
     RWStructuredBuffer<uint>   _JRVelDeltaBits;  // asuint(float2) packed as [2*gi+0, 2*gi+1]
     RWStructuredBuffer<float>  _JRLambdaDelta;   // per-vertex, no contention (1 thread -> 1 gi)
+    RWStructuredBuffer<float>  _JRVolumeLambdaCompDelta;
+    RWStructuredBuffer<float>  _JRVolumeLambdaExpDelta;
 
     // JR relaxation factors
     float _JROmegaV;
