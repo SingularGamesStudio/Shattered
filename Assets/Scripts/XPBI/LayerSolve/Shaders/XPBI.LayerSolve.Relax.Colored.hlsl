@@ -64,6 +64,11 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #define XPBI_F0_FROM_I(li_, gi_) _F0[gi_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) IsLayerFixed(gj_)
     #define XPBI_INV_MASS(gjLi_, gj_) ReadEffectiveInvMass(gj_)
+    #define XPBI_DAMAGE_I(li_, gi_) _Damage[gi_]
+    #define XPBI_SET_DAMAGE_I(li_, gi_, v_) (_Damage[gi_] = (v_))
+    #define XPBI_KAPPA_I(li_, gi_) _DamageKappa[gi_]
+    #define XPBI_SET_KAPPA_I(li_, gi_, v_) (_DamageKappa[gi_] = (v_))
+    #define XPBI_DAMAGE_J(gjLi_, gj_) _Damage[gj_]
     #define XPBI_ACTIVE_I(li_, gi_) (!IsLayerFixed(gi_) && _RestVolume[gi_] > EPS)
     #define XPBI_APPLY_MODE_JR 0
     #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
@@ -78,6 +83,11 @@ void RelaxColored(uint3 id : SV_DispatchThreadID)
     #undef XPBI_SCATTER_DV
     #undef XPBI_APPLY_MODE_JR
     #undef XPBI_ACTIVE_I
+    #undef XPBI_DAMAGE_J
+    #undef XPBI_SET_KAPPA_I
+    #undef XPBI_KAPPA_I
+    #undef XPBI_SET_DAMAGE_I
+    #undef XPBI_DAMAGE_I
     #undef XPBI_INV_MASS
     #undef XPBI_NEIGHBOR_FIXED
     #undef XPBI_F0_FROM_I

@@ -14,8 +14,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   sprite: {fileID: -1554720222, guid: 6686c052d80d7af4ebe755fd0966db7a, type: 3}
   physical:
-    youngModulus: 200
+    youngModulus: 700
     poissonRatio: 0.44
-    yieldHencky: 0.2
-    volumetricHenckyLimit: 0.014
+    yieldHencky: 0.014
+    volumetricHenckyLimit: 0.14
+    cohesiveStrength: 100
+    fractureEnergy: 1000
     density: 6

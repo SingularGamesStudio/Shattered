@@ -178,4 +178,96 @@ uint ColExpandedToLocal(uint cid)
     return ColExpandedIsFine(cid) ? cid : (cid - ColExpandedCoarseBase());
 }
 
+struct XPBICohesiveShellEval
+{
+    float active;    // 0 or 1
+    float s;         // r / support
+    float shell;     // normalized shell coordinate in [0, 1]
+    float traction;  // bilinear traction shape in [0, 1]
+};
+
+float XPBI_DegradeDamage(float d, float residualStiffness)
+{
+    float a = 1.0 - saturate(d);
+    return a * a + residualStiffness;
+}
+
+float XPBI_DamageFromKappaExp(float kappa, float onset, float softening)
+{
+    if (!(kappa > onset)) return 0.0;
+    return saturate(1.0 - exp(-(kappa - onset) / max(softening, EPS)));
+}
+
+void XPBI_SymEigenValues2x2(float a, float b, float d, out float l0, out float l1)
+{
+    float tr = a + d;
+    float disc = sqrt(max((a - d) * (a - d) + 4.0 * b * b, 0.0));
+    l0 = 0.5 * (tr + disc);
+    l1 = 0.5 * (tr - disc);
+}
+
+float XPBI_TensileHenckyEnergy2D(Mat2 F, float mu, float lambda, float stretchEps)
+{
+    Mat2 FT = TransposeMat2(F);
+    Mat2 C = MulMat2(FT, F);
+
+    float a = C.c0.x;
+    float b = 0.5 * (C.c0.y + C.c1.x);
+    float d = C.c1.y;
+
+    float l0 = 0.0, l1 = 0.0;
+    XPBI_SymEigenValues2x2(a, b, d, l0, l1);
+
+    float s0 = sqrt(max(l0, stretchEps * stretchEps));
+    float s1 = sqrt(max(l1, stretchEps * stretchEps));
+
+    float e0 = log(max(s0, stretchEps));
+    float e1 = log(max(s1, stretchEps));
+
+    float ep0 = max(e0, 0.0);
+    float ep1 = max(e1, 0.0);
+    float trp = max(e0 + e1, 0.0);
+
+    return mu * (ep0 * ep0 + ep1 * ep1) + 0.5 * lambda * trp * trp;
+}
+
+XPBICohesiveShellEval XPBI_EvalCohesiveOuterShell(float r, float support, float onsetRatio, float peakRatio)
+{
+    XPBICohesiveShellEval o;
+    o.active = 0.0;
+    o.s = 0.0;
+    o.shell = 0.0;
+    o.traction = 0.0;
+
+    if (!(support > EPS)) return o;
+
+    float s0 = saturate(onsetRatio);
+    float sp = saturate(peakRatio);
+    sp = max(sp, s0 + 1e-4);
+
+    float s = r / support;
+    o.s = s;
+
+    if (s <= s0 || s >= 1.0) return o;
+
+    o.active = 1.0;
+    o.shell = saturate((s - s0) / max(1.0 - s0, EPS));
+
+    if (s <= sp)
+    {
+        o.traction = saturate((s - s0) / max(sp - s0, EPS));
+    }
+    else
+    {
+        o.traction = saturate((1.0 - s) / max(1.0 - sp, EPS));
+    }
+
+    return o;
+}
+
+float XPBI_ClampSymmetricPairScale(float pairScale)
+{
+    return saturate(pairScale);
+}
+
 #endif
