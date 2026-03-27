@@ -48,33 +48,27 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #define XPBI_GET_GJ(gjLi) GlobalIndexFromLocal(gjLi)
     #define XPBI_POS(li_, gi_) _Pos[gi_]
     #define XPBI_VEL(li_, gi_) _VelPrev[gi_]
-    #define XPBI_SET_VEL(li_, gi_, v_) do {} while(0)
+    #define XPBI_SET_VEL(li_, gi_, v_) ((void)0)
     #define XPBI_LAMBDA(li_, gi_) _LambdaPrev[gi_]
-    #define XPBI_SET_LAMBDA(li_, gi_, l_) do {} while(0)
+    #define XPBI_SET_LAMBDA(li_, gi_, l_) ((void)0)
     #define XPBI_L_FROM_I(li_, gi_) _L[gi_]
     #define XPBI_F0_FROM_I(li_, gi_) _F0[gi_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) IsLayerFixed(gj_)
     #define XPBI_INV_MASS(gjLi_, gj_) ReadEffectiveInvMass(gj_)
-    #define XPBI_DAMAGE_I(li_, gi_) _Damage[gi_]
-    #define XPBI_SET_DAMAGE_I(li_, gi_, v_) (_Damage[gi_] = (v_))
-    #define XPBI_KAPPA_I(li_, gi_) _DamageKappa[gi_]
-    #define XPBI_SET_KAPPA_I(li_, gi_, v_) (_DamageKappa[gi_] = (v_))
-    #define XPBI_DAMAGE_J(gjLi_, gj_) _Damage[gj_]
     #define XPBI_ACTIVE_I(li_, gi_) (!IsLayerFixed(gi_) && _RestVolume[gi_] > EPS)
     #define XPBI_APPLY_MODE_JR 1
     #define XPBI_SCATTER_DV(gi_, dv_) AtomicAddFloat2(_JRVelDeltaBits, gi_, (dv_))
     #define XPBI_SCATTER_DL(gi_, dl_) (_JRLambdaDelta[gi_] = (dl_))
+    #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
+    #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
+    #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SCATTER_DV(gi_, (dv_))
+
     #include "XPBI.LayerSolve.Relax.hlsl"
 
     #undef XPBI_SCATTER_DL
     #undef XPBI_SCATTER_DV
     #undef XPBI_APPLY_MODE_JR
     #undef XPBI_ACTIVE_I
-    #undef XPBI_DAMAGE_J
-    #undef XPBI_SET_KAPPA_I
-    #undef XPBI_KAPPA_I
-    #undef XPBI_SET_DAMAGE_I
-    #undef XPBI_DAMAGE_I
     #undef XPBI_INV_MASS
     #undef XPBI_NEIGHBOR_FIXED
     #undef XPBI_F0_FROM_I
@@ -85,6 +79,9 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
     #undef XPBI_VEL
     #undef XPBI_POS
     #undef XPBI_GET_GJ
+    #undef XPBI_COL_READ_LAMBDA
+    #undef XPBI_COL_WRITE_LAMBDA
+    #undef XPBI_COL_APPLY_DV
 }
 
 [numthreads(256,1,1)]
@@ -142,6 +139,12 @@ void JR_Apply(uint3 id : SV_DispatchThreadID)
         _Vel[gi] *= maxSpeedLocal * invLen;
     }
 
+    float mu = 0.0;
+    float lambda = 0.0;
+    ComputeMaterialLame(gi, mu, lambda);
+    float2 dampedVel = _Vel[gi];
+    ApplySingleAnchorRadialDampingOnVel(gi, mu, lambda, _Pos[gi], dampedVel);
+    _Vel[gi] = dampedVel;
 }
 
 #endif // XPBI_LAYER_ACTUAL_SOLVE_RELAX_ATOMIC_INCLUDED

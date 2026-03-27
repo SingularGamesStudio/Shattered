@@ -1,17 +1,49 @@
 // ============================================================================
-// CollisionSolveBlock.NodeOwned.hlsl
+// CollisionSolveBlock.hlsl
 //
-// Unified fully parallel collision solve for slave-owned node contacts.
-// Works for either fine or coarse layers by rebinding:
+// Fast referenced-contact solve path.
 //
-//   _ColNodeContacts
-//   _ColNodeContactCount
-//   _ColNodeContactLambda
-//   _ColNodeContactStride
+// Keeps the newer collision improvements, but only processes contacts
+// referenced by the current node instead of scanning all events.
 //
-// Each thread owns one slave node (li, gi), processes only its manifold,
-// writes only its own velocity and its own lambda slots, and reads the
-// master side from frozen snapshot buffers.
+// Expected locals already in scope:
+//   uint  li, gi, active, dtLi
+//   float support
+//
+// Expected macros/helpers in the solve path:
+//   LocalIndexFromGlobal()
+//   ColRefBegin(li)
+//   ColRefEnd(li)
+//   ColReadNormalizedNormal(cid, out nrm)
+//   ColReadScale(cid)
+//   ColReadPen(cid)
+//   ColReadNode(cid, s, out nodeGi, out beta)
+//   XPBI_POS(li, gi)
+//   XPBI_VEL(li, gi)
+//   XPBI_INV_MASS(li, gi)
+//   XPBI_NEIGHBOR_FIXED(li, gi)
+//   XPBI_COL_APPLY_DV(li, gi, dv)
+//   XPBI_COL_READ_LAMBDA(idx)
+//   XPBI_COL_WRITE_LAMBDA(idx, value)
+//   EPS
+//   _Dt
+//   _CollisionCompliance
+//   _CollisionSkinScale
+//   _CollisionSlop
+//   _CollisionPenBias
+//   _CollisionMaxBias
+//   _CollisionMaxPush
+//   _CollisionRelaxation
+//   _CollisionRestitution
+//   _CollisionRestitutionThreshold
+//   _CollisionFriction
+//   _CollisionMaxDv
+//
+// Optional existing buffers:
+//   _DtCollisionOwnerByLocal
+//   _NodeCollisionRefs
+//   _ColOwnerA
+//   _ColOwnerB
 // ============================================================================
 
 if (li < active)
@@ -19,116 +51,278 @@ if (li < active)
     float dt  = max(_Dt, EPS);
     float dt2 = dt * dt;
 
-    if (gi == COLLISION_INVALID_U32)
-        return;
-
-    if (XPBI_NEIGHBOR_FIXED(li, gi))
-        return;
-
-    float invMassI = XPBI_INV_MASS(li, gi);
-    if (!(invMassI > EPS))
-        return;
-
     float alphaCollision  = max(_CollisionCompliance, 0.0);
     float targetSeparation = max(EPS, _CollisionSkinScale * support);
-    float slop = max(_CollisionSlop, 0.0) * support;
-    float maxDv = max(_CollisionMaxDv, 0.0);
 
-    float2 xI = XPBI_POS(li, gi);
-    float2 vI = XPBI_VEL(li, gi);
+    const float COL_GEOM_EPS = 1e-12;
 
-    uint contactCount = XPBI_ColNodeContactCountOf(li);
+    uint refBegin = ColRefBegin(li);
+    uint refEnd   = ColRefEnd(li);
 
     [loop]
-    for (uint slot = 0u; slot < _ColNodeContactStride; slot++)
+    for (uint refIt = refBegin; refIt < refEnd; refIt++)
     {
-        if (slot >= contactCount)
-            break;
+        uint cid = _NodeCollisionRefs[refIt];
 
-        XPBI_NodeContact c;
-        if (!XPBI_ColReadContact(li, slot, c))
+        if (cid >= ColExpandedCapacity())
             continue;
 
-        if (c.slaveGi != gi)
-            continue;
+        uint ownerA = _ColOwnerA[cid];
+        uint ownerB = _ColOwnerB[cid];
 
-        if (c.ownerSlave == c.ownerMaster)
+        if (ownerA == ownerB)
             continue;
-
-        float scale = c.scale;
-        if (!(scale > EPS))
-            continue;
-
-        float penRaw = max(c.pen, 0.0);
-        if (penRaw <= slop)
+        if (ownerA == COLLISION_INVALID_U32 || ownerB == COLLISION_INVALID_U32)
             continue;
 
         float2 nrm;
-        if (!XPBI_ColReadNormal(c, nrm))
+        if (!ColReadNormalizedNormal(cid, nrm))
             continue;
 
-        float2 xMasterPred = XPBI_ColSampleMasterPredPos(c, dt);
-        float2 xSelfPred   = xI + vI * dt;
+        float scale = ColReadScale(cid);
+        if (!(scale > EPS))
+            continue;
 
-        float penEff = max(penRaw - slop, 0.0);
-        float bias   = min(max(_CollisionPenBias, 0.0) * penEff, max(_CollisionMaxBias, 0.0));
+        float penRaw = max(ColReadPen(cid), 0.0);
+
+        // --------------------------------------------------------------------
+        // Read raw stencil from the referenced contact.
+        // Assumes ColReadNode() exposes the per-contact participants as
+        // unscaled beta weights; scale is applied in solve.
+        // --------------------------------------------------------------------
+        uint  nodeGiRaw[COLLISION_MAX_NODES];
+        float betaRaw[COLLISION_MAX_NODES];
+
+        [unroll]
+        for (uint iInit = 0u; iInit < COLLISION_MAX_NODES; iInit++)
+        {
+            nodeGiRaw[iInit] = COLLISION_INVALID_U32;
+            betaRaw[iInit]   = 0.0;
+        }
+
+        [unroll]
+        for (uint sRead = 0u; sRead < COLLISION_MAX_NODES; sRead++)
+        {
+            ColReadNode(cid, sRead, nodeGiRaw[sRead], betaRaw[sRead]);
+        }
+
+        // --------------------------------------------------------------------
+        // Merge duplicate raw participants by GI.
+        // Preserves the newer safeguard against collapsed/degenerate features.
+        // --------------------------------------------------------------------
+        uint  nodeGiMerged[COLLISION_MAX_NODES];
+        float betaMerged[COLLISION_MAX_NODES];
+
+        [unroll]
+        for (uint mInit = 0u; mInit < COLLISION_MAX_NODES; mInit++)
+        {
+            nodeGiMerged[mInit] = COLLISION_INVALID_U32;
+            betaMerged[mInit]   = 0.0;
+        }
+
+        [unroll]
+        for (uint sRaw = 0u; sRaw < COLLISION_MAX_NODES; sRaw++)
+        {
+            uint  g = nodeGiRaw[sRaw];
+            float b = betaRaw[sRaw];
+
+            if (g == COLLISION_INVALID_U32)
+                continue;
+            if (abs(b) <= COL_GEOM_EPS)
+                continue;
+
+            [unroll]
+            for (uint m = 0u; m < COLLISION_MAX_NODES; m++)
+            {
+                if (nodeGiMerged[m] == g)
+                {
+                    betaMerged[m] += b;
+                    break;
+                }
+
+                if (nodeGiMerged[m] == COLLISION_INVALID_U32)
+                {
+                    nodeGiMerged[m] = g;
+                    betaMerged[m]   = b;
+                    break;
+                }
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // Validate merged participants, build active stencil, and choose anchor
+        // from validated participants only.
+        // --------------------------------------------------------------------
+        float projected = 0.0;
+        float wTerm     = 0.0;
+        uint  usedCount = 0u;
+        uint  anchorGi  = COLLISION_INVALID_U32;
+
+        uint  nodeLiCache[COLLISION_MAX_NODES];
+        uint  nodeGiCache[COLLISION_MAX_NODES];
+        float betaScaledCache[COLLISION_MAX_NODES];
+        float betaUnscaledCache[COLLISION_MAX_NODES];
+        float invMassCache[COLLISION_MAX_NODES];
+        bool  fixedCache[COLLISION_MAX_NODES];
+
+        [unroll]
+        for (uint cInit = 0u; cInit < COLLISION_MAX_NODES; cInit++)
+        {
+            nodeLiCache[cInit]         = COLLISION_INVALID_U32;
+            nodeGiCache[cInit]         = COLLISION_INVALID_U32;
+            betaScaledCache[cInit]     = 0.0;
+            betaUnscaledCache[cInit]   = 0.0;
+            invMassCache[cInit]        = 0.0;
+            fixedCache[cInit]          = true;
+        }
+
+        [unroll]
+        for (uint s = 0u; s < COLLISION_MAX_NODES; s++)
+        {
+            uint  nodeGi = nodeGiMerged[s];
+            float beta   = betaMerged[s];
+
+            if (nodeGi == COLLISION_INVALID_U32)
+                continue;
+            if (abs(beta) <= COL_GEOM_EPS)
+                continue;
+
+            uint nodeLi = LocalIndexFromGlobal(nodeGi);
+            if (nodeLi == COLLISION_INVALID_U32 || nodeLi >= active)
+                continue;
+
+            bool  fixedNode = XPBI_NEIGHBOR_FIXED(nodeLi, nodeGi);
+            float invMass   = fixedNode ? 0.0 : XPBI_INV_MASS(nodeLi, nodeGi);
+
+            float  betaScaled = scale * beta;
+            float2 xCand      = XPBI_POS(nodeLi, nodeGi) + XPBI_VEL(nodeLi, nodeGi) * dt;
+
+            projected += betaScaled * dot(nrm, xCand);
+            wTerm     += dt2 * invMass * betaScaled * betaScaled;
+
+            nodeLiCache[s]       = nodeLi;
+            nodeGiCache[s]       = nodeGi;
+            betaScaledCache[s]   = betaScaled;
+            betaUnscaledCache[s] = beta;
+            invMassCache[s]      = invMass;
+            fixedCache[s]        = fixedNode;
+
+            usedCount++;
+
+            if (anchorGi == COLLISION_INVALID_U32 || nodeGi < anchorGi)
+                anchorGi = nodeGi;
+        }
+
+        if (usedCount < 2u)
+            continue;
+        if (anchorGi == COLLISION_INVALID_U32 || anchorGi != gi)
+            continue;
+
+        float slop = max(_CollisionSlop, 0.0) * support;
+        if (penRaw <= slop)
+            continue;
+
+        float penEff  = max(penRaw - slop, 0.0);
+        float bias    = min(max(_CollisionPenBias, 0.0) * penEff, max(_CollisionMaxBias, 0.0));
         float maxPush = max(_CollisionMaxPush, 0.0);
 
-        float Cbase = dot(nrm, xSelfPred - xMasterPred) - targetSeparation;
-        float Cn = scale * (Cbase - bias);
+        float Cn = projected - scale * targetSeparation;
+        Cn -= scale * bias;
         Cn = max(Cn, -scale * (penEff + maxPush));
 
         if (Cn >= 0.0)
             continue;
 
-        float wTerm = dt2 * invMassI * (scale * scale);
         if (wTerm <= EPS && alphaCollision <= EPS)
             continue;
 
-        float lambdaPrev = XPBI_ColReadLambda(li, slot);
+        // Lambda uses the same expanded CID space as the stencils/refs.
+        uint  lambdaIdx  = cid;
+        float lambdaPrev = XPBI_COL_READ_LAMBDA(lambdaIdx);
 
         float dLambda = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
-        if (!isfinite(dLambda))
-            continue;
-
         float lambdaNewRaw = max(0.0, lambdaPrev + dLambda);
-        float appliedDLambda = (lambdaNewRaw - lambdaPrev) * saturate(_CollisionRelaxation);
+
+        float appliedDLambda = lambdaNewRaw - lambdaPrev;
+        float relax = saturate(_CollisionRelaxation);
+        appliedDLambda *= relax;
 
         if (appliedDLambda <= 0.0)
             continue;
 
         float lambdaNew = lambdaPrev + appliedDLambda;
 
-        float2 vMaster = XPBI_ColSampleMasterVel(c);
-        float2 vRel = vI - vMaster;
+        // --------------------------------------------------------------------
+        // Relative velocity terms for restitution / friction.
+        // Matches the newer path: use unscaled stencil weights here.
+        // --------------------------------------------------------------------
+        float2 vRel = 0.0;
+        float  wEff = 0.0;
 
-        float vn = dot(vRel, nrm);
-        float2 vt = vRel - vn * nrm;
-        float vtLen = length(vt);
-        float2 vtDir = (vtLen > EPS) ? (vt / vtLen) : 0.0;
+        [unroll]
+        for (uint sRel = 0u; sRel < COLLISION_MAX_NODES; sRel++)
+        {
+            uint relGi = nodeGiCache[sRel];
+            if (relGi == COLLISION_INVALID_U32)
+                continue;
 
-        float restitution = saturate(_CollisionRestitution); 
+            uint  relLi         = nodeLiCache[sRel];
+            float betaUnscaled  = betaUnscaledCache[sRel];
+
+            vRel += betaUnscaled * XPBI_VEL(relLi, relGi);
+            wEff += invMassCache[sRel] * betaUnscaled * betaUnscaled;
+        }
+
+        float  vn    = dot(vRel, nrm);
+        float2 vt    = vRel - vn * nrm;
+        float  vtLen = length(vt);
+
+        float restitution          = saturate(_CollisionRestitution);
         float restitutionThreshold = max(_CollisionRestitutionThreshold, 0.0);
-        float restitutionDeltaVn = restitution * max(-vn - restitutionThreshold, 0.0);
+        float restitutionDeltaVn   = restitution * max(-vn - restitutionThreshold, 0.0);
 
         float friction = saturate(_CollisionFriction);
-        float maxFrictionDeltaV = friction * max(-vn, 0.0);
-        float frictionDeltaV = min(vtLen, maxFrictionDeltaV);
+        float maxDv    = max(_CollisionMaxDv, 0.0);
 
-        float2 dV = -(invMassI * scale * dt * appliedDLambda) * nrm;
-        dV += restitutionDeltaVn * nrm;
+        float  wEffSafe           = max(wEff, EPS);
+        float  restitutionImpulse = (wEff > EPS) ? (restitutionDeltaVn / wEffSafe) : 0.0;
+        float  maxFrictionDeltaV  = friction * max(-vn, 0.0);
+        float  frictionImpulse    = (wEff > EPS) ? (min(vtLen, maxFrictionDeltaV) / wEffSafe) : 0.0;
+        float2 vtDir              = (vtLen > EPS) ? (vt / vtLen) : 0.0;
 
-        if (frictionDeltaV > EPS && vtLen > EPS)
-            dV += -frictionDeltaV * vtDir;
+        [unroll]
+        for (uint sApply = 0u; sApply < COLLISION_MAX_NODES; sApply++)
+        {
+            uint nodeGi = nodeGiCache[sApply];
+            if (nodeGi == COLLISION_INVALID_U32)
+                continue;
+            if (fixedCache[sApply])
+                continue;
 
-        dV = XPBI_ColClampDeltaV(dV, maxDv, EPS);
+            uint  nodeLi       = nodeLiCache[sApply];
+            float invMass      = invMassCache[sApply];
+            float betaScaled   = betaScaledCache[sApply];
+            float betaUnscaled = betaUnscaledCache[sApply];
 
-        if (!all(isfinite(dV)))
-            continue;
+            float2 dV = -invMass * betaScaled * dt * appliedDLambda * nrm;
+            dV += invMass * betaUnscaled * restitutionImpulse * nrm;
 
-        vI += dV;
-        XPBI_ColWriteLambda(li, slot, lambdaNew);
+            if (frictionImpulse > EPS && vtLen > EPS)
+                dV += -invMass * betaUnscaled * frictionImpulse * vtDir;
+
+            if (maxDv > EPS)
+            {
+                float dVLen = length(dV);
+                if (dVLen > maxDv)
+                    dV *= maxDv / dVLen;
+            }
+
+            if (!all(isfinite(dV)))
+                continue;
+
+            XPBI_COL_APPLY_DV(nodeLi, nodeGi, dV);
+        }
+
+        XPBI_COL_WRITE_LAMBDA(lambdaIdx, lambdaNew);
     }
-
-    XPBI_SET_VEL(li, gi, vI);
 }

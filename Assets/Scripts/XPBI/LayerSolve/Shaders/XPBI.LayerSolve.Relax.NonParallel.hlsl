@@ -9,8 +9,6 @@ groupshared uint _SCoarseColor[COARSE_MAX_N];
 groupshared float2 _SCoarsePos[COARSE_MAX_N];
 groupshared float2 _SCoarseVel[COARSE_MAX_N];
 groupshared float _SCoarseLambda[COARSE_MAX_N];
-groupshared float _SCoarseDamage[COARSE_MAX_N];
-groupshared float _SCoarseKappa[COARSE_MAX_N];
 groupshared float4 _SCoarseL[COARSE_MAX_N];
 groupshared float4 _SCoarseF0[COARSE_MAX_N];
 
@@ -45,16 +43,15 @@ static void RelaxPersistentCoarseRow(
     #define XPBI_F0_FROM_I(li_, gi_) _SCoarseF0[li_]
     #define XPBI_NEIGHBOR_FIXED(gjLi_, gj_) ((_SCoarseFlags[gjLi_] & 1u) != 0u)
     #define XPBI_INV_MASS(gjLi_, gj_) ReadEffectiveInvMass(gj_)
-    #define XPBI_DAMAGE_I(li_, gi_) _SCoarseDamage[li_]
-    #define XPBI_SET_DAMAGE_I(li_, gi_, v_) (_SCoarseDamage[li_] = (v_))
-    #define XPBI_KAPPA_I(li_, gi_) _SCoarseKappa[li_]
-    #define XPBI_SET_KAPPA_I(li_, gi_, v_) (_SCoarseKappa[li_] = (v_))
-    #define XPBI_DAMAGE_J(gjLi_, gj_) _SCoarseDamage[gjLi_]
     #define XPBI_ACTIVE_I(li_, gi_) ((_SCoarseFlags[li_] & 2u) != 0u)
     #define XPBI_APPLY_MODE_JR 0
-    #define XPBI_SCATTER_DV(gi_, dv_) {}
-    #define XPBI_SCATTER_DL(gi_, dl_) {}
+    #define XPBI_SCATTER_DV(gi_, dv_) ((void)0)
+    #define XPBI_SCATTER_DL(gi_, dl_) ((void)0)
     #define XPBI_DEBUG_ITER debugIter
+    #define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
+    #define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
+    #define XPBI_COL_APPLY_DV(li_, gi_, dv_) XPBI_SET_VEL(li_, gi_, XPBI_VEL(li_, gi_) + (dv_))
+
     #include "XPBI.LayerSolve.Relax.hlsl"
 
     #undef XPBI_SCATTER_DL
@@ -62,11 +59,6 @@ static void RelaxPersistentCoarseRow(
     #undef XPBI_DEBUG_ITER
     #undef XPBI_APPLY_MODE_JR
     #undef XPBI_ACTIVE_I
-    #undef XPBI_DAMAGE_J
-    #undef XPBI_SET_KAPPA_I
-    #undef XPBI_KAPPA_I
-    #undef XPBI_SET_DAMAGE_I
-    #undef XPBI_DAMAGE_I
     #undef XPBI_INV_MASS
     #undef XPBI_NEIGHBOR_FIXED
     #undef XPBI_F0_FROM_I
@@ -77,6 +69,9 @@ static void RelaxPersistentCoarseRow(
     #undef XPBI_VEL
     #undef XPBI_POS
     #undef XPBI_GET_GJ
+    #undef XPBI_COL_READ_LAMBDA
+    #undef XPBI_COL_WRITE_LAMBDA
+    #undef XPBI_COL_APPLY_DV
 }
 
 [numthreads(256, 1, 1)]
@@ -96,8 +91,6 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
         _SCoarsePos[li] = 0.0;
         _SCoarseVel[li] = 0.0;
         _SCoarseLambda[li] = 0.0;
-        _SCoarseDamage[li] = 0.0;
-        _SCoarseKappa[li] = 0.0;
         _SCoarseL[li] = 0.0;
         _SCoarseF0[li] = 0.0;
     }
@@ -114,8 +107,6 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
             _SCoarsePos[li] = _Pos[gi];
             _SCoarseVel[li] = _Vel[gi];
             _SCoarseLambda[li] = _Lambda[gi];
-            _SCoarseDamage[li] = _Damage[gi];
-            _SCoarseKappa[li] = _DamageKappa[gi];
             _SCoarseL[li] = _L[gi];
             _SCoarseF0[li] = _F0[gi];
         }
@@ -154,8 +145,6 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
             {
                 _Vel[gi] = _SCoarseVel[li];
                 _Lambda[gi] = _SCoarseLambda[li];
-                _Damage[gi] = _SCoarseDamage[li];
-                _DamageKappa[gi] = _SCoarseKappa[li];
             }
         }
         return;
@@ -198,8 +187,6 @@ void RelaxColoredPersistentCoarse(uint3 gtid : SV_GroupThreadID)
         {
             _Vel[gi] = _SCoarseVel[li];
             _Lambda[gi] = _SCoarseLambda[li];
-            _Damage[gi] = _SCoarseDamage[li];
-            _DamageKappa[gi] = _SCoarseKappa[li];
         }
     }
 }

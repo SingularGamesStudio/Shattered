@@ -219,6 +219,220 @@ bool QueryOwnerBoundaryExact(uint owner, float2 x, out FeatureHit best)
 static const float COL_GEOM_EPS = 1e-12;
 static const float COL_PARAM_EPS = 1e-4;
 
+void FineContactInit(out Contact c)
+{
+    c.ownerA = INVALID_U32;
+    c.ownerB = INVALID_U32;
+    c.nodeGi0 = INVALID_U32;
+    c.nodeGi1 = INVALID_U32;
+    c.nodeGi2 = INVALID_U32;
+    c.nodeGi3 = INVALID_U32;
+    c.beta0 = 0.0;
+    c.beta1 = 0.0;
+    c.beta2 = 0.0;
+    c.beta3 = 0.0;
+    c.n = 0.0;
+    c.pen = 0.0;
+}
+
+void FineContactSetSlot(inout Contact c, uint slot, uint gi, float beta)
+{
+    switch (slot)
+    {
+        case 0u: c.nodeGi0 = gi; c.beta0 = beta; break;
+        case 1u: c.nodeGi1 = gi; c.beta1 = beta; break;
+        case 2u: c.nodeGi2 = gi; c.beta2 = beta; break;
+        case 3u: c.nodeGi3 = gi; c.beta3 = beta; break;
+        default: break;
+    }
+}
+
+void AppendFineContact(Contact c)
+{
+    if (c.pen <= 0.0)
+        return;
+
+    float nl2 = dot(c.n, c.n);
+    if (nl2 <= 1e-20)
+        return;
+
+    c.n *= rsqrt(nl2);
+
+    uint dst;
+    InterlockedAdd(_ContactCount[0], 1u, dst);
+    if (dst >= _MaxContacts)
+        return;
+
+    _Contacts[dst] = c;
+}
+
+bool BuildVertexFeatureFineContact(
+    uint ownerA,
+    uint ownerB,
+    uint vGiA,
+    uint featB,
+    float2 n,
+    float pen,
+    float2 cpB,
+    out Contact c)
+{
+    FineContactInit(c);
+
+    if (vGiA == INVALID_U32)
+        return false;
+
+    c.ownerA = ownerA;
+    c.ownerB = ownerB;
+    c.n = n;
+    c.pen = pen;
+
+    FineContactSetSlot(c, 0u, vGiA, -1.0);
+
+    uint b0 = _BoundaryEdgeV0Gi[featB];
+    uint b1 = _BoundaryEdgeV1Gi[featB];
+    uint bv = _BoundaryVertexGi[featB];
+
+    bool haveB0 = (b0 != INVALID_U32);
+    bool haveB1 = (b1 != INVALID_U32);
+
+    if (haveB0 && haveB1 && b0 != b1)
+    {
+        float2 x0 = PredPos(b0);
+        float2 x1 = PredPos(b1);
+        float2 e = x1 - x0;
+        float e2 = dot(e, e);
+
+        if (e2 > COL_GEOM_EPS)
+        {
+            float t = saturate(dot(cpB - x0, e) / e2);
+
+            if (t <= COL_PARAM_EPS)
+            {
+                FineContactSetSlot(c, 1u, b0, 1.0);
+            }
+            else if (t >= (1.0 - COL_PARAM_EPS))
+            {
+                FineContactSetSlot(c, 1u, b1, 1.0);
+            }
+            else
+            {
+                FineContactSetSlot(c, 1u, b0, 1.0 - t);
+                FineContactSetSlot(c, 2u, b1, t);
+            }
+            return true;
+        }
+
+        float d0 = dot(cpB - x0, cpB - x0);
+        float d1 = dot(cpB - x1, cpB - x1);
+        FineContactSetSlot(c, 1u, (d0 <= d1) ? b0 : b1, 1.0);
+        return true;
+    }
+
+    if (bv != INVALID_U32)
+    {
+        FineContactSetSlot(c, 1u, bv, 1.0);
+        return true;
+    }
+
+    if (haveB0 || haveB1)
+    {
+        FineContactSetSlot(c, 1u, haveB0 ? b0 : b1, 1.0);
+        return true;
+    }
+
+    return false;
+}
+
+bool BuildEdgeEdgeFineContact(
+    uint ownerA,
+    uint ownerB,
+    uint heA,
+    uint heB,
+    float s,
+    float t,
+    float2 n,
+    float pen,
+    out Contact c)
+{
+    FineContactInit(c);
+
+    uint a0 = _BoundaryEdgeV0Gi[heA];
+    uint a1 = _BoundaryEdgeV1Gi[heA];
+    uint b0 = _BoundaryEdgeV0Gi[heB];
+    uint b1 = _BoundaryEdgeV1Gi[heB];
+
+    if (a0 == INVALID_U32 || a1 == INVALID_U32 || b0 == INVALID_U32 || b1 == INVALID_U32)
+        return false;
+
+    c.ownerA = ownerA;
+    c.ownerB = ownerB;
+    c.n = n;
+    c.pen = pen;
+
+    float2 a0p = PredPos(a0);
+    float2 a1p = PredPos(a1);
+    float2 b0p = PredPos(b0);
+    float2 b1p = PredPos(b1);
+
+    float aLen2 = dot(a1p - a0p, a1p - a0p);
+    float bLen2 = dot(b1p - b0p, b1p - b0p);
+
+    bool aDeg = (a0 == a1) || !(aLen2 > COL_GEOM_EPS);
+    bool bDeg = (b0 == b1) || !(bLen2 > COL_GEOM_EPS);
+
+    s = saturate(s);
+    t = saturate(t);
+
+    if (!aDeg && !bDeg)
+    {
+        FineContactSetSlot(c, 0u, a0, -(1.0 - s));
+        FineContactSetSlot(c, 1u, a1, -s);
+        FineContactSetSlot(c, 2u, b0, 1.0 - t);
+        FineContactSetSlot(c, 3u, b1, t);
+        return true;
+    }
+
+    if (aDeg && !bDeg)
+    {
+        FineContactSetSlot(c, 0u, a0, -1.0);
+
+        if (t <= COL_PARAM_EPS)
+            FineContactSetSlot(c, 1u, b0, 1.0);
+        else if (t >= (1.0 - COL_PARAM_EPS))
+            FineContactSetSlot(c, 1u, b1, 1.0);
+        else
+        {
+            FineContactSetSlot(c, 1u, b0, 1.0 - t);
+            FineContactSetSlot(c, 2u, b1, t);
+        }
+        return true;
+    }
+
+    if (!aDeg && bDeg)
+    {
+        if (s <= COL_PARAM_EPS)
+        {
+            FineContactSetSlot(c, 0u, a0, -1.0);
+        }
+        else if (s >= (1.0 - COL_PARAM_EPS))
+        {
+            FineContactSetSlot(c, 0u, a1, -1.0);
+        }
+        else
+        {
+            FineContactSetSlot(c, 0u, a0, -(1.0 - s));
+            FineContactSetSlot(c, 1u, a1, -s);
+        }
+
+        FineContactSetSlot(c, 2u, b0, 1.0);
+        return true;
+    }
+
+    FineContactSetSlot(c, 0u, a0, -1.0);
+    FineContactSetSlot(c, 1u, b0, 1.0);
+    return true;
+}
+
 bool BBoxOverlap(float2 amin, float2 amax, float2 bmin, float2 bmax)
 {
     return (amax.x >= bmin.x) && (amax.y >= bmin.y) && (bmax.x >= amin.x) && (bmax.y >= amin.y);
@@ -414,209 +628,4 @@ bool OwnerPairAabbOverlap(uint ownerA, uint ownerB, float inflate)
     float2 bMax = oB + eB + inflate;
 
     return BBoxOverlap(aMin, aMax, bMin, bMax);
-}
-
-void FineNodeContactInit(out FineNodeContact c)
-{
-    c.ownerSlave  = INVALID_U32;
-    c.ownerMaster = INVALID_U32;
-    c.slaveGi     = INVALID_U32;
-    c.masterGi0   = INVALID_U32;
-    c.masterGi1   = INVALID_U32;
-    c.masterW1    = 0.0;
-    c.n           = 0.0;
-    c.pen         = 0.0;
-    c.scale       = 0.0;
-    c.x           = 0.0;
-    c.srcKind     = CONTACT_SRC_VERTEX;
-}
-
-void AppendFineNodeContact(FineNodeContact c)
-{
-    if (c.ownerSlave == INVALID_U32 || c.ownerMaster == INVALID_U32) return;
-    if (c.slaveGi == INVALID_U32) return;
-    if (c.pen <= 0.0 || c.scale <= 1e-9) return;
-
-    float nl2 = dot(c.n, c.n);
-    if (nl2 <= 1e-20) return;
-    c.n *= rsqrt(nl2);
-
-    uint dst;
-    InterlockedAdd(_FineNodeContactCount[0], 1u, dst);
-    if (dst >= _MaxFineNodeContacts) return;
-    _FineNodeContacts[dst] = c;
-}
-
-bool BuildDirectNodeContact(
-    uint ownerSlave,
-    uint ownerMaster,
-    uint slaveGi,
-    uint masterGi0,
-    uint masterGi1,
-    float masterW1,
-    float2 n,
-    float pen,
-    float scale,
-    float2 x,
-    uint srcKind,
-    out FineNodeContact c)
-{
-    FineNodeContactInit(c);
-
-    if (slaveGi == INVALID_U32 || masterGi0 == INVALID_U32) return false;
-    if (!(pen > 0.0) || !(scale > 1e-9)) return false;
-
-    float nl2 = dot(n, n);
-    if (nl2 <= 1e-20) return false;
-    n *= rsqrt(nl2);
-
-    c.ownerSlave  = ownerSlave;
-    c.ownerMaster = ownerMaster;
-    c.slaveGi     = slaveGi;
-    c.masterGi0   = masterGi0;
-    c.masterGi1   = masterGi1;
-    c.masterW1    = saturate(masterW1);
-    c.n           = n;
-    c.pen         = pen;
-    c.scale       = scale;
-    c.x           = x;
-    c.srcKind     = srcKind;
-    return true;
-}
-
-bool BuildVertexSurfaceNodeContact(
-    uint ownerSlave,
-    uint ownerMaster,
-    uint slaveGi,
-    FeatureHit hit,
-    float support,
-    out FineNodeContact c)
-{
-    FineNodeContactInit(c);
-
-    if (slaveGi == INVALID_U32) return false;
-    if (hit.valid == 0u || hit.id == INVALID_U32) return false;
-
-    float pen = support - hit.phi;
-    if (pen <= 0.0) return false;
-
-    float2 xs = PredPos(slaveGi);
-    float2 n = xs - hit.cp;
-    float n2 = dot(n, n);
-    if (n2 > 1e-20) n *= rsqrt(n2);
-    else            n = SafeNormalize(hit.grad);
-
-    if (dot(n, hit.grad) < 0.0) n = -n;
-
-    uint masterGi0 = INVALID_U32;
-    uint masterGi1 = INVALID_U32;
-    float masterW1 = 0.0;
-
-    if (hit.type == 0u)
-    {
-        masterGi0 = _BoundaryEdgeV0Gi[hit.id];
-        masterGi1 = _BoundaryEdgeV1Gi[hit.id];
-        if (masterGi0 == INVALID_U32 || masterGi1 == INVALID_U32) return false;
-        masterW1 = saturate(hit.u);
-    }
-    else
-    {
-        masterGi0 = _BoundaryVertexGi[hit.id];
-        if (masterGi0 == INVALID_U32) masterGi0 = _BoundaryEdgeV0Gi[hit.id];
-        if (masterGi0 == INVALID_U32) return false;
-        masterGi1 = INVALID_U32;
-        masterW1 = 0.0;
-    }
-
-    return BuildDirectNodeContact(
-        ownerSlave, ownerMaster, slaveGi,
-        masterGi0, masterGi1, masterW1,
-        n, pen, 1.0, hit.cp, CONTACT_SRC_VERTEX, c);
-}
-
-void EmitEdgeEndpointContact(
-    uint ownerSlave,
-    uint ownerMaster,
-    uint slaveGi,
-    uint masterGi0,
-    uint masterGi1,
-    float masterW1,
-    float2 n,
-    float pen,
-    float scale,
-    float2 x)
-{
-    FineNodeContact c;
-    if (!BuildDirectNodeContact(
-            ownerSlave, ownerMaster, slaveGi,
-            masterGi0, masterGi1, masterW1,
-            n, pen, scale, x, CONTACT_SRC_EDGE, c))
-        return;
-
-    AppendFineNodeContact(c);
-}
-
-void EmitEdgeEdgeNodeContacts(
-    uint ownerA, uint ownerB,
-    uint a0Gi, uint a1Gi,
-    uint b0Gi, uint b1Gi,
-    float s, float t,
-    float2 nAB,
-    float pen,
-    float2 xI)
-{
-    float wA0 = saturate(1.0 - s);
-    float wA1 = saturate(s);
-    float wB0 = saturate(1.0 - t);
-    float wB1 = saturate(t);
-
-    if (wA0 > 1e-4)
-        EmitEdgeEndpointContact(ownerA, ownerB, a0Gi, b0Gi, b1Gi, t,  nAB,  pen, wA0, xI);
-    if (wA1 > 1e-4)
-        EmitEdgeEndpointContact(ownerA, ownerB, a1Gi, b0Gi, b1Gi, t,  nAB,  pen, wA1, xI);
-
-    if (wB0 > 1e-4)
-        EmitEdgeEndpointContact(ownerB, ownerA, b0Gi, a0Gi, a1Gi, s, -nAB, pen, wB0, xI);
-    if (wB1 > 1e-4)
-        EmitEdgeEndpointContact(ownerB, ownerA, b1Gi, a0Gi, a1Gi, s, -nAB, pen, wB1, xI);
-}
-
-float2 SampleMasterFeatureVelocity(uint featType, uint featId, float u)
-{
-    if (featType == 0u)
-    {
-        uint g0 = _BoundaryEdgeV0Gi[featId];
-        uint g1 = _BoundaryEdgeV1Gi[featId];
-        if (g0 == INVALID_U32 || g1 == INVALID_U32) return 0.0;
-        return lerp(_Vel[g0], _Vel[g1], saturate(u));
-    }
-
-    if (featType == 1u)
-    {
-        uint gv = _BoundaryVertexGi[featId];
-        if (gv == INVALID_U32) return 0.0;
-        return _Vel[gv];
-    }
-
-    return 0.0;
-}
-
-float2 SampleMasterFeaturePoint(uint featType, uint featId, float u)
-{
-    if (featType == 0u)
-    {
-        uint g0 = _BoundaryEdgeV0Gi[featId];
-        uint g1 = _BoundaryEdgeV1Gi[featId];
-        if (g0 == INVALID_U32 || g1 == INVALID_U32) return 0.0;
-        return lerp(PredPos(g0), PredPos(g1), saturate(u));
-    }
-
-    if (featType == 1u)
-    {
-        uint gv = _BoundaryVertexGi[featId];
-        if (gv == INVALID_U32) return 0.0;
-        return PredPos(gv);
-    }
-
-    return 0.0;
 }

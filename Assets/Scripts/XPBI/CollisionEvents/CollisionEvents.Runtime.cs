@@ -14,15 +14,8 @@ namespace GPU.Solver {
 
         internal ComputeBuffer collisionEvents;
         private ComputeBuffer collisionEventCount;
-        private ComputeBuffer fineNodeManifoldCount;
-        private ComputeBuffer fineNodeManifoldOverflow;
-        private ComputeBuffer fineNodeManifold;
-        private ComputeBuffer fineNodeContactLambda;
-
         private ComputeBuffer coarseContacts;
         private ComputeBuffer coarseContactCount;
-        private ComputeBuffer coarseNodeContactOverflow;
-        private ComputeBuffer coarseNodeContactLambda;
 
         private ComputeBuffer colAnchorGi;
         private ComputeBuffer colNodeGi0;
@@ -130,23 +123,23 @@ namespace GPU.Solver {
         internal int kBinBoundaryEdges;
         internal int kBinBoundaryVertices;
         internal int kBuildOwnerFeatureField;
-        internal int kQueryNodeSurfaceContacts;
-        internal int kQueryEdgeEdgeNodeContacts;
-        internal int kClearFineNodeManifolds;
-        internal int kScatterFineNodeContactsToManifolds;
-        internal int kClearCoarseNodeContacts;
-        internal int kPropagateFineContactsToCoarse;
+        internal int kQueryVertexContacts;
+        internal int kQueryEdgeEdgeContacts;
+        internal int kClearCoarseContacts;
+        internal int kPropagateVertexContacts;
+        internal int kPropagateEdgeContacts;
+        internal int kClearNodeCollisionRefAux;
+        internal int kBuildFineContactStencils;
+        internal int kBuildCoarseContactStencils;
+        internal int kExclusiveScanNodeCollisionRefCount;
+        internal int kClearNodeCollisionRefWrite;
+        internal int kScatterFineContactRefs;
+        internal int kScatterCoarseContactRefs;
 
         internal ComputeBuffer CollisionEventsBuffer => collisionEvents;
         internal ComputeBuffer CollisionEventCountBuffer => collisionEventCount;
-        internal ComputeBuffer FineNodeContactCountPerNodeBuffer => fineNodeManifoldCount;
-        internal ComputeBuffer FineNodeContactsPerNodeBuffer => fineNodeManifold;
-        internal ComputeBuffer FineNodeContactLambdaBuffer => fineNodeContactLambda;
         internal ComputeBuffer CoarseContactsBuffer => coarseContacts;
         internal ComputeBuffer CoarseContactCountBuffer => coarseContactCount;
-        internal ComputeBuffer CoarseNodeContactCountPerNodeBuffer => coarseContactCount;
-        internal ComputeBuffer CoarseNodeContactsPerNodeBuffer => coarseContacts;
-        internal ComputeBuffer CoarseNodeContactLambdaBuffer => coarseNodeContactLambda;
         internal ComputeBuffer ColAnchorGiBuffer => colAnchorGi;
         internal ComputeBuffer ColNodeGi0Buffer => colNodeGi0;
         internal ComputeBuffer ColNodeGi1Buffer => colNodeGi1;
@@ -188,7 +181,7 @@ namespace GPU.Solver {
         internal ComputeBuffer XferColOBGiBuffer => xferColOBGi;
 
         internal int ClearCollisionEventCountKernel => -1;
-        internal int ClearTransferredCollisionKernel => kClearCoarseNodeContacts;
+        internal int ClearTransferredCollisionKernel => kClearCoarseContacts;
         internal int RestrictCollisionEventsToActivePairsKernel => -1;
 
         internal int BoundaryChunkSortCapacity => 1;
@@ -317,27 +310,18 @@ namespace GPU.Solver {
         internal void AllocateRuntimeBuffers(int newCapacity) {
             int collisionCapacity = math.max(4096, newCapacity * 32);
             int transferCapacity = newCapacity * Const.NeighborCount * Const.CollisionTransferManifoldSlots;
-            int fineNodeManifoldCapacity = newCapacity * 2;
-            int coarseNodeManifoldCapacity = newCapacity * 4;
             int stencilCapacity = collisionCapacity + transferCapacity;
 
             boundaryEdgeCapacity = math.max(2048, newCapacity * 12);
             pairCapacity = math.max(256, newCapacity * 2);
 
-            // FineNodeContact in XPBI.CollisionEventsNew.* is 52 bytes.
+            // Contact in XPBI.CollisionEventsNew.compute is 52 bytes.
             collisionEvents = new ComputeBuffer(collisionCapacity, sizeof(uint) * 6 + sizeof(float) * 4 + sizeof(float) * 2 + sizeof(float), ComputeBufferType.Structured);
             collisionEventCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
-            fineNodeManifoldCount = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
-            fineNodeManifoldOverflow = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
-            fineNodeManifold = new ComputeBuffer(fineNodeManifoldCapacity, sizeof(uint) * 6 + sizeof(float) * 4 + sizeof(float) * 2 + sizeof(float), ComputeBufferType.Structured);
-            fineNodeContactLambda = new ComputeBuffer(fineNodeManifoldCapacity, sizeof(float), ComputeBufferType.Structured);
-
-            // XPBI_NodeContact in XPBI.CollisionEventsNew.Transfer.hlsl is 52 bytes.
-            coarseContacts = new ComputeBuffer(coarseNodeManifoldCapacity, sizeof(uint) * 6 + sizeof(float) * 4 + sizeof(float) * 2 + sizeof(float), ComputeBufferType.Structured);
-            coarseContactCount = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
-            coarseNodeContactOverflow = new ComputeBuffer(newCapacity, sizeof(uint), ComputeBufferType.Structured);
-            coarseNodeContactLambda = new ComputeBuffer(coarseNodeManifoldCapacity, sizeof(float), ComputeBufferType.Structured);
+            // CoarseContact in XPBI.CollisionEventsNew.Transfer.hlsl is 40 bytes.
+            coarseContacts = new ComputeBuffer(transferCapacity, sizeof(uint) * 4 + sizeof(float) * 6, ComputeBufferType.Structured);
+            coarseContactCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
 
             colAnchorGi = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
             colNodeGi0 = new ComputeBuffer(stencilCapacity, sizeof(uint), ComputeBufferType.Structured);
@@ -407,14 +391,8 @@ namespace GPU.Solver {
         internal void ReleaseRuntimeBuffers() {
             ReleaseBuffer(ref collisionEvents);
             ReleaseBuffer(ref collisionEventCount);
-            ReleaseBuffer(ref fineNodeManifoldCount);
-            ReleaseBuffer(ref fineNodeManifoldOverflow);
-            ReleaseBuffer(ref fineNodeManifold);
-            ReleaseBuffer(ref fineNodeContactLambda);
             ReleaseBuffer(ref coarseContacts);
             ReleaseBuffer(ref coarseContactCount);
-            ReleaseBuffer(ref coarseNodeContactOverflow);
-            ReleaseBuffer(ref coarseNodeContactLambda);
 
             ReleaseBuffer(ref colAnchorGi);
             ReleaseBuffer(ref colNodeGi0);
@@ -513,12 +491,18 @@ namespace GPU.Solver {
             kBinBoundaryEdges = shader.FindKernel("BinBoundaryEdges");
             kBinBoundaryVertices = shader.FindKernel("BinBoundaryVertices");
             kBuildOwnerFeatureField = shader.FindKernel("BuildOwnerFeatureField");
-            kQueryNodeSurfaceContacts = shader.FindKernel("QueryNodeSurfaceContacts");
-            kQueryEdgeEdgeNodeContacts = shader.FindKernel("QueryEdgeEdgeNodeContacts");
-            kClearFineNodeManifolds = shader.FindKernel("ClearFineNodeManifolds");
-            kScatterFineNodeContactsToManifolds = shader.FindKernel("ScatterFineNodeContactsToManifolds");
-            kClearCoarseNodeContacts = shader.FindKernel("ClearCoarseNodeContacts");
-            kPropagateFineContactsToCoarse = shader.FindKernel("PropagateFineContactsToCoarse");
+            kQueryVertexContacts = shader.FindKernel("QueryVertexContacts");
+            kQueryEdgeEdgeContacts = shader.FindKernel("QueryEdgeEdgeContacts");
+            kClearCoarseContacts = shader.FindKernel("ClearCoarseContacts");
+            kPropagateVertexContacts = shader.FindKernel("PropagateVertexContacts");
+            kPropagateEdgeContacts = shader.FindKernel("PropagateEdgeContacts");
+            kClearNodeCollisionRefAux = shader.FindKernel("ClearNodeCollisionRefAux");
+            kBuildFineContactStencils = shader.FindKernel("BuildFineContactStencils");
+            kBuildCoarseContactStencils = shader.FindKernel("BuildCoarseContactStencils");
+            kExclusiveScanNodeCollisionRefCount = shader.FindKernel("ExclusiveScanNodeCollisionRefCount");
+            kClearNodeCollisionRefWrite = shader.FindKernel("ClearNodeCollisionRefWrite");
+            kScatterFineContactRefs = shader.FindKernel("ScatterFineContactRefs");
+            kScatterCoarseContactRefs = shader.FindKernel("ScatterCoarseContactRefs");
         }
 
         private void BindStencilKernelBuffers(CommandBuffer cb, int kernel) {
@@ -550,14 +534,17 @@ namespace GPU.Solver {
         }
 
         private void BindTransferKernelBuffers(CommandBuffer cb, int kernel) {
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeContacts", collisionEvents);
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeContactCount", collisionEventCount);
+            cb.SetComputeBufferParam(shader, kernel, "_Pos", solver.pos);
+            cb.SetComputeBufferParam(shader, kernel, "_Vel", solver.vel);
+            cb.SetComputeBufferParam(shader, kernel, "_FineContacts", collisionEvents);
+            cb.SetComputeBufferParam(shader, kernel, "_FineContactCountBuffer", collisionEventCount);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV0Gi", boundaryEdgeV0Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryEdgeV1Gi", boundaryEdgeV1Gi);
+            cb.SetComputeBufferParam(shader, kernel, "_BoundaryVertexGi", boundaryVertexGi);
             cb.SetComputeBufferParam(shader, kernel, "_LayerParentIndices", solver.parentIndices);
             cb.SetComputeBufferParam(shader, kernel, "_LayerParentWeights", solver.parentWeights);
-            cb.SetComputeBufferParam(shader, kernel, "_CoarseNodeContacts", coarseContacts);
-            cb.SetComputeBufferParam(shader, kernel, "_CoarseNodeContactCount", coarseContactCount);
-            cb.SetComputeBufferParam(shader, kernel, "_CoarseNodeContactOverflow", coarseNodeContactOverflow);
-            cb.SetComputeBufferParam(shader, kernel, "_CoarseNodeContactLambda", coarseNodeContactLambda);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContacts", coarseContacts);
+            cb.SetComputeBufferParam(shader, kernel, "_CoarseContactCount", coarseContactCount);
         }
 
         private int BuildOwnerPairs(int ownerCount) {
@@ -672,11 +659,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kernel, "_SdfFeatType", sdfFeatType);
             cb.SetComputeBufferParam(shader, kernel, "_SdfFeatId", sdfFeatId);
 
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeContacts", collisionEvents);
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeContactCount", collisionEventCount);
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeManifoldCount", fineNodeManifoldCount);
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeManifoldOverflow", fineNodeManifoldOverflow);
-            cb.SetComputeBufferParam(shader, kernel, "_FineNodeManifold", fineNodeManifold);
+            cb.SetComputeBufferParam(shader, kernel, "_Contacts", collisionEvents);
+            cb.SetComputeBufferParam(shader, kernel, "_ContactCount", collisionEventCount);
         }
 
         private void PrepareLayer0BuildBuffers(
@@ -729,15 +713,13 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_MaxBoundaryEdgesPerOwner", maxBoundaryEdgesPerOwner);
             cb.SetComputeIntParam(shader, "_MaxEdgesPerBin", maxEdgesPerBin);
             cb.SetComputeIntParam(shader, "_MaxVertsPerBin", maxVertsPerBin);
-            cb.SetComputeIntParam(shader, "_MaxFineNodeContacts", collisionEvents != null ? collisionEvents.count : 0);
+            cb.SetComputeIntParam(shader, "_MaxContacts", collisionEvents != null ? collisionEvents.count : 0);
             cb.SetComputeIntParam(shader, "_MaxGridDimX", SdfResolution);
             cb.SetComputeIntParam(shader, "_MaxGridDimY", SdfResolution);
             cb.SetComputeIntParam(shader, "_QueryPairCount", queryPairCount);
             cb.SetComputeIntParam(shader, "_QuerySwap", 0);
-            cb.SetComputeIntParam(shader, "_FineContactCount", collisionEvents != null ? collisionEvents.count : 0);
-            cb.SetComputeIntParam(shader, "_ActiveCount", layer0ActiveCount);
+            cb.SetComputeIntParam(shader, "_MaxCoarseContacts", coarseContacts != null ? coarseContacts.count : 0);
             cb.SetComputeIntParam(shader, "_CoarseParentsPerNode", 2);
-            cb.SetComputeIntParam(shader, "_CoarseNodeContactStride", 4);
 
             cb.SetComputeFloatParam(shader, "_LayerKernelH", layer0KernelH);
             cb.SetComputeFloatParam(shader, "_CollisionSupportScale", Const.CollisionSupportScale);
@@ -752,10 +734,8 @@ namespace GPU.Solver {
                 kBinBoundaryEdges,
                 kBinBoundaryVertices,
                 kBuildOwnerFeatureField,
-                kQueryNodeSurfaceContacts,
-                kQueryEdgeEdgeNodeContacts,
-                kClearFineNodeManifolds,
-                kScatterFineNodeContactsToManifolds,
+                kQueryVertexContacts,
+                kQueryEdgeEdgeContacts,
             };
 
             ComputeBuffer globalVertexByLocal = dtGlobalNodeMap;
@@ -764,8 +744,25 @@ namespace GPU.Solver {
             for (int i = 0; i < kernels.Length; i++)
                 BindKernelBuffers(cb, kernels[i], layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal, dtGlobalToLayerLocalMap, useDtGlobalNodeMap);
 
-            BindTransferKernelBuffers(cb, kClearCoarseNodeContacts);
-            BindTransferKernelBuffers(cb, kPropagateFineContactsToCoarse);
+            BindTransferKernelBuffers(cb, kClearCoarseContacts);
+            BindTransferKernelBuffers(cb, kPropagateVertexContacts);
+            BindTransferKernelBuffers(cb, kPropagateEdgeContacts);
+
+            int[] stencilKernels = {
+                kClearNodeCollisionRefAux,
+                kBuildFineContactStencils,
+                kBuildCoarseContactStencils,
+                kExclusiveScanNodeCollisionRefCount,
+                kClearNodeCollisionRefWrite,
+                kScatterFineContactRefs,
+                kScatterCoarseContactRefs,
+            };
+
+            for (int i = 0; i < stencilKernels.Length; i++) {
+                int k = stencilKernels[i];
+                BindKernelBuffers(cb, k, layer0Dt, dtReadSlot, dtOwnerByLocal, globalVertexByLocal, dtGlobalToLayerLocalMap, useDtGlobalNodeMap);
+                BindStencilKernelBuffers(cb, k);
+            }
 
             _ = layer0NeighborSearch;
             _ = dtGlobalToLayerLocalMap;

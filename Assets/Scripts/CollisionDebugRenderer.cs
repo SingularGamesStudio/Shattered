@@ -152,32 +152,30 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
     [StructLayout(LayoutKind.Sequential)]
     struct CollisionEventGpu {
-        public uint ownerSlave;
-        public uint ownerMaster;
-        public uint slaveGi;
-        public uint masterGi0;
-        public uint masterGi1;
-        public float masterW1;
-        public float2 n;
-        public float pen;
-        public float scale;
-        public float2 x;
-        public uint flags;
+        public uint ownerA;
+        public uint ownerB;
+        public uint nodeGi0;
+        public uint nodeGi1;
+        public uint nodeGi2;
+        public uint nodeGi3;
+        public float beta0;
+        public float beta1;
+        public float beta2;
+        public float beta3;
+        public float2 normal;
+        public float penetration;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     struct CoarseContactGpu {
-        public uint ownerSlave;
-        public uint ownerMaster;
-        public uint slaveGi;
-        public uint masterGi0;
-        public uint masterGi1;
-        public float masterW1;
-        public float2 n;
-        public float pen;
-        public float scale;
-        public float2 x;
-        public uint flags;
+        public uint ownerA;
+        public uint ownerB;
+        public uint coarseGiA;
+        public uint coarseGiB;
+        public float2 normal;
+        public float penetration;
+        public float weight;
+        public float2 point;
     }
 
     [Header("Readback")]
@@ -460,13 +458,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (collisionCount > 0)
             snapshot.CollisionEvents.GetData(collisionEvents, 0, 0, collisionCount);
 
-        EnsureCapacity(ref coarseCollisionEvents, snapshot.CoarseContactCapacity);
-        if (snapshot.CoarseContactCapacity > 0) {
-            snapshot.CoarseContacts.GetData(coarseCollisionEvents, 0, 0, snapshot.CoarseContactCapacity);
-            coarseCollisionCount = CompactValidCoarseContacts(coarseCollisionEvents, snapshot.CoarseContactCapacity);
-        } else {
-            coarseCollisionCount = 0;
-        }
+        EnsureCapacity(ref coarseCollisionEvents, coarseCollisionCount);
+        if (coarseCollisionCount > 0)
+            snapshot.CoarseContacts.GetData(coarseCollisionEvents, 0, 0, coarseCollisionCount);
 
         lastActiveCount = snapshot.ActiveCount;
         lastTotalCount = snapshot.TotalCount;
@@ -789,21 +783,19 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         }
 
         var data = request.GetData<uint>();
-        int count = 0;
-        int nodeCount = Mathf.Min(state.TotalCount, data.Length);
-        for (int i = 0; i < nodeCount; i++)
-            count += Mathf.Clamp((int)data[i], 0, 4);
-        state.CoarseCollisionCount = Mathf.Clamp(count, 0, coarseCollisionCapacity);
+        int count = (data.Length > 0) ? Mathf.Clamp((int)data[0], 0, coarseCollisionCapacity) : 0;
+
+        state.CoarseCollisionCount = count;
         state.CoarseCollisionCountReady = true;
 
-        if (coarseCollisionCapacity <= 0) {
+        if (count <= 0) {
             state.CoarseCollisions = Array.Empty<CoarseContactGpu>();
             state.CoarseCollisionDataReady = true;
             TryFinalizeAsync(state);
             return;
         }
 
-        int bytes = coarseCollisionCapacity * Marshal.SizeOf<CoarseContactGpu>();
+        int bytes = count * Marshal.SizeOf<CoarseContactGpu>();
         AsyncGPUReadback.Request(coarseCollisionBuffer, bytes, 0, req => OnAsyncCoarseCollisionData(req, requestId));
     }
 
@@ -820,7 +812,6 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         var data = request.GetData<CoarseContactGpu>();
         state.CoarseCollisions = new CoarseContactGpu[data.Length];
         data.CopyTo(state.CoarseCollisions);
-        state.CoarseCollisionCount = CompactValidCoarseContacts(state.CoarseCollisions, state.CoarseCollisions.Length);
         state.CoarseCollisionDataReady = true;
 
         TryFinalizeAsync(state);
@@ -947,7 +938,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     continue;
                 }
 
-                float2 n = evt.n;
+                float2 n = evt.normal;
                 float nLen = math.length(n);
                 if (!(nLen > 1e-6f)) {
                     lastArrowSkippedDegenerate++;
@@ -965,7 +956,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     c += side * (overlapCount * overlapFanoutWorld);
                 }
 
-                float shaftLength = math.max(minArrowLength, evt.pen * arrowScale);
+                float shaftLength = math.max(minArrowLength, evt.penetration * arrowScale);
                 if (cam != null && cam.orthographic) {
                     float worldPerPixel = (2f * cam.orthographicSize) / math.max(1f, Screen.height);
                     float minVisibleLen = 6f * worldPerPixel;
@@ -995,7 +986,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     : i;
 
                 CoarseContactGpu evt = coarseCollisionEvents[sourceIndex];
-                float2 n = evt.n;
+                float2 n = evt.normal;
                 float nLen = math.length(n);
                 if (!(nLen > 1e-6f))
                     continue;
@@ -1004,7 +995,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                 if (!TryResolveCoarseContactOrigin(evt, invHalfExtent, out float2 c))
                     continue;
 
-                float shaftLength = math.max(minArrowLength, evt.pen * arrowScale);
+                float shaftLength = math.max(minArrowLength, evt.penetration * arrowScale);
                 if (cam != null && cam.orthographic) {
                     float worldPerPixel = (2f * cam.orthographicSize) / math.max(1f, Screen.height);
                     float minVisibleLen = 6f * worldPerPixel;
@@ -1142,115 +1133,143 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     bool IsFinite(float2 v) =>
     math.all(math.isfinite(v));
 
-    static bool IsValidNodeContact(in CollisionEventGpu evt) {
-        if (evt.ownerSlave == InvalidU32 || evt.ownerMaster == InvalidU32)
-            return false;
-        if (evt.slaveGi == InvalidU32 || evt.masterGi0 == InvalidU32)
-            return false;
-        if (!(evt.pen > 0f) || !(evt.scale > 1e-9f))
-            return false;
-        return true;
-    }
+bool IsValidGi(uint gi) =>
+    gi != InvalidU32;
 
-    static bool IsValidNodeContact(in CoarseContactGpu evt) {
-        if (evt.ownerSlave == InvalidU32 || evt.ownerMaster == InvalidU32)
-            return false;
-        if (evt.slaveGi == InvalidU32 || evt.masterGi0 == InvalidU32)
-            return false;
-        if (!(evt.pen > 0f) || !(evt.scale > 1e-9f))
-            return false;
-        return true;
-    }
+bool TryResolveContactSidePoint(
+    uint[] gi,
+    float[] beta,
+    float invHalfExtent,
+    bool wantPositive,
+    out float2 point)
+{
+    point = default;
 
-    static int CompactValidCoarseContacts(CoarseContactGpu[] contacts, int count) {
-        if (contacts == null || count <= 0)
-            return 0;
+    float w = 0f;
+    float2 acc = 0f;
 
-        int emitted = 0;
-        int clamped = Mathf.Min(count, contacts.Length);
-        for (int i = 0; i < clamped; i++) {
-            CoarseContactGpu evt = contacts[i];
-            if (!IsValidNodeContact(evt))
+    for (int i = 0; i < 4; i++) {
+        uint g = gi[i];
+        if (!IsValidGi(g))
+            continue;
+
+        float b = beta[i];
+        if (wantPositive) {
+            if (b <= 1e-12f)
                 continue;
-
-            float nLen2 = math.lengthsq(evt.n);
-            if (!(nLen2 > 1e-20f))
+        } else {
+            if (b >= -1e-12f)
                 continue;
-
-            contacts[emitted++] = evt;
+            b = -b;
         }
 
-        return emitted;
+        if (!TryGetWorldPoint((int)g, invHalfExtent, out float2 p))
+            continue;
+        if (!IsFinite(p))
+            continue;
+
+        acc += p * b;
+        w += b;
     }
-    bool TryResolveNodeContactOriginRaw(
-        uint slaveGi,
-        uint masterGi0,
-        uint masterGi1,
-        float masterW1,
-        float2 nIn,
-        float pen,
-        float2 xStored,
-        float invHalfExtent,
-        out float2 origin)
-    {
-        origin = default;
 
-        float2 n = nIn;
-        float n2 = math.lengthsq(n);
-        bool hasNormal = n2 > 1e-20f;
-        if (hasNormal)
-            n *= math.rsqrt(n2);
-        else
-            n = 0f;
-
-        bool hasSlave = TryGetWorldPoint((int)slaveGi, invHalfExtent, out float2 pSlave) && IsFinite(pSlave);
-
-        if (hasSlave) {
-            origin = pSlave;
-            return true;
-        }
-
+    if (w <= 1e-12f)
         return false;
+
+    point = acc / w;
+    return IsFinite(point);
+}
+
+bool TryResolveFineContactOrigin(CollisionEventGpu evt, float invHalfExtent, out float2 origin) {
+    origin = default;
+
+    float2 n = evt.normal;
+    float n2 = math.lengthsq(n);
+    bool hasNormal = n2 > 1e-20f;
+    if (hasNormal)
+        n *= math.rsqrt(n2);
+    else
+        n = 0f;
+
+    uint[] gi = { evt.nodeGi0, evt.nodeGi1, evt.nodeGi2, evt.nodeGi3 };
+    float[] beta = { evt.beta0, evt.beta1, evt.beta2, evt.beta3 };
+
+    bool hasA = TryResolveContactSidePoint(gi, beta, invHalfExtent, wantPositive: false, out float2 pA);
+    bool hasB = TryResolveContactSidePoint(gi, beta, invHalfExtent, wantPositive: true, out float2 pB);
+
+    if (hasA && hasB) {
+        origin = 0.5f * (pA + pB);
+        return IsFinite(origin);
     }
-    bool TryResolveFineContactOrigin(CollisionEventGpu evt, float invHalfExtent, out float2 origin)
-    {
-        origin = default;
 
-        if (!IsValidNodeContact(evt))
-            return false;
+    float pen = math.max(evt.penetration, 0f);
 
-        return TryResolveNodeContactOriginRaw(
-            evt.slaveGi,
-            evt.masterGi0,
-            evt.masterGi1,
-            evt.masterW1,
-            evt.n,
-            evt.pen,
-            evt.x,
-            invHalfExtent,
-            out origin);
+    if (hasA) {
+        origin = hasNormal ? (pA + 0.5f * pen * n) : pA;
+        return IsFinite(origin);
     }
-    bool TryResolveCoarseContactOrigin(CoarseContactGpu evt, float invHalfExtent, out float2 origin)
-    {
-        origin = default;
 
-        if (!IsValidNodeContact(evt))
-            return false;
-
-        return TryResolveNodeContactOriginRaw(
-            evt.slaveGi,
-            evt.masterGi0,
-            evt.masterGi1,
-            evt.masterW1,
-            evt.n,
-            evt.pen,
-            evt.x,
-            invHalfExtent,
-            out origin);
+    if (hasB) {
+        origin = hasNormal ? (pB - 0.5f * pen * n) : pB;
+        return IsFinite(origin);
     }
+
+    return false;
+}
+
+bool TryResolveCoarseContactOrigin(CoarseContactGpu evt, float invHalfExtent, out float2 origin) {
+    origin = default;
+
+    float2 n = evt.normal;
+    float n2 = math.lengthsq(n);
+    bool hasNormal = n2 > 1e-20f;
+    if (hasNormal)
+        n *= math.rsqrt(n2);
+    else
+        n = 0f;
+
+    if (IsFinite(evt.point)) {
+        origin = evt.point;
+        return true;
+    }
+
+    bool hasA = false;
+    bool hasB = false;
+    float2 a = 0f;
+    float2 b = 0f;
+
+    if (evt.coarseGiA != InvalidU32)
+        hasA = TryGetWorldPoint((int)evt.coarseGiA, invHalfExtent, out a) && IsFinite(a);
+
+    if (evt.coarseGiB != InvalidU32)
+        hasB = TryGetWorldPoint((int)evt.coarseGiB, invHalfExtent, out b) && IsFinite(b);
+
+    if (hasA && hasB) {
+        origin = 0.5f * (a + b);
+        return IsFinite(origin);
+    }
+
+    float pen = math.max(evt.penetration, 0f);
+
+    if (hasA) {
+        origin = hasNormal ? (a + 0.5f * pen * n) : a;
+        return IsFinite(origin);
+    }
+
+    if (hasB) {
+        origin = hasNormal ? (b - 0.5f * pen * n) : b;
+        return IsFinite(origin);
+    }
+
+    return false;
+}
 
     static bool IsLikelyEdgeEdgeFineContact(CollisionEventGpu evt) {
-        return (evt.flags & 1u) != 0u;
+        int validNodes = 0;
+        if (evt.nodeGi0 != InvalidU32) validNodes++;
+        if (evt.nodeGi1 != InvalidU32) validNodes++;
+        if (evt.nodeGi2 != InvalidU32) validNodes++;
+        if (evt.nodeGi3 != InvalidU32) validNodes++;
+        return validNodes >= 4;
     }
 
     bool DrawCollisionArrow(Camera cam, float2 origin, float2 direction, float shaftLength, float thickness, Color arrowColor) {
@@ -1284,8 +1303,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (!colorArrowsByOwnerPair)
             return collisionArrowColor;
 
-        uint a = evt.ownerSlave;
-        uint b = evt.ownerMaster;
+        uint a = evt.ownerA;
+        uint b = evt.ownerB;
         if (b < a) {
             uint t = a;
             a = b;

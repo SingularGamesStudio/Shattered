@@ -115,14 +115,8 @@ namespace GPU.Solver {
             int queryWorkItems = math.max(1, MaxBoundaryEdgesPerOwner * pairDispatchCount);
             int queryGroupsX = Groups64(queryWorkItems);
 
-            Dispatch(session.AsyncCb, "XPBI.QueryNodeSurfaceContactsAB", shader, kQueryNodeSurfaceContacts, queryGroupsX, 1, 1);
-            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 1);
-            Dispatch(session.AsyncCb, "XPBI.QueryNodeSurfaceContactsBA", shader, kQueryNodeSurfaceContacts, queryGroupsX, 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.QueryEdgeEdgeNodeContacts", shader, kQueryEdgeEdgeNodeContacts, queryGroupsX, 1, 1);
-
-            int scatterFineGroups = Groups64(math.max(1, collisionEvents != null ? collisionEvents.count : 0));
-            Dispatch(session.AsyncCb, "XPBI.ClearFineNodeManifolds", shader, kClearFineNodeManifolds, Groups64(math.max(1, layer0ActiveCount * 2)), 1, 1);
-            Dispatch(session.AsyncCb, "XPBI.ScatterFineNodeContactsToManifolds", shader, kScatterFineNodeContactsToManifolds, scatterFineGroups, 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.QueryVertexContactsAB", shader, kQueryVertexContacts, queryGroupsX, 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.QueryEdgeEdgeContacts", shader, kQueryEdgeEdgeContacts, queryGroupsX, 1, 1);
 
             session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
         }
@@ -131,8 +125,37 @@ namespace GPU.Solver {
         // Layer 0: build fine stencil + CSR immediately before solving layer 0.
         // ------------------------------------------------------------------------
         internal void RecordLayer0StencilBuild(SolveSession session, LayerContext layerContext) {
-            _ = session;
-            _ = layerContext;
+            if (layerContext == null || layerContext.Layer != 0)
+                return;
+
+            int[] stencilKernels = {
+                kClearNodeCollisionRefAux,
+                kBuildFineContactStencils,
+                kExclusiveScanNodeCollisionRefCount,
+                kClearNodeCollisionRefWrite,
+                kScatterFineContactRefs,
+            };
+
+            for (int i = 0; i < stencilKernels.Length; i++) {
+                solver.layerMappingCache.BindDtGlobalMappingParams(
+                    session.AsyncCb,
+                    shader,
+                    stencilKernels[i],
+                    layerContext.UseMappedIndices,
+                    0,
+                    layerContext.GlobalNodeMap,
+                    layerContext.GlobalToLocalMap);
+            }
+
+            session.AsyncCb.SetComputeIntParam(shader, "_ActiveCount", layerContext.ActiveCount);
+            session.AsyncCb.SetComputeIntParam(shader, "_CollisionEventCapacity", collisionEvents != null ? collisionEvents.count : 0);
+            session.AsyncCb.SetComputeIntParam(shader, "_CoarseContactCapacity", coarseContacts != null ? coarseContacts.count : 0);
+
+            Dispatch(session.AsyncCb, "XPBI.ClearNodeCollisionRefAuxFine", shader, kClearNodeCollisionRefAux, Groups64(math.max(1, layerContext.ActiveCount)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.BuildFineContactStencils", shader, kBuildFineContactStencils, Groups64(math.max(1, collisionEvents != null ? collisionEvents.count : 0)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ExclusiveScanNodeCollisionRefCountFine", shader, kExclusiveScanNodeCollisionRefCount, 1, 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ClearNodeCollisionRefWriteFine", shader, kClearNodeCollisionRefWrite, Groups64(math.max(1, layerContext.ActiveCount)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ScatterFineContactRefs", shader, kScatterFineContactRefs, Groups64(math.max(1, collisionEvents != null ? collisionEvents.count : 0)), 1, 1);
         }
 
         // ------------------------------------------------------------------------
@@ -142,7 +165,7 @@ namespace GPU.Solver {
             if (layerContext == null || layerContext.Layer <= 0)
                 return;
 
-            if (kClearCoarseNodeContacts < 0 || kPropagateFineContactsToCoarse < 0)
+            if (kClearCoarseContacts < 0 || kPropagateVertexContacts < 0 || kPropagateEdgeContacts < 0)
                 return;
 
             if (collisionEvents == null || coarseContacts == null)
@@ -153,36 +176,48 @@ namespace GPU.Solver {
             // Capacity is still okay for dispatch sizing, but the shader-side propagation
             // kernels should clamp against the actual emitted fine count buffer, not treat
             // this as the real fine-contact count.
-            session.AsyncCb.SetComputeIntParam(shader, "_FineContactCount", collisionEvents.count);
-            session.AsyncCb.SetComputeIntParam(shader, "_MaxFineNodeContacts", collisionEvents.count);
-            session.AsyncCb.SetComputeIntParam(shader, "_ActiveCount", layerContext.ActiveCount);
-            session.AsyncCb.SetComputeIntParam(shader, "_CoarseNodeContactStride", 4);
+            session.AsyncCb.SetComputeIntParam(shader, "_FineContactCapacity", collisionEvents.count);
+            session.AsyncCb.SetComputeIntParam(shader, "_MaxCoarseContacts", coarseContacts.count);
             session.AsyncCb.SetComputeIntParam(shader, "_CoarseParentsPerNode", coarseParentsPerNode);
 
-            solver.layerMappingCache.BindDtGlobalMappingParams(
-                session.AsyncCb,
-                shader,
-                kClearCoarseNodeContacts,
-                layerContext.UseMappedIndices,
-                0,
-                layerContext.GlobalNodeMap,
-                layerContext.GlobalToLocalMap);
-
-            solver.layerMappingCache.BindDtGlobalMappingParams(
-                session.AsyncCb,
-                shader,
-                kPropagateFineContactsToCoarse,
-                layerContext.UseMappedIndices,
-                0,
-                layerContext.GlobalNodeMap,
-                layerContext.GlobalToLocalMap);
-
-            int clearWork = math.max(layerContext.ActiveCount, layerContext.ActiveCount * 4);
-            Dispatch(session.AsyncCb, "XPBI.ClearCoarseNodeContacts", shader, kClearCoarseNodeContacts, Groups64(math.max(1, clearWork)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ClearCoarseContacts", shader, kClearCoarseContacts, Groups64(coarseContacts.count), 1, 1);
 
             int vertexWork = (int)math.min((long)collisionEvents.count * coarseParentsPerNode, int.MaxValue);
             if (vertexWork > 0)
-                Dispatch(session.AsyncCb, "XPBI.PropagateFineContactsToCoarse", shader, kPropagateFineContactsToCoarse, Groups64(vertexWork), 1, 1);
+                Dispatch(session.AsyncCb, "XPBI.PropagateVertexContacts", shader, kPropagateVertexContacts, Groups64(vertexWork), 1, 1);
+
+            int edgeWork = (int)math.min((long)collisionEvents.count * 4L, int.MaxValue);
+            if (edgeWork > 0)
+                Dispatch(session.AsyncCb, "XPBI.PropagateEdgeContacts", shader, kPropagateEdgeContacts, Groups64(edgeWork), 1, 1);
+
+            int[] stencilKernels = {
+                kClearNodeCollisionRefAux,
+                kBuildCoarseContactStencils,
+                kExclusiveScanNodeCollisionRefCount,
+                kClearNodeCollisionRefWrite,
+                kScatterCoarseContactRefs,
+            };
+
+            for (int i = 0; i < stencilKernels.Length; i++) {
+                solver.layerMappingCache.BindDtGlobalMappingParams(
+                    session.AsyncCb,
+                    shader,
+                    stencilKernels[i],
+                    layerContext.UseMappedIndices,
+                    0,
+                    layerContext.GlobalNodeMap,
+                    layerContext.GlobalToLocalMap);
+            }
+
+            session.AsyncCb.SetComputeIntParam(shader, "_ActiveCount", layerContext.ActiveCount);
+            session.AsyncCb.SetComputeIntParam(shader, "_CollisionEventCapacity", collisionEvents != null ? collisionEvents.count : 0);
+            session.AsyncCb.SetComputeIntParam(shader, "_CoarseContactCapacity", coarseContacts != null ? coarseContacts.count : 0);
+
+            Dispatch(session.AsyncCb, "XPBI.ClearNodeCollisionRefAuxCoarse", shader, kClearNodeCollisionRefAux, Groups64(math.max(1, layerContext.ActiveCount)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.BuildCoarseContactStencils", shader, kBuildCoarseContactStencils, Groups64(math.max(1, coarseContacts.count)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ExclusiveScanNodeCollisionRefCountCoarse", shader, kExclusiveScanNodeCollisionRefCount, 1, 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ClearNodeCollisionRefWriteCoarse", shader, kClearNodeCollisionRefWrite, Groups64(math.max(1, layerContext.ActiveCount)), 1, 1);
+            Dispatch(session.AsyncCb, "XPBI.ScatterCoarseContactRefs", shader, kScatterCoarseContactRefs, Groups64(math.max(1, coarseContacts.count)), 1, 1);
         }
     }
 }
