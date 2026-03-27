@@ -188,6 +188,8 @@ void CacheF0AndResetLambda(uint3 id : SV_DispatchThreadID)
 	if (gi == ~0u) return;
 	_F0[gi] = _F[gi];
 	_Lambda[gi] = 0.0;
+	_LambdaVolumeComp[gi] = 0.0;
+	_LambdaVolumeExp[gi] = 0.0;
 }
 
 [numthreads(256, 1, 1)]

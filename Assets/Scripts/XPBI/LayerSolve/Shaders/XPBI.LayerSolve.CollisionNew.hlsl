@@ -241,16 +241,15 @@ if (li < active)
         float lambdaPrev = XPBI_COL_READ_LAMBDA(lambdaIdx);
 
         float dLambda = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
-        float lambdaNewRaw = max(0.0, lambdaPrev + dLambda);
-
-        float appliedDLambda = lambdaNewRaw - lambdaPrev;
         float relax = saturate(_CollisionRelaxation);
-        appliedDLambda *= relax;
+        float lambdaTarget = max(0.0, lambdaPrev + dLambda);
+        float lambdaNew    = lerp(lambdaPrev, lambdaTarget, relax);
+        float appliedDLambda = lambdaNew - lambdaPrev;
 
-        if (appliedDLambda <= 0.0)
+        XPBI_COL_WRITE_LAMBDA(lambdaIdx, lambdaNew);
+
+        if (abs(appliedDLambda) <= EPS)
             continue;
-
-        float lambdaNew = lambdaPrev + appliedDLambda;
 
         // --------------------------------------------------------------------
         // Relative velocity terms for restitution / friction.

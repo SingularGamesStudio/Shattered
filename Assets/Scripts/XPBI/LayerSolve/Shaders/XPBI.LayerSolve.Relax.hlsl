@@ -47,7 +47,6 @@
 if (!XPBI_ACTIVE_I(li, gi)) return;
 
 float2 xi = XPBI_POS(li, gi);
-float2 vi = XPBI_VEL(li, gi);
 
 float damageIPrev = XPBI_DAMAGE_I(li, gi);
 float kappaIPrev = XPBI_KAPPA_I(li, gi);
@@ -66,7 +65,6 @@ float damageMax = _DamageMax;
 float cohesivePairScale = XPBI_ClampSymmetricPairScale(_CohesivePairScale);
 
 Mat2 Lm = Mat2FromFloat4(XPBI_L_FROM_I(li, gi));
-Mat2 gradV = Mat2Zero();
 
 static const uint MAX_N = 16u;
 uint  nb_gjLi[MAX_N];
@@ -100,10 +98,6 @@ uint k = 0u;
     if (Vb <= EPS) continue;
 
     float2 correctedGrad = MulMat2Vec(Lm, gradW);
-    float2 dv = XPBI_VEL(gjLi, gj) - vi;
-
-    gradV.c0 += dv * (Vb * correctedGrad.x);
-    gradV.c1 += dv * (Vb * correctedGrad.y);
 
     nb_gjLi[k] = gjLi;
     nb_corrGrad[k] = correctedGrad;
@@ -119,21 +113,55 @@ if (k < 3u)
 }
 
 Mat2 F0 = Mat2FromFloat4(XPBI_F0_FROM_I(li, gi));
-Mat2 I = Mat2Identity();
-Mat2 dF = Mat2FromCols(I.c0 + gradV.c0 * _Dt, I.c1 + gradV.c1 * _Dt);
-if (DetMat2(dF) <= 0.0)
-{
-    return;
-}
-
-Mat2 Ftrial = MulMat2(dF, F0);
-
 float yieldHencky = ReadMaterialYieldHencky(gi);
 float volHenckyLimit = ReadMaterialVolHenckyLimit(gi);
-Mat2 Fel = ApplyPlasticityReturn(Ftrial, yieldHencky, volHenckyLimit,
-    STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 
-if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1)))
+float2 kin_vi = 0.0;
+Mat2 kin_gradV = Mat2Zero();
+Mat2 kin_dF = Mat2Zero();
+Mat2 kin_Ftrial = Mat2Zero();
+Mat2 kin_Fel = Mat2Zero();
+float kin_Jraw = 0.0;
+
+#define XPBI_REBUILD_KINEMATICS(okOut_) \
+{ \
+    (okOut_) = true; \
+    kin_vi = XPBI_VEL(li, gi); \
+    kin_gradV = Mat2Zero(); \
+    [loop] for (uint nIdxK = 0u; nIdxK < MAX_N; nIdxK++) \
+    { \
+        if (nIdxK >= k) break; \
+        uint gjLiK = nb_gjLi[nIdxK]; \
+        uint gjK = XPBI_GET_GJ(gjLiK); \
+        if (gjK == ~0u) continue; \
+        float2 dvK = XPBI_VEL(gjLiK, gjK) - kin_vi; \
+        float2 gK = nb_corrGrad[nIdxK]; \
+        float VbK = nb_Vb[nIdxK]; \
+        kin_gradV.c0 += dvK * (VbK * gK.x); \
+        kin_gradV.c1 += dvK * (VbK * gK.y); \
+    } \
+    Mat2 IKin = Mat2Identity(); \
+    kin_dF = Mat2FromCols(IKin.c0 + kin_gradV.c0 * _Dt, IKin.c1 + kin_gradV.c1 * _Dt); \
+    if (DetMat2(kin_dF) <= 0.0) \
+    { \
+        (okOut_) = false; \
+    } \
+    else \
+    { \
+        kin_Ftrial = MulMat2(kin_dF, F0); \
+        kin_Jraw = DetMat2(kin_Ftrial); \
+        kin_Fel = ApplyPlasticityReturn(kin_Ftrial, yieldHencky, volHenckyLimit, \
+            STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS); \
+        if (!all(isfinite(kin_Fel.c0)) || !all(isfinite(kin_Fel.c1))) \
+        { \
+            (okOut_) = false; \
+        } \
+    } \
+}
+
+bool kinOk = false;
+XPBI_REBUILD_KINEMATICS(kinOk);
+if (!kinOk)
 {
     return;
 }
@@ -141,7 +169,7 @@ if (!all(isfinite(Fel.c0)) || !all(isfinite(Fel.c1)))
 float mu0 = 0.0, lambda0 = 0.0;
 ComputeMaterialLame(gi, mu0, lambda0);
 
-float tensilePsi = XPBI_TensileHenckyEnergy2D(Fel, mu0, lambda0, STRETCH_EPS);
+float tensilePsi = XPBI_TensileHenckyEnergy2D(kin_Fel, mu0, lambda0, STRETCH_EPS);
 float damageDriver = (damageEnergyWeight * tensilePsi) / max(fractureEnergy, EPS);
 float tensileAct = saturate((tensilePsi - damageOnset) / max(damageSoftening, EPS));
 
@@ -187,7 +215,7 @@ float maxDeltaVCoh2 = maxDeltaVCohPerIter * maxDeltaVCohPerIter;
         if (tensileAct <= 0.0) continue;
 
         float2 vj = XPBI_VEL(gjLi, gj);
-        float vOpen = dot(vj - vi, n);
+        float vOpen = dot(vj - kin_vi, n);
         if (vOpen <= 0.0) continue;
 
         float traction = cohesivePairScale * pairDegrade * cohEval.traction;
@@ -215,7 +243,7 @@ float maxDeltaVCoh2 = maxDeltaVCohPerIter * maxDeltaVCohPerIter;
 }
 #else
 {
-    float2 viLocal = XPBI_VEL(li, gi);
+    float2 viLocal = kin_vi;
 
     [loop] for (uint nIdxC = 0u; nIdxC < MAX_N; nIdxC++)
     {
@@ -274,7 +302,6 @@ float maxDeltaVCoh2 = maxDeltaVCohPerIter * maxDeltaVCohPerIter;
     }
 
     XPBI_SET_VEL(li, gi, viLocal);
-    vi = viLocal;
 }
 #endif
 
@@ -283,11 +310,26 @@ float maxDeltaVCoh2 = maxDeltaVCohPerIter * maxDeltaVCohPerIter;
 // Expansion branch:   J > _VolumeJHigh
 // Uses same F pipeline as current sim volume proxy.
 
+XPBI_REBUILD_KINEMATICS(kinOk);
+if (!kinOk)
+{
+#if XPBI_APPLY_MODE_JR
+    float lambdaVolCompCur = XPBI_VOL_LAMBDA_COMP(li, gi);
+    float lambdaVolExpCur  = XPBI_VOL_LAMBDA_EXP(li, gi);
+    if (abs(lambdaVolCompCur) > 0.0) XPBI_SCATTER_DVOL_L_COMP(gi, -lambdaVolCompCur);
+    if (abs(lambdaVolExpCur)  > 0.0) XPBI_SCATTER_DVOL_L_EXP(gi,  -lambdaVolExpCur);
+#else
+    XPBI_SET_VOL_LAMBDA_COMP(li, gi, 0.0);
+    XPBI_SET_VOL_LAMBDA_EXP(li, gi, 0.0);
+#endif
+    return;
+}
+
 float lambdaVolCompBefore = XPBI_VOL_LAMBDA_COMP(li, gi);
 float lambdaVolExpBefore  = XPBI_VOL_LAMBDA_EXP(li, gi);
 
-Mat2 Fvol = Ftrial;
-float Jraw = DetMat2(Fvol);
+Mat2 Fvol = kin_Ftrial;
+float Jraw = kin_Jraw;
 
 if (!(Jraw > _VolumeJMin) || !isfinite(Jraw))
 {
@@ -335,7 +377,7 @@ else
 
         // Compression: C = Jlow - J, so dC/dF = -cof(F)
         // Expansion:   C = J - Jhigh, so dC/dF = +cof(F)
-        if (compActive)
+        if (!compActive)
             cofF = NegMat2(cofF);
         Mat2 MdVol = MulMat2(cofF, F0T);
 
@@ -470,10 +512,13 @@ else
 // --- degraded bulk XPBI solve ---
 // Stiffness is reduced by local damage, and pair transmission is reduced by min(g_i, g_j).
 
+XPBI_REBUILD_KINEMATICS(kinOk);
+if (!kinOk) return;
+
 float mu = mu0 * degradeI;
 float lambda = lambda0 * degradeI;
 
-float C = XPBI_ConstraintC(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+float C = XPBI_ConstraintC(kin_Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
 if (!isfinite(C)) return;
 
 if (_ConvergenceDebugEnable != 0)
@@ -490,8 +535,8 @@ if (_ConvergenceDebugEnable != 0)
 if (abs(C) < EPS) return;
 if (abs(C) > 5.0) return;
 
-Mat2 dCdF = XPBI_ComputeGradient(Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
-Mat2 FT = TransposeMat2(Fel);
+Mat2 dCdF = XPBI_ComputeGradient(kin_Fel, mu, lambda, STRETCH_EPS, EIGEN_OFFDIAG_EPS, INV_DET_EPS);
+Mat2 FT = TransposeMat2(kin_Fel);
 Mat2 Md = MulMat2(dCdF, FT);
 
 float alphaTilde = (_Compliance / EffectiveVolumeForCompliance(gi)) * invDt2;
@@ -632,3 +677,5 @@ if (pred2 > maxSpeedHalf2) return;
     XPBI_SET_LAMBDA(li, gi, lambdaBefore + dLambda);
 }
 #endif
+
+#undef XPBI_REBUILD_KINEMATICS

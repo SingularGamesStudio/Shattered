@@ -192,6 +192,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F", F);
             cb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_F0", actualRuntime.CachedF0);
             cb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_Lambda", actualRuntime.Lambda);
+            cb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_LambdaVolumeComp", actualRuntime.LambdaVolumeComp);
+            cb.SetComputeBufferParam(shader, kCacheF0AndResetLambda, "_LambdaVolumeExp", actualRuntime.LambdaVolumeExp);
 
             cb.SetComputeBufferParam(shader, kSaveVelPrefix, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kSaveVelPrefix, "_SavedVelPrefix", actualRuntime.SavedVelPrefix);

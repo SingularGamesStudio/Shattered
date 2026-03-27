@@ -40,6 +40,7 @@ Shader "Unlit/TriangulationAccum"
             int _MaterialCount;
             StructuredBuffer<float> _RestVolumes;
             StructuredBuffer<int> _UvModes;
+            StructuredBuffer<float4> _SpriteTints;
 
             StructuredBuffer<float2> _RestNormPositions;
             int _RealPointCount;
@@ -494,6 +495,7 @@ Shader "Unlit/TriangulationAccum"
                 nointerpolation int3 mats : TEXCOORD2;
                 nointerpolation int valid : TEXCOORD3;
                 nointerpolation int uvMode : TEXCOORD4;
+                nointerpolation float4 tint : TEXCOORD5;
             };
 
             v2f Vert(uint vid : SV_VertexID)
@@ -512,6 +514,7 @@ Shader "Unlit/TriangulationAccum"
                     o.mats = 0;
                     o.valid = 0;
                     o.uvMode = 0;
+                    o.tint = 1;
                     return o;
                 }
 
@@ -527,6 +530,7 @@ Shader "Unlit/TriangulationAccum"
                     o.mats = 0;
                     o.valid = 0;
                     o.uvMode = 0;
+                    o.tint = 1;
                     return o;
                 }
 
@@ -541,6 +545,7 @@ Shader "Unlit/TriangulationAccum"
                     o.mats = 0;
                     o.valid = 0;
                     o.uvMode = 0;
+                    o.tint = 1;
                     return o;
                 }
 
@@ -558,6 +563,7 @@ Shader "Unlit/TriangulationAccum"
                     o.mats = 0;
                     o.valid = 0;
                     o.uvMode = 0;
+                    o.tint = 1;
                     return o;
                 }
 
@@ -578,6 +584,7 @@ Shader "Unlit/TriangulationAccum"
                     o.mats = 0;
                     o.valid = 0;
                     o.uvMode = 0;
+                    o.tint = 1;
                     return o;
                 }
 
@@ -592,6 +599,7 @@ Shader "Unlit/TriangulationAccum"
                 int m2 = ClampMaterial(_MaterialIds[v2]);
                 o.mats = int3(m0, m1, m2);
                 o.uvMode = (_UvModes[v0] != 0) ? 1 : 0;
+                o.tint = _SpriteTints[v0];
 
                 o.valid = 1;
                 return o;
@@ -609,6 +617,7 @@ Shader "Unlit/TriangulationAccum"
                 half4 c2 = UNITY_SAMPLE_TEX2DARRAY(_AlbedoArray, float3(uv, i.mats.z));
 
                 half4 col = c0 * i.bary.x + c1 * i.bary.y + c2 * i.bary.z;
+                col *= half4(i.tint);
                 half alpha = saturate(col.a);
 
                 // Accum RT:

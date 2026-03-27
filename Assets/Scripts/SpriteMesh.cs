@@ -17,6 +17,16 @@ public sealed class SpriteMesh : Box {
     public MaterialDef physicsTemplate;
     public bool generateOnAwakeIfMissing = true;
 
+    [Header("Rendering")]
+    [Tooltip("If true, downstream rendering should multiply by SpriteRenderer.color.")]
+    public bool useSpriteRendererTint = true;
+
+    [Tooltip("If true, rendering should ignore the sprite texture and use the material's own texture properties instead.")]
+    public bool ignoreSpriteTextureForRendering = false;
+
+    [Tooltip("Texture property to use when ignoreSpriteTextureForRendering is enabled.")]
+    public string materialTextureProperty = "_MaterialTex";
+
     [Header("Material Map")]
     [Tooltip("Optional low-color map matching the sprite size. Point materials are sampled from this map by node UV.")]
     public Texture2D materialMap;
@@ -25,6 +35,37 @@ public sealed class SpriteMesh : Box {
     public List<ColorMaterialAssignment> materialMapAssignments = new List<ColorMaterialAssignment>();
 
     public override bool UsesSpriteUv => true;
+
+    public Color RenderTint {
+        get {
+            if (!useSpriteRendererTint || spriteRenderer == null)
+                return Color.white;
+            return spriteRenderer.color;
+        }
+    }
+
+    public bool UsesMaterialTexturesOnly => ignoreSpriteTextureForRendering;
+
+    public Sprite RenderSprite {
+        get {
+            if (ignoreSpriteTextureForRendering || spriteRenderer == null)
+                return null;
+            return spriteRenderer.sprite;
+        }
+    }
+
+    public Texture ResolveRenderTexture(Material material) {
+        if (!ignoreSpriteTextureForRendering) {
+            if (spriteRenderer != null && spriteRenderer.sprite != null)
+                return spriteRenderer.sprite.texture;
+            return null;
+        }
+
+        if (material != null && !string.IsNullOrEmpty(materialTextureProperty) && material.HasProperty(materialTextureProperty))
+            return material.GetTexture(materialTextureProperty);
+
+        return null;
+    }
 
     void Reset() {
         spriteRenderer = GetComponent<SpriteRenderer>();
@@ -491,11 +532,14 @@ public sealed class SpriteMesh : Box {
         if (!RuntimeDefsBySprite.TryGetValue(sprite, out MaterialDef def) || def == null) {
             def = ScriptableObject.CreateInstance<MaterialDef>();
             def.name = "Runtime_Sprite_" + sprite.name;
-            def.sprite = sprite;
 
             MaterialDef source = physicsTemplate != null ? physicsTemplate : baseMaterialDef;
             if (source == null && lib.materials != null && lib.materials.Length > 0)
                 source = lib.materials[0];
+
+            def.sprite = ignoreSpriteTextureForRendering
+                ? (source != null ? source.sprite : null)
+                : sprite;
 
             if (source != null)
                 def.physical = source.physical;
