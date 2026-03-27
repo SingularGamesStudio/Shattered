@@ -7,7 +7,6 @@
 #pragma kernel JR_SavePrevAndClear
 #pragma kernel JR_ComputeDeltas
 #pragma kernel JR_Apply
-#pragma kernel RelaxCollisionDirect
 #pragma kernel RelaxCollisionAtomic
 #pragma kernel ClearConvergenceDebugStats
 #pragma kernel CopyConvergenceDebug
@@ -71,53 +70,6 @@ static float WendlandC2Value(float2 xij, float h)
 	return Alpha2D(hSafe) * s4 * (2.0 * q + 1.0);
 }
 
-static void JRAccumulateCollisionDelta(uint gi, float2 dV)
-{
-	uint jrBase = gi * 2u;
-	float2 prevDV = float2(asfloat(_JRVelDeltaBits[jrBase + 0u]), asfloat(_JRVelDeltaBits[jrBase + 1u]));
-	float2 nextDV = prevDV + dV;
-	_JRVelDeltaBits[jrBase + 0u] = asuint(nextDV.x);
-	_JRVelDeltaBits[jrBase + 1u] = asuint(nextDV.y);
-}
-
-[numthreads(256, 1, 1)]
-void RelaxCollisionDirect(uint3 id : SV_DispatchThreadID)
-{
-	uint li = id.x;
-	uint active = _ActiveCount;
-	if (li >= active)
-		return;
-
-	uint gi = GlobalIndexFromLocal(li);
-	if (gi == ~0u)
-		return;
-
-	float h = max(_LayerKernelH, 1e-4);
-	float support = WendlandSupportRadius(h);
-	if (support <= EPS)
-		return;
-
-	uint dtLi = (_UseDtGlobalNodeMap != 0u) ? li : (_DtLocalBase + li);
-
-	#define XPBI_NEIGHBOR_FIXED(li_, gi_) IsLayerFixed(gi_)
-	#define XPBI_INV_MASS(li_, gi_) ReadEffectiveInvMass(gi_)
-	#define XPBI_POS(li_, gi_) _Pos[gi_]
-	#define XPBI_VEL(li_, gi_) _Vel[gi_]
-	#define XPBI_COL_APPLY_DV(li_, gi_, dv_) (_Vel[gi_] = _Vel[gi_] + (dv_))
-	#define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
-	#define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
-
-	#include "XPBI.LayerSolve.CollisionNew.hlsl"
-
-	#undef XPBI_COL_WRITE_LAMBDA
-	#undef XPBI_COL_READ_LAMBDA
-	#undef XPBI_COL_APPLY_DV
-	#undef XPBI_VEL
-	#undef XPBI_POS
-	#undef XPBI_INV_MASS
-	#undef XPBI_NEIGHBOR_FIXED
-}
-
 [numthreads(256, 1, 1)]
 void RelaxCollisionAtomic(uint3 id : SV_DispatchThreadID)
 {
@@ -141,8 +93,8 @@ void RelaxCollisionAtomic(uint3 id : SV_DispatchThreadID)
 	#define XPBI_INV_MASS(li_, gi_) ReadEffectiveInvMass(gi_)
 	#define XPBI_POS(li_, gi_) _Pos[gi_]
 	#define XPBI_VEL(li_, gi_) _VelPrev[gi_]
-	#define XPBI_COL_APPLY_DV(li_, gi_, dv_) JRAccumulateCollisionDelta((gi_), (dv_))
-	#define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambda[lambdaIdx_]
+	#define XPBI_COL_APPLY_DV(li_, gi_, dv_) AtomicAddFloat2(_JRVelDeltaBits, (gi_), (dv_))
+	#define XPBI_COL_READ_LAMBDA(lambdaIdx_) _CollisionLambdaPrev[lambdaIdx_]
 	#define XPBI_COL_WRITE_LAMBDA(lambdaIdx_, v_) (_CollisionLambda[lambdaIdx_] = (v_))
 
 	#include "XPBI.LayerSolve.CollisionNew.hlsl"

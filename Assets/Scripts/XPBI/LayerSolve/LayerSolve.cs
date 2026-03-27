@@ -146,13 +146,18 @@ namespace GPU.Solver {
 
             if (gsIterations > 0 && layerColoring != null) {
                 runtime.SetCollisionEnable(session.AsyncCb, false);
+                runtime.SetJRParams(session.AsyncCb);
+                int collisionLambdaCount = runtime.CollisionLambdaCapacity;
+                int saveClearCount = activeCount > collisionLambdaCount ? activeCount : collisionLambdaCount;
 
                 if (usePersistentCoarseGs) {
                     runtime.SetPersistentRelaxParams(session.AsyncCb, gsIterations, 0);
                     Dispatch(session.AsyncCb, "XPBI.RelaxColoredPersistentCoarse", shader, runtime.KRelaxColoredPersistentCoarse, 1, 1, 1);
 
                     for (int iter = 0; iter < gsIterations; iter++) {
-                        Dispatch(session.AsyncCb, "XPBI.RelaxCollision.NonParallel", shader, runtime.KRelaxCollisionDirect, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.SavePrevAndClear.GS", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(saveClearCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.AtomicSolve.GS", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.Apply.GS", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
                     }
                 } else {
                     for (int iter = 0; iter < gsIterations; iter++) {
@@ -171,7 +176,9 @@ namespace GPU.Solver {
                                     (uint)color * 12);
                         }
 
-                        Dispatch(session.AsyncCb, "XPBI.RelaxCollision.Colored", shader, runtime.KRelaxCollisionDirect, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.SavePrevAndClear.GS", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(saveClearCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.AtomicSolve.GS", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
+                        Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.Apply.GS", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
                     }
                 }
             }
@@ -179,15 +186,17 @@ namespace GPU.Solver {
             if (jrIterations > 0) {
                 runtime.SetCollisionEnable(session.AsyncCb, false);
                 runtime.SetJRParams(session.AsyncCb);
+                int collisionLambdaCount = runtime.CollisionLambdaCapacity;
+                int saveClearCount = activeCount > collisionLambdaCount ? activeCount : collisionLambdaCount;
 
                 for (int iter = 0; iter < jrIterations; iter++) {
                     if (debugEnabled)
                         runtime.SetConvergenceDebugIter(session.AsyncCb, gsIterations + iter);
 
-                    Dispatch(session.AsyncCb, "XPBI.JR.SavePrevAndClear", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(activeCount), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.SavePrevAndClear.JR", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(saveClearCount), 1, 1);
                     Dispatch(session.AsyncCb, "XPBI.JR.ComputeDeltas", shader, runtime.KJRComputeDeltas, XPBISolver.Groups256(activeCount), 1, 1);
-                    Dispatch(session.AsyncCb, "XPBI.RelaxCollision.Atomic", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
-                    Dispatch(session.AsyncCb, "XPBI.JR.Apply", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.AtomicSolve.JR", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.Apply.JR", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
                 }
             }
 

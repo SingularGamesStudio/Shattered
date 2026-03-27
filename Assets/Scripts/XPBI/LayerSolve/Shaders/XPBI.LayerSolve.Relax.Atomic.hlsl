@@ -88,6 +88,10 @@ void JR_ComputeDeltas(uint3 id : SV_DispatchThreadID)
 void JR_SavePrevAndClear(uint3 id : SV_DispatchThreadID)
 {
     uint li = id.x;
+
+    if (li < _CollisionLambdaCount)
+        _CollisionLambdaPrev[li] = _CollisionLambda[li];
+
     if (li >= _ActiveCount)
         return;
 

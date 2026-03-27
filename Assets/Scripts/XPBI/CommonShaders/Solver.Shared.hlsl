@@ -37,6 +37,7 @@
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
     RWStructuredBuffer<float> _DurabilityLambda;
     RWStructuredBuffer<float> _CollisionLambda;
+    RWStructuredBuffer<float> _CollisionLambdaPrev;
 
     struct XPBI_CollisionEvent
     {
@@ -126,6 +127,7 @@
     uint _DtNeighborCount;
     uint _Base;
     uint _ActiveCount;
+    uint _CollisionLambdaCount;
     uint _TotalCount;
     uint _FineCount;
 
