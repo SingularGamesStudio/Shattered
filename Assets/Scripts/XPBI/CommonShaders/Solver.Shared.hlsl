@@ -16,6 +16,7 @@
     RWStructuredBuffer<uint> _CoarseFixed;
     StructuredBuffer<int> _MaterialIds;
     StructuredBuffer<float4> _PhysicalParams; // young, poisson, yieldHencky, volumetricHenckyLimit
+    StructuredBuffer<float2> _FractureParams; // cohesiveStrength, fractureEnergy
     int _PhysicalParamCount;
     StructuredBuffer<float> _InvMass;
     StructuredBuffer<float> _RestVolume;
@@ -35,7 +36,8 @@
     RWStructuredBuffer<float4> _L;     // correction matrix
     RWStructuredBuffer<float4> _F0;    // initial deformation
     RWStructuredBuffer<float> _Lambda; // Lagrange multiplier
-    RWStructuredBuffer<float> _DurabilityLambda;
+    RWStructuredBuffer<float> _Damage;
+    RWStructuredBuffer<float> _DamageKappa;
     RWStructuredBuffer<float> _CollisionLambda;
 
     struct XPBI_CollisionEvent
@@ -117,8 +119,16 @@
     float _CollisionFriction;
     float _CollisionRestitution;
     float _CollisionRestitutionThreshold;
-    float _DurabilityCompliance;
-    float _DurabilityMaxDistanceRatio;
+    float _CohesiveDamping;
+    float _CohesiveOnsetRatio;
+    float _CohesivePeakRatio;
+    float _DamageOnset;
+    float _DamageSoftening;
+    float _DamageResidualStiffness;
+    float _DamageEnergyWeight;
+    float _DamageShellWeight;
+    float _DamageMax;
+    float _CohesivePairScale;
     uint _CollisionEnable;
     uint _UseAffineProlongation; 
 
@@ -152,6 +162,8 @@
     static const float DEFAULT_POISSON = 0.3;
     static const float DEFAULT_YIELD_HENCKY = 0.05;
     static const float DEFAULT_VOL_HENCKY_LIMIT = 0.3;
+    static const float DEFAULT_COHESIVE_STRENGTH = 1000.0;
+    static const float DEFAULT_FRACTURE_ENERGY = 1.0;
     static const float MIN_EFFECTIVE_MASS = 1e-4;
     static const float MAX_EFFECTIVE_INV_MASS = 1e4;
 
@@ -332,6 +344,30 @@
             result = _PhysicalParams[materialId];
         }
         return result;
+    }
+
+    static float2 ReadMaterialFracture(uint gi)
+    {
+        float2 result = float2(DEFAULT_COHESIVE_STRENGTH, DEFAULT_FRACTURE_ENERGY);
+        if (_PhysicalParamCount > 0)
+        {
+            int materialId = _MaterialIds[gi];
+            if (materialId >= 0 && materialId < _PhysicalParamCount)
+            result = _FractureParams[materialId];
+        }
+        return result;
+    }
+
+    static float ReadMaterialCohesiveStrength(uint gi)
+    {
+        float2 mp = ReadMaterialFracture(gi);
+        return mp.x > EPS ? mp.x : DEFAULT_COHESIVE_STRENGTH;
+    }
+
+    static float ReadMaterialFractureEnergy(uint gi)
+    {
+        float2 mp = ReadMaterialFracture(gi);
+        return mp.y > EPS ? mp.y : DEFAULT_FRACTURE_ENERGY;
     }
 
     static void ComputeMaterialLame(uint gi, out float mu, out float lambda)

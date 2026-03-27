@@ -17,8 +17,8 @@
 #pragma kernel ApplyXsph
 #pragma kernel ApplyPositionCorrection
 
-#include "XPBI.LayerSolve.Collision.Utils.hlsl"
 #include "../../CommonShaders/Solver.Shared.hlsl"
+#include "XPBI.LayerSolve.Collision.Utils.hlsl"
 #include "XPBI.LayerSolve.Relax.Colored.hlsl"
 #include "XPBI.LayerSolve.Relax.NonParallel.hlsl"
 #include "XPBI.LayerSolve.Relax.Atomic.hlsl"

@@ -15,7 +15,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
     [Header("Compliance")]
     [Min(0f)] public float compliance = 1f;
     [Min(0f)] public float collisionCompliance = 0.1f;
-    [Min(0f)] public float durabilityCompliance = 0.8f;
     [Min(0f)] public float positionCorrectionCompliance = 0f;
 
     [Header("Collision SDF")]
@@ -42,7 +41,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         target.collision.collisionSdfVertexMarginScale = Mathf.Max(0.5f, collisionSdfVertexMarginScale);
         target.collision.collisionSdfFallbackDepthScale = Mathf.Max(0.5f, collisionSdfFallbackDepthScale);
         target.collision.collisionSdfEdgeRefineIterations = Mathf.Clamp(collisionSdfEdgeRefineIterations, 1, 12);
-        target.durability.durabilityCompliance = Mathf.Max(0f, durabilityCompliance);
         target.particleRegularization.positionCorrectionCompliance = Mathf.Max(0f, positionCorrectionCompliance);
     }
 
@@ -64,7 +62,6 @@ public sealed class SimulationPresetAsset : ScriptableObject {
         collisionSdfVertexMarginScale = Mathf.Max(0.5f, source.collision.collisionSdfVertexMarginScale);
         collisionSdfFallbackDepthScale = Mathf.Max(0.5f, source.collision.collisionSdfFallbackDepthScale);
         collisionSdfEdgeRefineIterations = Mathf.Clamp(source.collision.collisionSdfEdgeRefineIterations, 1, 12);
-        durabilityCompliance = Mathf.Max(0f, source.durability.durabilityCompliance);
         positionCorrectionCompliance = Mathf.Max(0f, source.particleRegularization.positionCorrectionCompliance);
     }
 }

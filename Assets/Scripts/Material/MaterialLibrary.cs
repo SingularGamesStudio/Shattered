@@ -13,11 +13,13 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
     Texture2DArray albedoArray;
     ComputeBuffer physicalParams;
+    ComputeBuffer fractureParams;
 
     Dictionary<MaterialDef, int> defToIndex;
 
     public Texture2DArray AlbedoArray => albedoArray;
     public ComputeBuffer PhysicalParamsBuffer => physicalParams;
+    public ComputeBuffer FractureParamsBuffer => fractureParams;
     public int MaterialCount => materials != null ? materials.Length : 0;
 
     public float GetDensityByIndex(int materialIndex) {
@@ -52,6 +54,9 @@ public sealed class MaterialLibrary : MonoBehaviour {
     struct MaterialGpu {
         public Vector4 p0; // young, poisson, yieldHencky, volumetricHenckyLimit
     }
+    struct MaterialGpuFracture {
+        public Vector2 p0; // cohesiveStrength, fractureEnergy
+    }
 
     void Awake() {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
@@ -63,6 +68,8 @@ public sealed class MaterialLibrary : MonoBehaviour {
         if (Instance == this) Instance = null;
         physicalParams?.Dispose();
         physicalParams = null;
+        fractureParams?.Dispose();
+        fractureParams = null;
     }
 
     public int GetMaterialIndex(MaterialDef def) {
@@ -113,6 +120,8 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
         physicalParams?.Dispose();
         physicalParams = null;
+        fractureParams?.Dispose();
+        fractureParams = null;
 
         if (materials == null || materials.Length == 0) {
             albedoArray = null;
@@ -135,6 +144,7 @@ public sealed class MaterialLibrary : MonoBehaviour {
         };
 
         var gpu = new MaterialGpu[materials.Length];
+        var fractureGpu = new MaterialGpuFracture[materials.Length];
 
         var rt = RenderTexture.GetTemporary(sliceW, sliceH, 0, RenderTextureFormat.ARGB32,
             QualitySettings.activeColorSpace == ColorSpace.Linear ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Default);
@@ -155,6 +165,9 @@ public sealed class MaterialLibrary : MonoBehaviour {
             if (def != null) {
                 gpu[i] = new MaterialGpu {
                     p0 = new Vector4(def.physical.youngModulus, def.physical.poissonRatio, def.physical.yieldHencky, def.physical.volumetricHenckyLimit),
+                };
+                fractureGpu[i] = new MaterialGpuFracture {
+                    p0 = new Vector2(def.physical.cohesiveStrength, def.physical.fractureEnergy),
                 };
             }
 
@@ -204,5 +217,8 @@ public sealed class MaterialLibrary : MonoBehaviour {
 
         physicalParams = new ComputeBuffer(materials.Length, sizeof(float) * 4, ComputeBufferType.Structured);
         physicalParams.SetData(gpu);
+
+        fractureParams = new ComputeBuffer(materials.Length, sizeof(float) * 2, ComputeBufferType.Structured);
+        fractureParams.SetData(fractureGpu);
     }
 }

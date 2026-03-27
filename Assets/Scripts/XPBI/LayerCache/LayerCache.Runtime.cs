@@ -198,7 +198,6 @@ namespace GPU.Solver {
 
             cb.SetComputeBufferParam(shader, kClearVelDelta, "_VelDeltaBits", actualRuntime.VelDeltaBits);
 
-            cb.SetComputeBufferParam(shader, kResetCollisionLambda, "_DurabilityLambda", actualRuntime.DurabilityLambda);
             cb.SetComputeBufferParam(shader, kResetCollisionLambda, "_CollisionLambda", actualRuntime.CollisionLambda);
 
             cb.SetComputeBufferParam(shader, kClearRestrictedDeltaV, "_RestrictedDeltaVBits", actualRuntime.RestrictedDeltaVBits);

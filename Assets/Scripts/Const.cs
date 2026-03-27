@@ -71,9 +71,17 @@ public static class Const {
     public static float CollisionSdfFallbackDepthScale => SimulationParamSource.Current.collision.collisionSdfFallbackDepthScale;
     public static int CollisionSdfEdgeRefineIterations => SimulationParamSource.Current.collision.collisionSdfEdgeRefineIterations;
 
-    // Durability tether (unilateral max-distance inequality)
-    public static float DurabilityCompliance => SimulationParamSource.Current.durability.durabilityCompliance;
-    public static float DurabilityMaxDistanceRatio => SimulationParamSource.Current.durability.durabilityMaxDistanceRatio;
+    // Fracture and damage model
+    public static float CohesiveDamping => SimulationParamSource.Current.fractureDamage.cohesiveDamping;
+    public static float CohesiveOnsetRatio => SimulationParamSource.Current.fractureDamage.cohesiveOnsetRatio;
+    public static float CohesivePeakRatio => SimulationParamSource.Current.fractureDamage.cohesivePeakRatio;
+    public static float DamageOnset => SimulationParamSource.Current.fractureDamage.damageOnset;
+    public static float DamageSoftening => SimulationParamSource.Current.fractureDamage.damageSoftening;
+    public static float DamageResidualStiffness => SimulationParamSource.Current.fractureDamage.damageResidualStiffness;
+    public static float DamageEnergyWeight => SimulationParamSource.Current.fractureDamage.damageEnergyWeight;
+    public static float DamageShellWeight => SimulationParamSource.Current.fractureDamage.damageShellWeight;
+    public static float DamageMax => SimulationParamSource.Current.fractureDamage.damageMax;
+    public static float CohesivePairScale => SimulationParamSource.Current.fractureDamage.cohesivePairScale;
 
     // Optional deep-debug probe; when enabled it forces per-batch fence waits + readback.
     public static bool ProlongationConstraintDebugEnabled => SimulationParamSource.Current.uiAndReadback.prolongationConstraintDebugEnabled;

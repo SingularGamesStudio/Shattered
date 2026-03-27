@@ -33,8 +33,8 @@ public sealed class SimulationParams {
     [InspectorName("10. Collisions")]
     [SerializeField] public CollisionParams collision = new CollisionParams();
 
-    [InspectorName("11. Durability")]
-    [SerializeField] public DurabilityParams durability = new DurabilityParams();
+    [InspectorName("11. Fracture and Damage")]
+    [SerializeField] public FractureDamageParams fractureDamage = new FractureDamageParams();
 
     [InspectorName("12. DT Maintenance")]
     [SerializeField] public DtMaintenanceParams dtMaintenance = new DtMaintenanceParams();
@@ -140,9 +140,17 @@ public sealed class SimulationParams {
     }
 
     [Serializable]
-    public sealed class DurabilityParams {
-        [Min(0f)] public float durabilityCompliance = 0.8f;
-        [Range(0f, 1f)] public float durabilityMaxDistanceRatio = 0.8f;
+    public sealed class FractureDamageParams {
+        [Min(0f)] public float cohesiveDamping = 0f;
+        [Range(0f, 1f)] public float cohesiveOnsetRatio = 0.72f;
+        [Range(0f, 1f)] public float cohesivePeakRatio = 0.88f;
+        [Min(0f)] public float damageOnset = 0.01f;
+        [Min(0f)] public float damageSoftening = 0.25f;
+        [Range(0f, 1f)] public float damageResidualStiffness = 0.01f;
+        [Min(0f)] public float damageEnergyWeight = 1f;
+        [Min(0f)] public float damageShellWeight = 0.25f;
+        [Range(0f, 1f)] public float damageMax = 0.995f;
+        [Range(0f, 1f)] public float cohesivePairScale = 0.5f;
     }
 
     [Serializable]

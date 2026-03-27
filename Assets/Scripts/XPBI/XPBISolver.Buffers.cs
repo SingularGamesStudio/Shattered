@@ -83,6 +83,10 @@ namespace GPU.Solver {
             F.SetData(FCpu, 0, 0, totalCount);
             Fp.SetData(FpCpu, 0, 0, totalCount);
 
+            float[] zeroDamage = new float[totalCount];
+            layerSolveRuntime.Damage.SetData(zeroDamage, 0, 0, totalCount);
+            layerSolveRuntime.DamageKappa.SetData(zeroDamage, 0, 0, totalCount);
+
             initializedCount = totalCount;
             layoutInitialized = true;
         }
@@ -168,8 +172,16 @@ namespace GPU.Solver {
                 asyncCb.SetComputeFloatParam(target, "_CollisionFriction", Const.CollisionFriction);
                 asyncCb.SetComputeFloatParam(target, "_CollisionRestitution", Const.CollisionRestitution);
                 asyncCb.SetComputeFloatParam(target, "_CollisionRestitutionThreshold", Const.CollisionRestitutionThreshold);
-                asyncCb.SetComputeFloatParam(target, "_DurabilityCompliance", Const.DurabilityCompliance);
-                asyncCb.SetComputeFloatParam(target, "_DurabilityMaxDistanceRatio", Const.DurabilityMaxDistanceRatio);
+                asyncCb.SetComputeFloatParam(target, "_CohesiveDamping", Const.CohesiveDamping);
+                asyncCb.SetComputeFloatParam(target, "_CohesiveOnsetRatio", Const.CohesiveOnsetRatio);
+                asyncCb.SetComputeFloatParam(target, "_CohesivePeakRatio", Const.CohesivePeakRatio);
+                asyncCb.SetComputeFloatParam(target, "_DamageOnset", Const.DamageOnset);
+                asyncCb.SetComputeFloatParam(target, "_DamageSoftening", Const.DamageSoftening);
+                asyncCb.SetComputeFloatParam(target, "_DamageResidualStiffness", Const.DamageResidualStiffness);
+                asyncCb.SetComputeFloatParam(target, "_DamageEnergyWeight", Const.DamageEnergyWeight);
+                asyncCb.SetComputeFloatParam(target, "_DamageShellWeight", Const.DamageShellWeight);
+                asyncCb.SetComputeFloatParam(target, "_DamageMax", Const.DamageMax);
+                asyncCb.SetComputeFloatParam(target, "_CohesivePairScale", Const.CohesivePairScale);
                 asyncCb.SetComputeIntParam(target, "_UseAffineProlongation", Const.UseAffineProlongation ? 1 : 0);
                 asyncCb.SetComputeIntParam(target, "_ParentKNearest", 2);
                 asyncCb.SetComputeFloatParam(target, "_ParentWeightEpsilon", math.max(Const.ParentWeightEpsilon, 1e-6f));

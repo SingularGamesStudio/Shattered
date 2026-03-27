@@ -201,7 +201,7 @@ MonoBehaviour:
     collision:
       collisionSupportScale: 0.3
       collisionSkinScale: 0.1
-      collisionCompliance: 0.001
+      collisionCompliance: 0.0001
       collisionSlop: 0.01
       collisionPenBias: 0.35
       collisionMaxBias: 0.005
@@ -215,9 +215,17 @@ MonoBehaviour:
       collisionSdfVertexMarginScale: 1.5
       collisionSdfFallbackDepthScale: 2.5
       collisionSdfEdgeRefineIterations: 6
-    durability:
-      durabilityCompliance: 0.8
-      durabilityMaxDistanceRatio: 0.8
+    fractureDamage:
+      cohesiveDamping: 0
+      cohesiveOnsetRatio: 0.72
+      cohesivePeakRatio: 0.88
+      damageOnset: 0.01
+      damageSoftening: 0.25
+      damageResidualStiffness: 0.01
+      damageEnergyWeight: 1
+      damageShellWeight: 0.25
+      damageMax: 0.995
+      cohesivePairScale: 0.5
     dtMaintenance:
       coloringConflictRounds: 3
       initColoringConflictRounds: 24

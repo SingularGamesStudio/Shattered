@@ -25,7 +25,8 @@ namespace GPU.Solver {
         private ComputeBuffer L;
         private ComputeBuffer F0;
         private ComputeBuffer lambda;
-        private ComputeBuffer durabilityLambda;
+        private ComputeBuffer damage;
+        private ComputeBuffer damageKappa;
         private ComputeBuffer collisionLambda;
         private ComputeBuffer savedVelPrefix;
         private ComputeBuffer velDeltaBits;
@@ -93,7 +94,8 @@ namespace GPU.Solver {
         internal ComputeBuffer CorrectionL => L;
         internal ComputeBuffer CachedF0 => F0;
         internal ComputeBuffer Lambda => lambda;
-        internal ComputeBuffer DurabilityLambda => durabilityLambda;
+        internal ComputeBuffer Damage => damage;
+        internal ComputeBuffer DamageKappa => damageKappa;
         internal ComputeBuffer CollisionLambda => collisionLambda;
         internal ComputeBuffer SavedVelPrefix => savedVelPrefix;
         internal ComputeBuffer VelDeltaBits => velDeltaBits;
@@ -186,7 +188,8 @@ namespace GPU.Solver {
             L = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             F0 = new ComputeBuffer(newCapacity, sizeof(float) * 4, ComputeBufferType.Structured);
             lambda = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
-            durabilityLambda = new ComputeBuffer(newCapacity * Const.NeighborCount, sizeof(float), ComputeBufferType.Structured);
+            damage = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
+            damageKappa = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
             collisionLambda = new ComputeBuffer(collisionLambdaCapacity, sizeof(float), ComputeBufferType.Structured);
             savedVelPrefix = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
@@ -208,7 +211,8 @@ namespace GPU.Solver {
             L?.Dispose(); L = null;
             F0?.Dispose(); F0 = null;
             lambda?.Dispose(); lambda = null;
-            durabilityLambda?.Dispose(); durabilityLambda = null;
+            damage?.Dispose(); damage = null;
+            damageKappa?.Dispose(); damageKappa = null;
             collisionLambda?.Dispose(); collisionLambda = null;
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;
@@ -284,6 +288,7 @@ namespace GPU.Solver {
             ComputeBuffer dtCollisionOwnerByLocal = context.Mapping.DtCollisionOwnerByLocal;
             var matLib = MaterialLibrary.Instance;
             var physicalParams = matLib != null ? matLib.PhysicalParamsBuffer : null;
+            var fractureParams = matLib != null ? matLib.FractureParamsBuffer : null;
             int physicalParamCount = (matLib != null && physicalParams != null) ? matLib.MaterialCount : 0;
             bool isFineLayer = activeCount == fineCount;
             int colNodeContactStride = isFineLayer ? 2 : 4;
@@ -320,7 +325,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildPosBits", fixedChildPosBits);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_Lambda", lambda);
-            cb.SetComputeBufferParam(shader, kRelaxColored, "_DurabilityLambda", durabilityLambda);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_Damage", damage);
+            cb.SetComputeBufferParam(shader, kRelaxColored, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_CollisionLambda", collisionLambda);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeContacts", colNodeContacts);
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ColNodeContactCount", colNodeContactCount);
@@ -340,7 +346,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildPosBits", fixedChildPosBits);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Lambda", lambda);
-            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DurabilityLambda", durabilityLambda);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_Damage", damage);
+            cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_CollisionLambda", collisionLambda);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeContacts", colNodeContacts);
             cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_ColNodeContactCount", colNodeContactCount);
@@ -410,7 +417,8 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FixedChildCount", fixedChildCount);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_VelPrev", velPrev);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_LambdaPrev", lambdaPrev);
-            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DurabilityLambda", durabilityLambda);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_Damage", damage);
+            cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_DamageKappa", damageKappa);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_CollisionLambda", collisionLambda);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeContacts", colNodeContacts);
             cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_ColNodeContactCount", colNodeContactCount);
@@ -545,6 +553,12 @@ namespace GPU.Solver {
                 cb.SetComputeBufferParam(shader, kRelaxPostCollisionDamping, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kProlongate, "_PhysicalParams", physicalParams);
                 cb.SetComputeBufferParam(shader, kCommitDeformation, "_PhysicalParams", physicalParams);
+            }
+
+            if (fractureParams != null) {
+                cb.SetComputeBufferParam(shader, kRelaxColored, "_FractureParams", fractureParams);
+                cb.SetComputeBufferParam(shader, kRelaxColoredPersistentCoarse, "_FractureParams", fractureParams);
+                cb.SetComputeBufferParam(shader, kJRComputeDeltas, "_FractureParams", fractureParams);
             }
         }
     }

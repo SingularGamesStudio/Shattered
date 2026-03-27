@@ -222,7 +222,6 @@ void ResetCollisionLambda(uint3 id : SV_DispatchThreadID)
 	{
 		if (k >= _DtNeighborCount) break;
 		uint pairBase = baseIdx + k * xferColManifoldSlots;
-		_DurabilityLambda[dtLi * _DtNeighborCount + k] = 0.0;
 		[unroll] for (uint s = 0u; s < xferColManifoldSlots; s++)
 		{
 			_CollisionLambda[pairBase + s] = 0.0;
