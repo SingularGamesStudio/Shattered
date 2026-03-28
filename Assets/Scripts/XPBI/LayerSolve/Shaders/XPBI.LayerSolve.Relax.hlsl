@@ -572,7 +572,6 @@ if (denom < 1e-4) return;
 float lambdaBefore = XPBI_LAMBDA(li, gi);
 float dLambda = -(C + alphaTilde * lambdaBefore) / (denom + alphaTilde);
 if (!isfinite(dLambda)) return;
-if (abs(dLambda) > 100.0) return;
 
 if (_ConvergenceDebugEnable != 0)
 {
@@ -584,13 +583,34 @@ if (_ConvergenceDebugEnable != 0)
     InterlockedMax(_ConvergenceDebug[baseU + 3], uAbsDL);
 }
 
-float velScale = dLambda * invDt;
+float velScaleRaw = dLambda * invDt;
 
 float maxDeltaVPerIter = support * invDtClampLocal;
 float maxSpeedLocal = (4.0 * support) * invDtClampLocal;
+float maxDv2 = maxDeltaVPerIter * maxDeltaVPerIter;
+
+float maxCorr2 = 0.0;
+float2 dViRaw = invMassI * velScaleRaw * gradC_vi;
+maxCorr2 = max(maxCorr2, dot(dViRaw, dViRaw));
+
+[loop] for (uint nIdx = 0u; nIdx < MAX_N; nIdx++)
+{
+    if (nIdx >= k) break;
+    float invMassJ = nb_invMassJ[nIdx];
+    if (invMassJ <= 0.0) continue;
+
+    float2 dVjRaw = invMassJ * velScaleRaw * nb_q[nIdx];
+    maxCorr2 = max(maxCorr2, dot(dVjRaw, dVjRaw));
+}
+
+float scale = 1.0;
+if (maxCorr2 > maxDv2)
+    scale = min(scale, maxDeltaVPerIter * rsqrt(max(maxCorr2, EPS * EPS)));
+
+float dLambdaApplied = dLambda * scale;
+float velScale = dLambdaApplied * invDt;
 
 float pred2 = (velScale * velScale) * (maxInvMassLocal * maxInvMassLocal) * max(maxGradNorm2Local, 1e-12);
-float maxDv2 = maxDeltaVPerIter * maxDeltaVPerIter;
 float maxSpeed2 = maxSpeedLocal * maxSpeedLocal;
 float maxSpeedHalf2 = (0.5 * maxSpeedLocal) * (0.5 * maxSpeedLocal);
 

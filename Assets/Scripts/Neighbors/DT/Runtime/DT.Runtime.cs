@@ -40,7 +40,7 @@ namespace GPU.Delaunay {
         private ComputeBuffer _flipCount;           // global flip counter (single uint)
         private ComputeBuffer _dirtyVertexFlags;    // per‑real‑vertex dirty flag (1 if neighbour list needs rebuild)
         private ComputeBuffer _triToHEAll;          // triangle -> representative half-edge (all triangles)
-        private ComputeBuffer _triInternal;         // 1 if triangle classified internal
+        private readonly ComputeBuffer[] _triInternal = new ComputeBuffer[3];      // 1 if triangle classified internal
         private ComputeBuffer _boundaryEdgeFlags;   // 1 if half-edge classified boundary
         private ComputeBuffer _boundaryNormals;     // per-real-vertex outward normal
         private ComputeBuffer _ownerByVertex;       // owner id per real vertex
@@ -192,11 +192,11 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(_shader, _kernelBuildTriToHEAll, "_TriToHEAll", _triToHEAll);
             cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_TriToHEAll", _triToHEAll);
-            cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_TriInternal", _triInternal);
+            cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_TriInternal", _triInternal[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_OwnerByVertex", _ownerByVertex);
             cb.SetComputeBufferParam(_shader, _kernelClassifyInternalTriangles, "_Positions", positionsForMaintain);
             cb.SetComputeBufferParam(_shader, _kernelMarkBoundaryEdges, "_HalfEdges", _halfEdges[writeSlot]);
-            cb.SetComputeBufferParam(_shader, _kernelMarkBoundaryEdges, "_TriInternal", _triInternal);
+            cb.SetComputeBufferParam(_shader, _kernelMarkBoundaryEdges, "_TriInternal", _triInternal[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelMarkBoundaryEdges, "_BoundaryEdgeFlags", _boundaryEdgeFlags);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_VToE", _vToE);
@@ -204,7 +204,7 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_BoundaryNormals", _boundaryNormals);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_Positions", positionsForMaintain);
             cb.SetComputeBufferParam(_shader, _kernelClearBoundaryData, "_TriToHEAll", _triToHEAll);
-            cb.SetComputeBufferParam(_shader, _kernelClearBoundaryData, "_TriInternal", _triInternal);
+            cb.SetComputeBufferParam(_shader, _kernelClearBoundaryData, "_TriInternal", _triInternal[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelClearBoundaryData, "_BoundaryEdgeFlags", _boundaryEdgeFlags);
             cb.SetComputeBufferParam(_shader, _kernelClearBoundaryData, "_BoundaryNormals", _boundaryNormals);
 

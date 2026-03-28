@@ -61,8 +61,8 @@ namespace GPU.Delaunay {
         /// <summary>Per-half-edge boundary flag (1 = boundary edge candidate).</summary>
         public ComputeBuffer BoundaryEdgeFlagsBuffer => _boundaryEdgeFlags;
 
-        /// <summary>Per-triangle internal classification (1 = internal triangle).</summary>
-        public ComputeBuffer TriInternalBuffer => _triInternal;
+        /// <summary>Per-triangle internal classification (1 = internal triangle) in current render slot.</summary>
+        public ComputeBuffer TriInternalBuffer => _triInternal[_renderSlot];
 
         /// <summary>Positions buffer for the current render slot.</summary>
         public ComputeBuffer PositionsBuffer => _positions[_renderSlot];
@@ -76,6 +76,7 @@ namespace GPU.Delaunay {
         public ComputeBuffer GetPositionsBuffer(int slot) => _positions[slot];
         public ComputeBuffer GetHalfEdgesBuffer(int slot) => _halfEdges[slot];
         public ComputeBuffer GetTriToHEBuffer(int slot) => _triToHE[slot];
+        public ComputeBuffer GetTriInternalBuffer(int slot) => _triInternal[slot];
 
         //---------------------------------------------------------------------------
         // Initialisation
@@ -131,10 +132,12 @@ namespace GPU.Delaunay {
                 _positions[i] = new ComputeBuffer(_vertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
                 _halfEdges[i] = new ComputeBuffer(_halfEdgeCount, sizeof(int) * 4, ComputeBufferType.Structured);
                 _triToHE[i] = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
+                _triInternal[i] = new ComputeBuffer(_triCount, sizeof(uint), ComputeBufferType.Structured);
 
                 // Upload identical initial data to all slots.
                 _positions[i].SetData(_positionScratch);
                 _halfEdges[i].SetData(initialHalfEdges);
+                _triInternal[i].SetData(new uint[_triCount]);
             }
 
             //---------------------------------------------------------------------------
@@ -147,7 +150,6 @@ namespace GPU.Delaunay {
             _flipCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
             _dirtyVertexFlags = new ComputeBuffer(_realVertexCount, sizeof(uint), ComputeBufferType.Structured);
             _triToHEAll = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
-            _triInternal = new ComputeBuffer(_triCount, sizeof(uint), ComputeBufferType.Structured);
             _boundaryEdgeFlags = new ComputeBuffer(_halfEdgeCount, sizeof(uint), ComputeBufferType.Structured);
             _boundaryNormals = new ComputeBuffer(_realVertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
             _ownerByVertex = new ComputeBuffer(_realVertexCount, sizeof(int), ComputeBufferType.Structured);
@@ -155,7 +157,6 @@ namespace GPU.Delaunay {
             // Initialise dirty flags to 0 (all clean).
             _dirtyVertexFlags.SetData(new uint[_realVertexCount]);
             _boundaryNormals.SetData(new float2[_realVertexCount]);
-            _triInternal.SetData(new uint[_triCount]);
             _boundaryEdgeFlags.SetData(new uint[_halfEdgeCount]);
 
             int[] owners = new int[_realVertexCount];
@@ -302,6 +303,8 @@ namespace GPU.Delaunay {
                 _halfEdges[i] = null;
                 _triToHE[i]?.Dispose();
                 _triToHE[i] = null;
+                _triInternal[i]?.Dispose();
+                _triInternal[i] = null;
             }
 
             _triLocks?.Dispose();
@@ -318,8 +321,6 @@ namespace GPU.Delaunay {
             _dirtyVertexFlags = null;
             _triToHEAll?.Dispose();
             _triToHEAll = null;
-            _triInternal?.Dispose();
-            _triInternal = null;
             _boundaryEdgeFlags?.Dispose();
             _boundaryEdgeFlags = null;
             _boundaryNormals?.Dispose();

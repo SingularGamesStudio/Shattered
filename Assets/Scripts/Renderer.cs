@@ -173,6 +173,8 @@ public sealed class Renderer : MonoBehaviour {
 
     static readonly int ID_HalfEdges = Shader.PropertyToID("_HalfEdges");
     static readonly int ID_TriToHE = Shader.PropertyToID("_TriToHE");
+    static readonly int ID_TriInternal = Shader.PropertyToID("_TriInternal");
+    static readonly int ID_TriCount = Shader.PropertyToID("_TriCount");
     static readonly int ID_OwnerByLocal = Shader.PropertyToID("_OwnerByLocal");
 
     static readonly int ID_MaterialIds = Shader.PropertyToID("_MaterialIds");
@@ -189,6 +191,7 @@ public sealed class Renderer : MonoBehaviour {
 
     static readonly int ID_NormCenter = Shader.PropertyToID("_NormCenter");
     static readonly int ID_NormInvHalfExtent = Shader.PropertyToID("_NormInvHalfExtent");
+    static readonly int ID_FillColor = Shader.PropertyToID("_Color");
 
     static readonly int ID_AccumTex = Shader.PropertyToID("_AccumTex");
     static readonly int ID_SdfTex = Shader.PropertyToID("_SdfTex");
@@ -306,7 +309,7 @@ public sealed class Renderer : MonoBehaviour {
         if (cam == null) return;
 
         var lib = MaterialLibrary.Instance;
-        bool canFill = drawLayer0Fill && accumShader != null && compositeShader != null && sdfCompute != null && lib != null && lib.AlbedoArray != null;
+        bool canFill = drawLayer0Fill && accumShader != null && compositeShader != null && sdfCompute != null;
         bool canWire = showWireframe && wireShader != null;
 
         // Early out if neither draw path is active
@@ -325,16 +328,31 @@ public sealed class Renderer : MonoBehaviour {
                 sc.TryGetStableReadSlot(out int slot) &&
                 sc.TryGetGlobalRenderBatch(out var globalHierarchy, out var globalMeshes, out var globalBaseOffsets) &&
                 globalHierarchy.TryGetLayerDt(0, out var dt0) && dt0 != null && dt0.TriCount > 0 &&
-                    globalHierarchy.TryGetLayerMappings(0, out int[] ownerBodyByLocal, out int[] globalNodeByLocal, out _, out int activeCount, out _) &&
+                globalHierarchy.TryGetLayerMappings(0, out int[] ownerBodyByLocal, out int[] globalNodeByLocal, out _, out int activeCount, out _) &&
                 globalHierarchy.TryGetLayerExecutionContext(0, out _, out _, out float layerKernelH)) {
                 cr.fillCmd.SetRenderTarget(cr.accum);
                 cr.fillCmd.ClearRenderTarget(true, true, Color.clear);
 
-                var layerState = EnsureGlobalLayerBuffers(0, ownerBodyByLocal, globalNodeByLocal, activeCount, globalMeshes, globalBaseOffsets, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent);
-                SetupCommonGlobal(layerState, dt0, lib, activeCount, layerKernelH, globalHierarchy.NormCenter, globalHierarchy.NormInvHalfExtent, slot);
-                mpb.SetFloat(ID_UvScale, uvScale);
+                var layerState = EnsureGlobalLayerBuffers(
+                    0,
+                    ownerBodyByLocal,
+                    globalNodeByLocal,
+                    activeCount,
+                    globalMeshes,
+                    globalBaseOffsets,
+                    globalHierarchy.NormCenter,
+                    globalHierarchy.NormInvHalfExtent);
 
-                cr.fillCmd.DrawProcedural(Matrix4x4.identity, accumMaterial, 0, MeshTopology.Triangles, dt0.TriCount * 15, 1, mpb);
+                if (SetupInternalFill(layerState,dt0,lib,activeCount,globalHierarchy.NormCenter,globalHierarchy.NormInvHalfExtent,slot)){
+                    cr.fillCmd.DrawProcedural(
+                        Matrix4x4.identity,
+                        accumMaterial,
+                        0,
+                        MeshTopology.Triangles,
+                        dt0.TriCount * 3,
+                        1,
+                        mpb);
+                }
             }
         } else {
             cr.fillCmd.Clear();
@@ -852,5 +870,59 @@ public sealed class Renderer : MonoBehaviour {
 
         mpb.SetVector(ID_NormCenter, new Vector4(normCenter.x, normCenter.y, 0f, 0f));
         mpb.SetFloat(ID_NormInvHalfExtent, normInvHalfExtent);
+    }
+
+    bool SetupInternalFill(
+        GlobalLayerState st,
+        DT dt,
+        MaterialLibrary lib,
+        int realPointCount,
+        float2 normCenter,
+        float normInvHalfExtent,
+        int slot
+    ) {
+        if (dt == null || st == null) return false;
+
+        float alpha = 0f;
+        var sc = SimulationController.Instance;
+        if (sc != null) alpha = sc.RenderAlpha;
+
+        var positions = dt.GetPositionsBuffer(slot);
+        var halfEdges = dt.GetHalfEdgesBuffer(slot);
+        var triToHe = dt.GetTriToHEBuffer(slot);
+        var triInternal = dt.GetTriInternalBuffer(slot);
+
+        if (positions == null || halfEdges == null || triToHe == null || triInternal == null)
+            return false;
+
+        mpb.Clear();
+
+        if (lib != null && lib.AlbedoArray != null) {
+            mpb.SetTexture(ID_AlbedoArray, lib.AlbedoArray);
+            mpb.SetInt(ID_MaterialCount, lib.MaterialCount);
+        }
+
+        mpb.SetBuffer(ID_PositionsPrev, positions);
+        mpb.SetBuffer(ID_PositionsCurr, positions);
+        mpb.SetFloat(ID_RenderAlpha, alpha);
+
+        mpb.SetBuffer(ID_HalfEdges, halfEdges);
+        mpb.SetBuffer(ID_TriToHE, triToHe);
+        mpb.SetBuffer(ID_TriInternal, triInternal);
+
+        mpb.SetBuffer(ID_MaterialIds, st.materialIds);
+        mpb.SetBuffer(ID_RestNormPositions, st.restNorm);
+        mpb.SetBuffer(ID_UvModes, st.uvModes);
+        mpb.SetBuffer(ID_SpriteTints, st.spriteTints);
+
+        mpb.SetInt(ID_TriCount, dt.TriCount);
+        mpb.SetInt(ID_RealPointCount, realPointCount);
+
+        mpb.SetFloat(ID_UvScale, uvScale);
+
+        mpb.SetVector(ID_NormCenter, new Vector4(normCenter.x, normCenter.y, 0f, 0f));
+        mpb.SetFloat(ID_NormInvHalfExtent, normInvHalfExtent);
+
+        return true;
     }
 }

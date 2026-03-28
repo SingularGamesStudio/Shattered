@@ -610,7 +610,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kernel, "_DtHalfEdges", layer0Dt.GetHalfEdgesBuffer(dtReadSlot));
             cb.SetComputeBufferParam(shader, kernel, "_DtBoundaryEdgeFlags", layer0Dt.BoundaryEdgeFlagsBuffer);
             cb.SetComputeBufferParam(shader, kernel, "_DtGlobalVertexByLocal", dtGlobalNodeMap ?? solver.layerMappingCache.DefaultDtGlobalNodeMap);
-            cb.SetComputeBufferParam(shader, kernel, "_DtTriInternal", layer0Dt.TriInternalBuffer);
+            cb.SetComputeBufferParam(shader, kernel, "_DtTriInternal", layer0Dt.GetTriInternalBuffer(dtReadSlot));
             cb.SetComputeBufferParam(shader, kernel, "_DtBoundaryNormals", layer0Dt.BoundaryNormalsBuffer);
 
             BindDtGlobalMappingParams(cb, kernel, useDtGlobalNodeMap, 0, dtGlobalNodeMap, dtGlobalToLayerLocalMap);

@@ -162,9 +162,9 @@ MonoBehaviour:
       targetTPS: 500
       targetFPS: 30
       simulationSpeed: 1
-      maxTicksPerBatch: 32
+      maxTicksPerBatch: 16
     interaction:
-      manual: 1
+      manual: 0
       holdThreshold: 0.2
       useHierarchicalSolver: 1
       neighborSearchMode: 0
@@ -193,7 +193,7 @@ MonoBehaviour:
       parentWeightEpsilon: 0.001
     particleRegularization:
       xsphC: 0
-      enablePositionCorrection: 1
+      enablePositionCorrection: 0
       positionCorrectionIterations: 1
       positionCorrectionGapRatio: 0.25
       positionCorrectionCompliance: 1
@@ -217,7 +217,7 @@ MonoBehaviour:
       collisionSdfEdgeRefineIterations: 6
     volume:
       volumeComplianceComp: 1
-      volumeComplianceExp: 0
+      volumeComplianceExp: 1
       volumeJLow: 0.98
       volumeJHigh: 1.02
       volumeJMin: 0.05
@@ -342,7 +342,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &479369957
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -599,7 +599,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1096136047
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -726,7 +726,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1458040636
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -797,7 +797,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1678946268
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -925,7 +925,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1767357829
 MonoBehaviour:
   m_ObjectHideFlags: 0
