@@ -402,7 +402,7 @@ void QueryVertexContacts(uint3 tid : SV_DispatchThreadID)
     FeatureHit hit;
     if (!QueryOwnerBoundaryExact(ownerB, x, hit)) return;
     if (hit.valid == 0u) return;
-    if (hit.phi >= support) return;
+    //if (hit.phi >= support) return;
 
     float2 n = SafeNormalize(hit.grad);
     if (dot(n, n) <= 1e-20) return;

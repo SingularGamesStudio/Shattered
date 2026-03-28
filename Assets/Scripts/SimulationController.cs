@@ -50,6 +50,7 @@ public sealed class SimulationController : MonoBehaviour {
     int cachedGlobalBatchFrame = -1;
     bool cachedGlobalBatchValid;
     float lastAsyncSubmitIssueLogTime = -999f;
+    float writePendingStartTime = -999f;
 
     readonly List<Meshless> readbackMeshesSnapshot = new List<Meshless>(64);
     readonly List<int> readbackBaseOffsetsSnapshot = new List<int>(64);
@@ -399,10 +400,14 @@ public sealed class SimulationController : MonoBehaviour {
             neighborBoundsMax
         );
 
+        if (computeFence.Equals(default(GraphicsFence)))
+            LogAsyncSubmitIssue("SubmitSolve returned a default compute fence; using fallback completion path.");
+
         asyncState.writePending = true;
         asyncState.writeSlot = freeSlot;
         asyncState.computeFence = computeFence;
         asyncState.freeSlot = -1;
+        writePendingStartTime = Time.unscaledTime;
         return true;
     }
 
@@ -429,13 +434,18 @@ public sealed class SimulationController : MonoBehaviour {
     bool TrySelectWritableSlot(ref AsyncTripleState state, out int slot) {
         slot = -1;
 
-        int candidate = NextRingSlot(state.renderSlot);
-        if (!IsSlotWritable(state, candidate))
-            return false;
+        int start = NextRingSlot(state.renderSlot);
+        for (int i = 0; i < 3; i++) {
+            int candidate = (start + i) % 3;
+            if (!IsSlotWritable(state, candidate))
+                continue;
 
-        slot = candidate;
-        state.freeSlot = candidate;
-        return true;
+            slot = candidate;
+            state.freeSlot = candidate;
+            return true;
+        }
+
+        return false;
     }
 
     void BuildActiveMeshlessBatch() {
@@ -582,11 +592,30 @@ public sealed class SimulationController : MonoBehaviour {
         if (asyncState.renderFences == null)
             return;
 
-        if (asyncState.writePending && asyncState.computeFence.passed) {
+        if (asyncState.writePending && IsFencePassedOrUnset(asyncState.computeFence)) {
             asyncState.computeCompleted = true;
             asyncState.completedWriteSlot = asyncState.writeSlot;
             asyncState.writePending = false;
             asyncState.writeSlot = -1;
+            writePendingStartTime = -999f;
+        }
+
+        if (asyncState.writePending) {
+            const float ForceWaitTimeoutSeconds = 0.5f;
+            if (Time.unscaledTime >= writePendingStartTime + ForceWaitTimeoutSeconds) {
+                GraphicsFence fence = asyncState.computeFence;
+                if (!fence.Equals(default(GraphicsFence))) {
+                    LogAsyncSubmitIssue("Async compute fence timed out; forcing completion to recover.");
+                } else {
+                    LogAsyncSubmitIssue("Async compute fence is default; forcing completion to avoid deadlock.");
+                }
+
+                asyncState.computeCompleted = true;
+                asyncState.completedWriteSlot = asyncState.writeSlot;
+                asyncState.writePending = false;
+                asyncState.writeSlot = -1;
+                writePendingStartTime = -999f;
+            }
         }
 
         if (asyncState.computeCompleted) {
@@ -594,14 +623,13 @@ public sealed class SimulationController : MonoBehaviour {
             if (candidateSlot < 0 || candidateSlot > 2)
                 return;
 
-            GraphicsFence renderFence = asyncState.renderFences[asyncState.renderSlot];
-            if (renderFence.Equals(default(GraphicsFence)) || renderFence.passed) {
-                int oldRender = asyncState.renderSlot;
-                asyncState.renderSlot = candidateSlot;
-                asyncState.freeSlot = oldRender;
-                asyncState.computeCompleted = false;
-                asyncState.completedWriteSlot = -1;
-            }
+            // Promotion is immediate once compute is complete. Render safety is enforced by
+            // writable-slot checks against per-slot render fences at submit time.
+            int oldRender = asyncState.renderSlot;
+            asyncState.renderSlot = candidateSlot;
+            asyncState.freeSlot = oldRender;
+            asyncState.computeCompleted = false;
+            asyncState.completedWriteSlot = -1;
         }
     }
 

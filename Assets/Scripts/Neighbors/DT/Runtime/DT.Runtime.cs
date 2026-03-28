@@ -200,6 +200,7 @@ namespace GPU.Delaunay {
             cb.SetComputeBufferParam(_shader, _kernelMarkBoundaryEdges, "_BoundaryEdgeFlags", _boundaryEdgeFlags);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_HalfEdges", _halfEdges[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_VToE", _vToE);
+            cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_TriInternal", _triInternal[writeSlot]);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_BoundaryEdgeFlags", _boundaryEdgeFlags);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_BoundaryNormals", _boundaryNormals);
             cb.SetComputeBufferParam(_shader, _kernelBuildBoundaryNormals, "_Positions", positionsForMaintain);

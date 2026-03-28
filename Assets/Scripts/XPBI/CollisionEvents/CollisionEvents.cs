@@ -111,13 +111,22 @@ namespace GPU.Solver {
             int sdfGroups = (SdfResolution + 7) / 8;
             Dispatch(session.AsyncCb, "XPBI.BuildOwnerFeatureField", shader, kBuildOwnerFeatureField, sdfGroups, sdfGroups, collisionOwnerCount);
 
-            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
             int queryWorkItems = math.max(1, MaxBoundaryEdgesPerOwner * pairDispatchCount);
             int queryGroupsX = Groups64(queryWorkItems);
 
+            // Vertex-feature contacts: A -> B
+            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
             Dispatch(session.AsyncCb, "XPBI.QueryVertexContactsAB", shader, kQueryVertexContacts, queryGroupsX, 1, 1);
+
+            // Vertex-feature contacts: B -> A
+            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 1);
+            Dispatch(session.AsyncCb, "XPBI.QueryVertexContactsBA", shader, kQueryVertexContacts, queryGroupsX, 1, 1);
+
+            // Edge-edge contacts: only once, unswapped
+            session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
             Dispatch(session.AsyncCb, "XPBI.QueryEdgeEdgeContacts", shader, kQueryEdgeEdgeContacts, queryGroupsX, 1, 1);
 
+            // Leave default state predictable for later passes
             session.AsyncCb.SetComputeIntParam(shader, "_QuerySwap", 0);
         }
 
