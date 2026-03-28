@@ -232,6 +232,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
     float2[] dtPositions = Array.Empty<float2>();
     float2[] globalPositions = Array.Empty<float2>();
     float[] invMass = Array.Empty<float>();
+    bool[] collisionOwnerHasNonFixed = Array.Empty<bool>();
     BoundaryChunkGpu[] boundaryChunks = Array.Empty<BoundaryChunkGpu>();
     CollisionEventGpu[] collisionEvents = Array.Empty<CollisionEventGpu>();
     CoarseContactGpu[] coarseCollisionEvents = Array.Empty<CoarseContactGpu>();
@@ -269,6 +270,7 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
     void OnDisable() {
         pending = null;
+        collisionOwnerHasNonFixed = Array.Empty<bool>();
     }
 
     void Update() {
@@ -365,6 +367,8 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
         if (totalCount <= 0)
             return false;
 
+        RefreshCollisionOwnerNonFixedMask(meshes);
+
         snapshot = new ReadbackSnapshot {
             DtPositions = dtPositionsBuffer,
             GlobalPositions = globalPositionsBuffer,
@@ -391,6 +395,62 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
 
         return snapshot.ActiveCount > 0 && snapshot.TotalCount > 0;
     }
+
+    void RefreshCollisionOwnerNonFixedMask(IReadOnlyList<Meshless> meshes) {
+        int meshCount = meshes != null ? meshes.Count : 0;
+        if (meshCount <= 0) {
+            collisionOwnerHasNonFixed = Array.Empty<bool>();
+            return;
+        }
+
+        if (collisionOwnerHasNonFixed == null || collisionOwnerHasNonFixed.Length < meshCount)
+            collisionOwnerHasNonFixed = new bool[meshCount];
+        else
+            Array.Clear(collisionOwnerHasNonFixed, 0, collisionOwnerHasNonFixed.Length);
+
+        var representativeByKey = new Dictionary<UnityEngine.Object, int>(meshCount);
+        for (int meshIdx = 0; meshIdx < meshCount; meshIdx++) {
+            Meshless mesh = meshes[meshIdx];
+            UnityEngine.Object ownerKey = mesh != null ? mesh.GetCollisionOwnerKey() : null;
+            if (ownerKey == null)
+                ownerKey = mesh;
+
+            if (!representativeByKey.TryGetValue(ownerKey, out int ownerId)) {
+                ownerId = meshIdx;
+                representativeByKey[ownerKey] = ownerId;
+            }
+
+            if ((uint)ownerId >= (uint)collisionOwnerHasNonFixed.Length)
+                continue;
+
+            if (MeshHasAnyNonFixedNode(mesh))
+                collisionOwnerHasNonFixed[ownerId] = true;
+        }
+    }
+
+    static bool MeshHasAnyNonFixedNode(Meshless mesh) {
+        if (mesh == null || mesh.fixedObject || mesh.nodes == null)
+            return false;
+
+        for (int i = 0; i < mesh.nodes.Count; i++) {
+            Node node = mesh.nodes[i];
+            if (!node.isFixed && node.invMass > 0f)
+                return true;
+        }
+
+        return false;
+    }
+
+    bool OwnerHasNonFixedNodes(uint ownerId) {
+        if (ownerId == InvalidU32 || collisionOwnerHasNonFixed == null)
+            return false;
+
+        int id = (int)ownerId;
+        return id >= 0 && id < collisionOwnerHasNonFixed.Length && collisionOwnerHasNonFixed[id];
+    }
+
+    bool ShouldDrawOwnerPair(uint ownerA, uint ownerB) =>
+        OwnerHasNonFixedNodes(ownerA) || OwnerHasNonFixedNodes(ownerB);
 
     void RunSyncReadback(in ReadbackSnapshot snapshot) {
         oneUintScratch[0] = 0;
@@ -933,6 +993,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     : i;
 
                 CollisionEventGpu evt = collisionEvents[sourceIndex];
+                if (!ShouldDrawOwnerPair(evt.ownerA, evt.ownerB))
+                    continue;
+
                 if (!TryResolveFineContactOrigin(evt, invHalfExtent, out float2 c)) {
                     lastArrowSkippedDegenerate++;
                     continue;
@@ -986,6 +1049,9 @@ public sealed class CollisionDebugRenderer : MonoBehaviour {
                     : i;
 
                 CoarseContactGpu evt = coarseCollisionEvents[sourceIndex];
+                if (!ShouldDrawOwnerPair(evt.ownerA, evt.ownerB))
+                    continue;
+
                 float2 n = evt.normal;
                 float nLen = math.length(n);
                 if (!(nLen > 1e-6f))

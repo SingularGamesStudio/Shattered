@@ -79,7 +79,7 @@ bool FeatureLess(FeatureHit a, FeatureHit b)
     if (aa + 1e-6 < ba) return true;
     if (ba + 1e-6 < aa) return false;
 
-    if (a.type != b.type) return a.type > b.type;
+    if (a.type != b.type) return a.type < b.type; // edges first
     return a.id < b.id;
 }
 
@@ -132,6 +132,10 @@ void ConsiderVertexFeature(float2 x, uint heId, inout FeatureHit best)
 
     float2 v = PredPos(vGi);
     float2 np = _BoundaryVertexPseudoN[heId];
+    float np2 = dot(np, np);
+    if (np2 <= 1e-12) return;
+    np *= rsqrt(np2);
+
     float2 d = x - v;
     float dsq = dot(d, d);
 

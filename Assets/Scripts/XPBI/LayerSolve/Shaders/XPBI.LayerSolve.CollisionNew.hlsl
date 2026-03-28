@@ -226,7 +226,7 @@ if (li < active)
         float bias    = min(max(_CollisionPenBias, 0.0) * penEff, max(_CollisionMaxBias, 0.0));
         float maxPush = max(_CollisionMaxPush, 0.0);
 
-        float Cn = projected - scale * targetSeparation;
+        float Cn = -projected - scale * targetSeparation;
         Cn -= scale * bias;
         Cn = max(Cn, -scale * (penEff + maxPush));
 
@@ -243,7 +243,7 @@ if (li < active)
         float dLambda = -(Cn + alphaCollision * lambdaPrev) / max(wTerm + alphaCollision, EPS);
         float relax = saturate(_CollisionRelaxation);
         float lambdaTarget = max(0.0, lambdaPrev + dLambda);
-        float lambdaNew    = lerp(lambdaPrev, lambdaTarget, relax);
+        float lambdaNew = lerp(lambdaPrev, lambdaTarget, relax);
         float appliedDLambda = lambdaNew - lambdaPrev;
 
         XPBI_COL_WRITE_LAMBDA(lambdaIdx, lambdaNew);
@@ -252,10 +252,11 @@ if (li < active)
             continue;
 
         // --------------------------------------------------------------------
-        // Relative velocity terms for restitution / friction.
-        // Matches the newer path: use unscaled stencil weights here.
+        // Relative velocity terms.
+        // Raw stencil convention gives vRelRaw = vB* - vA, so flip it to get
+        // the physical relative velocity of A against B along nrm.
         // --------------------------------------------------------------------
-        float2 vRel = 0.0;
+        float2 vRelRaw = 0.0;
         float  wEff = 0.0;
 
         [unroll]
@@ -265,29 +266,30 @@ if (li < active)
             if (relGi == COLLISION_INVALID_U32)
                 continue;
 
-            uint  relLi         = nodeLiCache[sRel];
-            float betaUnscaled  = betaUnscaledCache[sRel];
+            uint  relLi        = nodeLiCache[sRel];
+            float betaUnscaled = betaUnscaledCache[sRel];
 
-            vRel += betaUnscaled * XPBI_VEL(relLi, relGi);
-            wEff += invMassCache[sRel] * betaUnscaled * betaUnscaled;
+            vRelRaw += betaUnscaled * XPBI_VEL(relLi, relGi);
+            wEff    += invMassCache[sRel] * betaUnscaled * betaUnscaled;
         }
 
-        float  vn    = dot(vRel, nrm);
-        float2 vt    = vRel - vn * nrm;
+        float2 vRel = -vRelRaw;
+        float  vn   = dot(vRel, nrm);
+        float2 vt   = vRel - vn * nrm; 
         float  vtLen = length(vt);
 
-        float restitution          = saturate(_CollisionRestitution);
+        float restitution = saturate(_CollisionRestitution);
         float restitutionThreshold = max(_CollisionRestitutionThreshold, 0.0);
-        float restitutionDeltaVn   = restitution * max(-vn - restitutionThreshold, 0.0);
+        float restitutionDeltaVn = restitution * max(-vn - restitutionThreshold, 0.0);
 
         float friction = saturate(_CollisionFriction);
-        float maxDv    = max(_CollisionMaxDv, 0.0);
+        float maxDv = max(_CollisionMaxDv, 0.0);
 
-        float  wEffSafe           = max(wEff, EPS);
+        float  wEffSafe = max(wEff, EPS);
         float  restitutionImpulse = (wEff > EPS) ? (restitutionDeltaVn / wEffSafe) : 0.0;
-        float  maxFrictionDeltaV  = friction * max(-vn, 0.0);
-        float  frictionImpulse    = (wEff > EPS) ? (min(vtLen, maxFrictionDeltaV) / wEffSafe) : 0.0;
-        float2 vtDir              = (vtLen > EPS) ? (vt / vtLen) : 0.0;
+        float  maxFrictionDeltaV = friction * max(-vn, 0.0);
+        float  frictionImpulse = (wEff > EPS) ? (min(vtLen, maxFrictionDeltaV) / wEffSafe) : 0.0;
+        float2 vtDir = (vtLen > EPS) ? (vt / vtLen) : 0.0;
 
         [unroll]
         for (uint sApply = 0u; sApply < COLLISION_MAX_NODES; sApply++)
@@ -304,10 +306,13 @@ if (li < active)
             float betaUnscaled = betaUnscaledCache[sApply];
 
             float2 dV = -invMass * betaScaled * dt * appliedDLambda * nrm;
-            dV += invMass * betaUnscaled * restitutionImpulse * nrm;
 
+            // Flip restitution sign to match physical vRel = vA - vB*
+            dV += -invMass * betaUnscaled * restitutionImpulse * nrm;
+
+            // Flip friction sign to oppose tangential relative motion in that same convention
             if (frictionImpulse > EPS && vtLen > EPS)
-                dV += -invMass * betaUnscaled * frictionImpulse * vtDir;
+                dV += invMass * betaUnscaled * frictionImpulse * vtDir;
 
             if (maxDv > EPS)
             {

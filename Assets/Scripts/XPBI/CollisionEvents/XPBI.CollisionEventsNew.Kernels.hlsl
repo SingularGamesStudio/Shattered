@@ -546,9 +546,6 @@ void QueryEdgeEdgeContacts(uint3 tid : SV_DispatchThreadID)
 
                 float2 midA = 0.5 * (a0 + a1);
                 float2 midB = 0.5 * (b0 + b1);
-                if (dot(n, midA - midB) < 0.0)
-                    n = -n;
-
                 float sep = abs(dot(midA - midB, n));
                 float pen = support - sep;
                 if (pen <= 0.0)

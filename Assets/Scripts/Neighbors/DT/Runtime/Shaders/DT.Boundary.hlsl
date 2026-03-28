@@ -92,6 +92,68 @@ void MarkBoundaryEdges(uint3 id : SV_DispatchThreadID)
     }
 }
 
+bool IsCanonicalBoundaryHE(int he)
+{
+    if (he < 0 || he >= _HalfEdgeCount) return false;
+
+    int t = _HalfEdges[he].t;
+    if (t < 0 || t >= _TriCount) return false;
+    if (_TriInternal[t] == 0u) return false;
+
+    int tw = _HalfEdges[he].twin;
+    bool twInternal = false;
+    if (tw >= 0 && tw < _HalfEdgeCount)
+    {
+        int tt = _HalfEdges[tw].t;
+        twInternal = (tt >= 0 && tt < _TriCount && _TriInternal[tt] != 0u);
+    }
+
+    return !twInternal;
+}
+
+float2 BoundaryPos(int v)
+{
+    return _Positions[v];
+    // If your SDF is built in predicted space, replace with predicted positions here.
+}
+
+bool CanonicalBoundaryNormal(int heCan, out float2 nOut)
+{
+    nOut = 0.0;
+
+    if (!IsCanonicalBoundaryHE(heCan))
+        return false;
+
+    int he1 = Next(heCan);
+    int he2 = Next(he1);
+
+    int v0 = _HalfEdges[heCan].v;
+    int v1 = _HalfEdges[he1].v;
+    int vOpp = _HalfEdges[he2].v;
+
+    if ((uint)v0 >= (uint)_RealVertexCount ||
+        (uint)v1 >= (uint)_RealVertexCount ||
+        (uint)vOpp >= (uint)_RealVertexCount)
+        return false;
+
+    float2 p0 = BoundaryPos(v0);
+    float2 p1 = BoundaryPos(v1);
+    float2 pOpp = BoundaryPos(vOpp);
+
+    float2 e = p1 - p0;
+    float e2 = dot(e, e);
+    if (e2 <= 1e-12f)
+        return false;
+
+    float side = (p1.x - p0.x) * (pOpp.y - p0.y) - (p1.y - p0.y) * (pOpp.x - p0.x);
+
+    float invLen = rsqrt(e2);
+    float2 nL = float2(-e.y, e.x) * invLen;
+    nOut = (side > 0.0f) ? -nL : nL;
+
+    return true;
+}
+
 [numthreads(256,1,1)]
 void BuildBoundaryNormals(uint3 id : SV_DispatchThreadID)
 {
@@ -99,38 +161,51 @@ void BuildBoundaryNormals(uint3 id : SV_DispatchThreadID)
     if (v >= (uint)_RealVertexCount) return;
 
     int start = _VToE[v];
-    if (start < 0) {
-        _BoundaryNormals[v] = float2(0.0f, 0.0f);
+    if (start < 0)
+    {
+        _BoundaryNormals[v] = 0.0;
         return;
     }
 
-    int he = start;
-    float2 sum = float2(0.0f, 0.0f);
+    int heOut = start;
+    float2 sum = 0.0;
+    uint count = 0u;
 
-    [loop] for (int iter = 0; iter < 128; iter++) {
-        if (_BoundaryEdgeFlags[he] != 0u) {
-            int dst = Dest(he);
-            if ((uint)dst < (uint)_RealVertexCount) {
-                float2 pa = _Positions[v];
-                float2 pb = _Positions[dst];
-                float2 e = pb - pa;
-                float len2 = dot(e, e);
-                if (len2 > 1e-12f) {
-                    float invLen = rsqrt(len2);
-                    float2 n = float2(e.y, -e.x) * invLen;
-                    sum += n;
-                }
+    [loop]
+    for (int iter = 0; iter < 128; ++iter)
+    {
+        int heCan = -1;
+
+        if (IsCanonicalBoundaryHE(heOut))
+        {
+            heCan = heOut;
+        }
+        else
+        {
+            int tw = _HalfEdges[heOut].twin;
+            if (tw >= 0 && tw < _HalfEdgeCount && IsCanonicalBoundaryHE(tw))
+                heCan = tw;
+        }
+
+        if (heCan >= 0)
+        {
+            float2 nOut;
+            if (CanonicalBoundaryNormal(heCan, nOut))
+            {
+                sum += nOut;
+                count++;
             }
         }
 
-        int tw = _HalfEdges[Prev(he)].twin;
-        if (tw < 0) break;
-        he = tw;
-        if (he == start) break;
+        int twPrev = _HalfEdges[Prev(heOut)].twin;
+        if (twPrev < 0) break;
+
+        heOut = twPrev;
+        if (heOut == start) break;
     }
 
-    float len2Sum = dot(sum, sum);
-    _BoundaryNormals[v] = len2Sum > 1e-12f ? sum * rsqrt(len2Sum) : float2(0.0f, 0.0f);
+    float l2 = dot(sum, sum);
+    _BoundaryNormals[v] = (count > 0u && l2 > 1e-12f) ? sum * rsqrt(l2) : float2(0.0, 0.0);
 }
 
 [numthreads(256, 1, 1)]
