@@ -30,6 +30,7 @@ public static class Const {
     public static int InitColoringConflictRounds => SimulationParamSource.Current.dtMaintenance.initColoringConflictRounds;
     public static int DTFixIterations => SimulationParamSource.Current.dtMaintenance.dtFixIterations;
     public static int DTLegalizeIterations => SimulationParamSource.Current.dtMaintenance.dtLegalizeIterations;
+    public static int DTLayer0FullRebuildEveryKFrames => SimulationParamSource.Current.dtMaintenance.layer0FullRebuildEveryKFrames;
 
     // Stability limits
     public static float MaxVelocity => SimulationParamSource.Current.stability.maxVelocity;

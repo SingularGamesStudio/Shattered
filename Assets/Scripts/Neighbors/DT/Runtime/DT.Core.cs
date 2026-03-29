@@ -145,6 +145,7 @@ namespace GPU.Delaunay {
             //---------------------------------------------------------------------------
             _triLocks = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
             _vToE = new ComputeBuffer(_vertexCount, sizeof(int), ComputeBufferType.Structured);
+            _debug = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Structured);
             _neighbors = new ComputeBuffer(_realVertexCount * _neighborCount, sizeof(int), ComputeBufferType.Structured);
             _neighborCounts = new ComputeBuffer(_realVertexCount, sizeof(int), ComputeBufferType.Structured);
             _flipCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
@@ -152,20 +153,23 @@ namespace GPU.Delaunay {
             _triToHEAll = new ComputeBuffer(_triCount, sizeof(int), ComputeBufferType.Structured);
             _boundaryEdgeFlags = new ComputeBuffer(_halfEdgeCount, sizeof(uint), ComputeBufferType.Structured);
             _boundaryNormals = new ComputeBuffer(_realVertexCount, sizeof(float) * 2, ComputeBufferType.Structured);
-            _ownerByVertex = new ComputeBuffer(_realVertexCount, sizeof(int), ComputeBufferType.Structured);
+            _ownerByVertex = new ComputeBuffer(_vertexCount, sizeof(int), ComputeBufferType.Structured);
 
             // Initialise dirty flags to 0 (all clean).
             _dirtyVertexFlags.SetData(new uint[_realVertexCount]);
             _boundaryNormals.SetData(new float2[_realVertexCount]);
             _boundaryEdgeFlags.SetData(new uint[_halfEdgeCount]);
 
-            int[] owners = new int[_realVertexCount];
-            for (int i = 0; i < _realVertexCount; i++) owners[i] = -1;
+            int[] owners = new int[_vertexCount];
+            for (int i = 0; i < _vertexCount; i++) owners[i] = -1;
             if (ownerByLocal != null) {
                 int copy = math.min(_realVertexCount, ownerByLocal.Count);
                 for (int i = 0; i < copy; i++) owners[i] = ownerByLocal[i];
             }
             _ownerByVertex.SetData(owners);
+            _ownerByVertexInit = owners;
+
+            EnsureFullRebuildBuffers();
 
             // Build initial adjacency and triangle maps synchronously for all three slots.
             for (int i = 0; i < 3; i++)
@@ -262,6 +266,338 @@ namespace GPU.Delaunay {
             EnqueueBuild(cb, positions, readSlot, writeSlot, fixIterations, legalizeIterations, rebuildAdjacencyAndTriMap);
         }
 
+        public bool SupportsFullRebuild => _fullRebuildShader != null;
+
+        public void EnqueueFullRebuild(
+            CommandBuffer cb,
+            ComputeBuffer positionsForMaintain,
+            int writeSlot,
+            bool rebuildAdjacencyAndTriMap = true) {
+            if (cb == null) throw new ArgumentNullException(nameof(cb));
+            if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
+            if (writeSlot < 0 || writeSlot > 2) throw new ArgumentOutOfRangeException(nameof(writeSlot));
+            if (!SupportsFullRebuild)
+                throw new InvalidOperationException("DT full rebuild shader is not configured.");
+
+            EnsureFullRebuildBuffers();
+            SetFullRebuildCommonParams(cb, positionsForMaintain, writeSlot);
+
+            int partialGroups = math.max(1, (_realVertexCount + 255) / 256);
+            int gridCells = math.max(1, _rebuildGridW * _rebuildGridH);
+            int gridGroups1D = math.max(1, (gridCells + 255) / 256);
+            int gridGroupsX = math.max(1, (_rebuildGridW + 7) / 8);
+            int gridGroupsY = math.max(1, (_rebuildGridH + 7) / 8);
+
+            Dispatch(cb, _fullRebuildShader, _frKernelBoundsReducePartials, partialGroups, 1, 1, MarkerPrefix + "FR.BoundsReducePartials");
+            Dispatch(cb, _fullRebuildShader, _frKernelBoundsFinalize, 1, 1, 1, MarkerPrefix + "FR.BoundsFinalize");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelClearRebuildGrid, gridGroups1D, 1, 1, MarkerPrefix + "FR.ClearRebuildGrid");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearTriangleHash, (_rebuildTriHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearTriangleHash");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, (_rebuildEdgeHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeHash");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearMeshState, (math.max(math.max(_vertexCount, _halfEdgeCount), _triCount) + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearMeshState");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelSeedSitesToGrid, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "FR.SeedSitesToGrid");
+            Dispatch(cb, _fullRebuildShader, _frKernelAssignOwnersByCell, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "FR.AssignOwnersByCell");
+            Dispatch(cb, _fullRebuildShader, _frKernelInitVoronoiFromSeeds, gridGroups1D, 1, 1, MarkerPrefix + "FR.InitVoronoiFromSeeds");
+
+            int jfaStep = 1;
+            int maxDim = math.max(_rebuildGridW, _rebuildGridH);
+            while (jfaStep < maxDim)
+                jfaStep <<= 1;
+
+            bool writeToB = true;
+            for (int step = jfaStep; step >= 1; step >>= 1) {
+                cb.SetComputeIntParam(_fullRebuildShader, "_NeighborCount", step);
+                if (writeToB)
+                    Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodAtoB");
+                else
+                    Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA");
+                writeToB = !writeToB;
+            }
+
+            // Ensure final JFA ownership resides in VoronoiA for extraction.
+            if (!writeToB)
+                Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA.Finalize");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsAtoB");
+            Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsBtoA");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelExtractTrianglesFromVoronoi, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.ExtractTrianglesFromVoronoi");
+            Dispatch(cb, _fullRebuildShader, _frKernelCompactTrianglesFromHash, (_rebuildTriHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.CompactTrianglesFromHash");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelClearTriangleRejectFlags, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearTriangleRejectFlags");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeRecords, (_rebuildMaxEdgeRecords + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeRecords");
+            Dispatch(cb, _fullRebuildShader, _frKernelEmitTriangleEdgeRecords, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.EmitTriangleEdgeRecords");
+
+            int sortCount = 1;
+            while (sortCount < _rebuildMaxEdgeRecords)
+                sortCount <<= 1;
+
+            int sortGroups = (sortCount + 255) / 256;
+            for (int k = 2; k <= sortCount; k <<= 1) {
+                cb.SetComputeIntParam(_fullRebuildShader, "_SortK", k);
+                for (int j = k >> 1; j > 0; j >>= 1) {
+                    cb.SetComputeIntParam(_fullRebuildShader, "_SortJ", j);
+                    Dispatch(cb, _fullRebuildShader, _frKernelSortEdgeRecordsBitonic, sortGroups, 1, 1, MarkerPrefix + "FR.SortEdgeRecordsBitonic");
+                }
+            }
+
+            Dispatch(cb, _fullRebuildShader, _frKernelRejectTrianglesFromSortedEdgeRecords, (_rebuildMaxEdgeRecords + 255) / 256, 1, 1, MarkerPrefix + "FR.RejectTrianglesFromSortedEdgeRecords");
+            Dispatch(cb, _fullRebuildShader, _frKernelResetFilteredTriCounter, 1, 1, 1, MarkerPrefix + "FR.ResetFilteredTriCounter");
+            Dispatch(cb, _fullRebuildShader, _frKernelCompactValidTrianglesToTemp, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.CompactValidTrianglesToTemp");
+            Dispatch(cb, _fullRebuildShader, _frKernelCopyFilteredTrianglesBack, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.CopyFilteredTrianglesBack");
+            Dispatch(cb, _fullRebuildShader, _frKernelFinalizeFilteredTriCount, 1, 1, 1, MarkerPrefix + "FR.FinalizeFilteredTriCount");
+
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, (_rebuildEdgeHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeHash.2");
+            Dispatch(cb, _fullRebuildShader, _frKernelBuildHalfEdgesFromTriangles, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildHalfEdgesFromTriangles");
+            Dispatch(cb, _fullRebuildShader, _frKernelBuildDirectedEdgeHash, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildDirectedEdgeHash");
+            Dispatch(cb, _fullRebuildShader, _frKernelResolveTwinsFromEdgeHash, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.ResolveTwinsFromEdgeHash");
+            Dispatch(cb, _fullRebuildShader, _frKernelBuildVertexToEdgeAndBoundary, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildVertexToEdgeAndBoundary");
+
+            if (_ownerByVertexInit != null)
+                cb.SetBufferData(_ownerByVertex, _ownerByVertexInit);
+
+            if (rebuildAdjacencyAndTriMap)
+                EnqueueRebuildVertexAdjacencyAndTriMap(cb, writeSlot);
+
+                // Clear dirty flags once for this maintenance batch.
+            DispatchClearDirtyVertexFlags(cb);
+
+            SetCommonParams(cb);
+            PrepareBuildBuffers(cb, positionsForMaintain, writeSlot);
+
+            int boundaryGroups = math.max((_triCount + 255) / 256, math.max((_halfEdgeCount + 255) / 256, (_realVertexCount + 255) / 256));
+            Dispatch(cb, _shader, _kernelClearBoundaryData, boundaryGroups, 1, 1, MarkerPrefix + "ClearBoundaryData");
+            Dispatch(cb, _shader, _kernelBuildTriToHEAll, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildTriToHEAll");
+            Dispatch(cb, _shader, _kernelClassifyInternalTriangles, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "ClassifyInternalTriangles");
+            Dispatch(cb, _shader, _kernelMarkBoundaryEdges, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "MarkBoundaryEdges");
+            Dispatch(cb, _shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "BoundaryClearVertexToEdge");
+            Dispatch(cb, _shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BoundaryBuildVertexToEdge");
+            Dispatch(cb, _shader, _kernelBuildBoundaryNormals, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildBoundaryNormals");
+        }
+
+        private void EnsureFullRebuildBuffers() {
+            if (!SupportsFullRebuild || _vertexCount <= 0 || _realVertexCount <= 0 || _triCount <= 0 || _halfEdgeCount <= 0)
+                return;
+
+            int side = (int)math.ceil(math.sqrt(math.max(1, _realVertexCount)) * 2f);
+            _rebuildGridW = math.max(8, side);
+            _rebuildGridH = _rebuildGridW;
+            _rebuildTriHashSize = math.max(64, _triCount * 4);
+            _rebuildEdgeHashSize = math.max(64, _halfEdgeCount * 4);
+            int edgeRecordMin = math.max(3, _triCount * 3);
+            int edgeRecordCapacity = 1;
+            while (edgeRecordCapacity < edgeRecordMin)
+                edgeRecordCapacity <<= 1;
+            _rebuildMaxEdgeRecords = edgeRecordCapacity;
+
+            int gridCells = _rebuildGridW * _rebuildGridH;
+
+            if (_gridSeedOwner == null || _gridSeedOwner.count != gridCells) {
+                _gridSeedOwner?.Dispose();
+                _gridSeedOwner = new ComputeBuffer(gridCells, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (_voronoiA == null || _voronoiA.count != gridCells) {
+                _voronoiA?.Dispose();
+                _voronoiA = new ComputeBuffer(gridCells, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (_voronoiB == null || _voronoiB.count != gridCells) {
+                _voronoiB?.Dispose();
+                _voronoiB = new ComputeBuffer(gridCells, sizeof(int), ComputeBufferType.Structured);
+            }
+
+            if (_triHashA == null || _triHashA.count != _rebuildTriHashSize) {
+                _triHashA?.Dispose();
+                _triHashA = new ComputeBuffer(_rebuildTriHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_triHashB == null || _triHashB.count != _rebuildTriHashSize) {
+                _triHashB?.Dispose();
+                _triHashB = new ComputeBuffer(_rebuildTriHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_triHashC == null || _triHashC.count != _rebuildTriHashSize) {
+                _triHashC?.Dispose();
+                _triHashC = new ComputeBuffer(_rebuildTriHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_triHashState == null || _triHashState.count != _rebuildTriHashSize) {
+                _triHashState?.Dispose();
+                _triHashState = new ComputeBuffer(_rebuildTriHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+
+            if (_triRaw == null || _triRaw.count != _triCount) {
+                _triRaw?.Dispose();
+                _triRaw = new ComputeBuffer(_triCount, sizeof(uint) * 3, ComputeBufferType.Structured);
+            }
+            if (_triReject == null || _triReject.count != _triCount) {
+                _triReject?.Dispose();
+                _triReject = new ComputeBuffer(_triCount, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_triTemp == null || _triTemp.count != _triCount) {
+                _triTemp?.Dispose();
+                _triTemp = new ComputeBuffer(_triCount, sizeof(uint) * 3, ComputeBufferType.Structured);
+            }
+            if (_siteSeenInTri == null || _siteSeenInTri.count != _vertexCount) {
+                _siteSeenInTri?.Dispose();
+                _siteSeenInTri = new ComputeBuffer(_vertexCount, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_missingSites == null || _missingSites.count != _realVertexCount) {
+                _missingSites?.Dispose();
+                _missingSites = new ComputeBuffer(_realVertexCount, sizeof(int), ComputeBufferType.Structured);
+            }
+
+            if (_edgeHashSrc == null || _edgeHashSrc.count != _rebuildEdgeHashSize) {
+                _edgeHashSrc?.Dispose();
+                _edgeHashSrc = new ComputeBuffer(_rebuildEdgeHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_edgeHashDst == null || _edgeHashDst.count != _rebuildEdgeHashSize) {
+                _edgeHashDst?.Dispose();
+                _edgeHashDst = new ComputeBuffer(_rebuildEdgeHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_edgeHashHE == null || _edgeHashHE.count != _rebuildEdgeHashSize) {
+                _edgeHashHE?.Dispose();
+                _edgeHashHE = new ComputeBuffer(_rebuildEdgeHashSize, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (_edgeHashState == null || _edgeHashState.count != _rebuildEdgeHashSize) {
+                _edgeHashState?.Dispose();
+                _edgeHashState = new ComputeBuffer(_rebuildEdgeHashSize, sizeof(uint), ComputeBufferType.Structured);
+            }
+
+            if (_edgeRecHash == null || _edgeRecHash.count != _rebuildMaxEdgeRecords) {
+                _edgeRecHash?.Dispose();
+                _edgeRecHash = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_edgeRecA == null || _edgeRecA.count != _rebuildMaxEdgeRecords) {
+                _edgeRecA?.Dispose();
+                _edgeRecA = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_edgeRecB == null || _edgeRecB.count != _rebuildMaxEdgeRecords) {
+                _edgeRecB?.Dispose();
+                _edgeRecB = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(uint), ComputeBufferType.Structured);
+            }
+            if (_edgeRecTri == null || _edgeRecTri.count != _rebuildMaxEdgeRecords) {
+                _edgeRecTri?.Dispose();
+                _edgeRecTri = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (_edgeRecOpp == null || _edgeRecOpp.count != _rebuildMaxEdgeRecords) {
+                _edgeRecOpp?.Dispose();
+                _edgeRecOpp = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(int), ComputeBufferType.Structured);
+            }
+
+            if (_rebuildCounters == null || _rebuildCounters.count != 6) {
+                _rebuildCounters?.Dispose();
+                _rebuildCounters = new ComputeBuffer(6, sizeof(uint), ComputeBufferType.Structured);
+            }
+        }
+
+        private void SetFullRebuildCommonParams(CommandBuffer cb, ComputeBuffer positionsForMaintain, int writeSlot) {
+            cb.SetComputeIntParam(_fullRebuildShader, "_VertexCount", _vertexCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_RealVertexCount", _realVertexCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_HalfEdgeCount", _halfEdgeCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_TriCount", _triCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_NeighborCount", _neighborCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_UseSupportRadiusFilter", _useSupportRadiusFilter ? 1 : 0);
+            cb.SetComputeFloatParam(_fullRebuildShader, "_SupportRadius2", _supportRadius2);
+            cb.SetComputeIntParam(_fullRebuildShader, "_BoundsPartialCount", math.max(1, (_realVertexCount + 255) / 256));
+
+            cb.SetComputeIntParam(_fullRebuildShader, "_GridW", _rebuildGridW);
+            cb.SetComputeIntParam(_fullRebuildShader, "_GridH", _rebuildGridH);
+            cb.SetComputeIntParam(_fullRebuildShader, "_TriHashSize", _rebuildTriHashSize);
+            cb.SetComputeIntParam(_fullRebuildShader, "_EdgeHashSize", _rebuildEdgeHashSize);
+            cb.SetComputeIntParam(_fullRebuildShader, "_MaxEdgeRecords", _rebuildMaxEdgeRecords);
+            cb.SetComputeIntParam(_fullRebuildShader, "_MaxTriangles", _triCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_MaxHalfEdges", _halfEdgeCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_MaxMissingVertices", _realVertexCount);
+            cb.SetComputeIntParam(_fullRebuildShader, "_InsertionWalkLimit", 32);
+            cb.SetComputeIntParam(_fullRebuildShader, "_SortK", 2);
+            cb.SetComputeIntParam(_fullRebuildShader, "_SortJ", 1);
+            cb.SetComputeFloatParam(_fullRebuildShader, "_RebuildPadding", 0.05f);
+            cb.SetComputeFloatParam(_fullRebuildShader, "_InsideEps", 1e-7f);
+
+            int partialGroups = math.max(1, (_realVertexCount + 255) / 256);
+            EnsureBoundsBuffers(partialGroups);
+
+            int[] kernels = {
+                _frKernelBoundsReducePartials,
+                _frKernelBoundsFinalize,
+                _frKernelClearRebuildGrid,
+                _frKernelClearTriangleHash,
+                _frKernelClearEdgeHash,
+                _frKernelClearMeshState,
+                _frKernelSeedSitesToGrid,
+                _frKernelAssignOwnersByCell,
+                _frKernelInitVoronoiFromSeeds,
+                _frKernelJumpFloodAtoB,
+                _frKernelJumpFloodBtoA,
+                _frKernelRemoveIslandsAtoB,
+                _frKernelRemoveIslandsBtoA,
+                _frKernelExtractTrianglesFromVoronoi,
+                _frKernelCompactTrianglesFromHash,
+                _frKernelClearTriangleRejectFlags,
+                _frKernelClearEdgeRecords,
+                _frKernelEmitTriangleEdgeRecords,
+                _frKernelSortEdgeRecordsBitonic,
+                _frKernelRejectTrianglesFromSortedEdgeRecords,
+                _frKernelResetFilteredTriCounter,
+                _frKernelCompactValidTrianglesToTemp,
+                _frKernelCopyFilteredTrianglesBack,
+                _frKernelFinalizeFilteredTriCount,
+                _frKernelInitAllocatorsFromTriCount,
+                _frKernelBuildHalfEdgesFromTriangles,
+                _frKernelBuildDirectedEdgeHash,
+                _frKernelResolveTwinsFromEdgeHash,
+                _frKernelBuildVertexToEdgeAndBoundary,
+            };
+
+            for (int i = 0; i < kernels.Length; i++) {
+                int k = kernels[i];
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_Positions", positionsForMaintain);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_HalfEdges", _halfEdges[writeSlot]);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriLocks", _triLocks);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_VToE", _vToE);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_Debug", _debug);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_Neighbors", _neighbors);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_NeighborCounts", _neighborCounts);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_FlipCount", _flipCount);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriToHE", _triToHE[writeSlot]);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriToHEAll", _triToHEAll);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_DirtyVertexFlags", _dirtyVertexFlags);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriInternal", _triInternal[writeSlot]);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_BoundaryEdgeFlags", _boundaryEdgeFlags);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_BoundaryNormals", _boundaryNormals);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_OwnerByVertex", _ownerByVertex);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_BoundsPartials", _boundsPartials);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_BoundsResult", _boundsResult);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_GridSeedOwner", _gridSeedOwner);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_VoronoiA", _voronoiA);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_VoronoiB", _voronoiB);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriHashA", _triHashA);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriHashB", _triHashB);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriHashC", _triHashC);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriHashState", _triHashState);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriRaw", _triRaw);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriReject", _triReject);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_TriTemp", _triTemp);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_SiteSeenInTri", _siteSeenInTri);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_MissingSites", _missingSites);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeHashSrc", _edgeHashSrc);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeHashDst", _edgeHashDst);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeHashHE", _edgeHashHE);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeHashState", _edgeHashState);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeRecHash", _edgeRecHash);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeRecA", _edgeRecA);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeRecB", _edgeRecB);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeRecTri", _edgeRecTri);
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_EdgeRecOpp", _edgeRecOpp);
+
+                cb.SetComputeBufferParam(_fullRebuildShader, k, "_RebuildCounters", _rebuildCounters);
+            }
+        }
+
         //---------------------------------------------------------------------------
         // Utility methods
         //---------------------------------------------------------------------------
@@ -293,6 +629,8 @@ namespace GPU.Delaunay {
             DisposeBuffers();
             if (_ownsShaderInstance && _shader)
                 UnityEngine.Object.Destroy(_shader);
+            if (_ownsFullRebuildShaderInstance && _fullRebuildShader)
+                UnityEngine.Object.Destroy(_fullRebuildShader);
         }
 
         private void DisposeBuffers() {
@@ -311,6 +649,8 @@ namespace GPU.Delaunay {
             _triLocks = null;
             _vToE?.Dispose();
             _vToE = null;
+            _debug?.Dispose();
+            _debug = null;
             _neighbors?.Dispose();
             _neighbors = null;
             _neighborCounts?.Dispose();
@@ -327,14 +667,60 @@ namespace GPU.Delaunay {
             _boundaryNormals = null;
             _ownerByVertex?.Dispose();
             _ownerByVertex = null;
+            _gridSeedOwner?.Dispose();
+            _gridSeedOwner = null;
+            _voronoiA?.Dispose();
+            _voronoiA = null;
+            _voronoiB?.Dispose();
+            _voronoiB = null;
+            _triHashA?.Dispose();
+            _triHashA = null;
+            _triHashB?.Dispose();
+            _triHashB = null;
+            _triHashC?.Dispose();
+            _triHashC = null;
+            _triHashState?.Dispose();
+            _triHashState = null;
+            _triRaw?.Dispose();
+            _triRaw = null;
+            _triReject?.Dispose();
+            _triReject = null;
+            _triTemp?.Dispose();
+            _triTemp = null;
+            _siteSeenInTri?.Dispose();
+            _siteSeenInTri = null;
+            _missingSites?.Dispose();
+            _missingSites = null;
+            _edgeHashSrc?.Dispose();
+            _edgeHashSrc = null;
+            _edgeHashDst?.Dispose();
+            _edgeHashDst = null;
+            _edgeHashHE?.Dispose();
+            _edgeHashHE = null;
+            _edgeHashState?.Dispose();
+            _edgeHashState = null;
+            _edgeRecHash?.Dispose();
+            _edgeRecHash = null;
+            _edgeRecA?.Dispose();
+            _edgeRecA = null;
+            _edgeRecB?.Dispose();
+            _edgeRecB = null;
+            _edgeRecTri?.Dispose();
+            _edgeRecTri = null;
+            _edgeRecOpp?.Dispose();
+            _edgeRecOpp = null;
+            _rebuildCounters?.Dispose();
+            _rebuildCounters = null;
             _boundsPartials?.Dispose();
             _boundsPartials = null;
             _boundsResult?.Dispose();
             _boundsResult = null;
 
             _positionScratch = null;
+            _ownerByVertexInit = null;
             _vertexCount = _realVertexCount = _halfEdgeCount = _triCount = _neighborCount = 0;
             _renderSlot = 0;
+            _rebuildGridW = _rebuildGridH = _rebuildTriHashSize = _rebuildEdgeHashSize = _rebuildMaxEdgeRecords = 0;
             _boundsReadbackPending = false;
             _hasLatestWorldBounds = false;
             _latestWorldBoundsMin = 0f;

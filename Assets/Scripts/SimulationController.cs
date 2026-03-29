@@ -32,6 +32,7 @@ public sealed class SimulationController : MonoBehaviour {
     [Header("Auxiliary Shaders")]
     public ComputeShader ColoringShader;
     public ComputeShader delaunayShader;
+    public ComputeShader delaunayFullRebuildShader;
     public ComputeShader uniformGridNeighborShader;
 
     readonly List<Meshless> meshless = new List<Meshless>(64);
@@ -178,7 +179,7 @@ public sealed class SimulationController : MonoBehaviour {
             if (globalSolver == null)
                 globalSolver = new XPBISolver(ColoringShader, layerCacheShader, layerSolveShader, gameplayForcesShader, hierarchySyncShader, collisionEventsShader);
             if (globalDTHierarchy == null)
-                globalDTHierarchy = new DTHierarchy(delaunayShader);
+                globalDTHierarchy = new DTHierarchy(delaunayShader, delaunayFullRebuildShader);
             if (uniformGridNeighborSearch == null && uniformGridNeighborShader != null)
                 uniformGridNeighborSearch = new UniformGridNeighborSearch(uniformGridNeighborShader, Const.NeighborCount);
 
@@ -415,6 +416,12 @@ public sealed class SimulationController : MonoBehaviour {
         return fence.Equals(default(GraphicsFence)) || fence.passed;
     }
 
+    static bool IsComputeFencePassed(GraphicsFence fence) {
+        if (fence.Equals(default(GraphicsFence)))
+            return false;
+        return fence.passed;
+    }
+
     static bool IsSlotWritable(in AsyncTripleState state, int slot) {
         if (slot < 0 || slot > 2)
             return false;
@@ -473,7 +480,7 @@ public sealed class SimulationController : MonoBehaviour {
 
     void EnsureGlobalDTHierarchyBuilt() {
         if (globalDTHierarchy == null)
-            globalDTHierarchy = new DTHierarchy(delaunayShader);
+            globalDTHierarchy = new DTHierarchy(delaunayShader, delaunayFullRebuildShader);
         if (!globalHierarchyDirty)
             return;
 
@@ -592,7 +599,7 @@ public sealed class SimulationController : MonoBehaviour {
         if (asyncState.renderFences == null)
             return;
 
-        if (asyncState.writePending && IsFencePassedOrUnset(asyncState.computeFence)) {
+        if (asyncState.writePending && IsComputeFencePassed(asyncState.computeFence)) {
             asyncState.computeCompleted = true;
             asyncState.completedWriteSlot = asyncState.writeSlot;
             asyncState.writePending = false;
@@ -601,20 +608,13 @@ public sealed class SimulationController : MonoBehaviour {
         }
 
         if (asyncState.writePending) {
-            const float ForceWaitTimeoutSeconds = 0.5f;
-            if (Time.unscaledTime >= writePendingStartTime + ForceWaitTimeoutSeconds) {
+            const float WarnAfterSeconds = 0.5f;
+            if (Time.unscaledTime >= writePendingStartTime + WarnAfterSeconds) {
                 GraphicsFence fence = asyncState.computeFence;
-                if (!fence.Equals(default(GraphicsFence))) {
-                    LogAsyncSubmitIssue("Async compute fence timed out; forcing completion to recover.");
-                } else {
-                    LogAsyncSubmitIssue("Async compute fence is default; forcing completion to avoid deadlock.");
-                }
-
-                asyncState.computeCompleted = true;
-                asyncState.completedWriteSlot = asyncState.writeSlot;
-                asyncState.writePending = false;
-                asyncState.writeSlot = -1;
-                writePendingStartTime = -999f;
+                if (!fence.Equals(default(GraphicsFence)))
+                    LogAsyncSubmitIssue("Async compute fence is taking longer than expected; waiting for completion.");
+                else
+                    LogAsyncSubmitIssue("Async compute fence is default; waiting and avoiding premature slot promotion.");
             }
         }
 

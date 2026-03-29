@@ -83,6 +83,7 @@ public sealed class SimulationParams {
         [Min(0)] public int initColoringConflictRounds = 24;
         [Min(0)] public int dtFixIterations = 2;
         [Min(0)] public int dtLegalizeIterations = 2;
+        [Min(1)] public int layer0FullRebuildEveryKFrames = 1;
     }
 
     [Serializable]

@@ -164,7 +164,7 @@ MonoBehaviour:
       simulationSpeed: 1
       maxTicksPerBatch: 16
     interaction:
-      manual: 0
+      manual: 1
       holdThreshold: 0.2
       useHierarchicalSolver: 1
       neighborSearchMode: 0
@@ -217,7 +217,7 @@ MonoBehaviour:
       collisionSdfEdgeRefineIterations: 6
     volume:
       volumeComplianceComp: 1
-      volumeComplianceExp: 1
+      volumeComplianceExp: 0.01
       volumeJLow: 0.98
       volumeJHigh: 1.02
       volumeJMin: 0.05
@@ -237,6 +237,7 @@ MonoBehaviour:
       initColoringConflictRounds: 24
       dtFixIterations: 2
       dtLegalizeIterations: 2
+      layer0FullRebuildEveryKFrames: 1
     uiAndReadback:
       showTpsOverlay: 1
       convergenceDebugEnabled: 0
@@ -252,6 +253,7 @@ MonoBehaviour:
   collisionEventsShader: {fileID: 7200000, guid: 089480f3bb6a70f439f365adbd6716d5, type: 3}
   ColoringShader: {fileID: 7200000, guid: 6375171be2fcbc04e81e66f5ab4ce239, type: 3}
   delaunayShader: {fileID: 7200000, guid: 8fa7440d338d1d74983b11471e070ab9, type: 3}
+  delaunayFullRebuildShader: {fileID: 7200000, guid: a7f7d050d3c39f84d83a12beda901d82, type: 3}
   uniformGridNeighborShader: {fileID: 7200000, guid: 4de768090ae028f47b26f3c4c3d0c207, type: 3}
 --- !u!4 &86236646
 Transform:
@@ -387,7 +389,7 @@ Camera:
   far clip plane: 1000
   field of view: 60
   orthographic: 1
-  orthographic size: 2.953105
+  orthographic size: 1.3762591
   m_Depth: -1
   m_CullingMask:
     serializedVersion: 2
@@ -412,7 +414,7 @@ Transform:
   m_GameObject: {fileID: 519420028}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.65, y: -1.7, z: -10}
+  m_LocalPosition: {x: -0.49, y: -1.59, z: -10}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -437,7 +439,7 @@ MonoBehaviour:
   uvScale: 5
   sdfDownsample: 1
   roundPixels: -0.2
-  smoothMode: 1
+  smoothMode: 0
   blurRadiusPixels: 6
   blurIterations: 2
   curvatureIterations: 40
@@ -450,7 +452,7 @@ MonoBehaviour:
   wireframeCycleKey: 119
   wireWidthPixels: 0.74
   drawLayer0Fill: 1
-  preserveArea: 0
+  preserveArea: 1
   preserveAreaGain: 0.6
   preserveAreaEveryNFrames: 1
   preserveAreaUseInitialTarget: 1
@@ -471,7 +473,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1054705959
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -576,7 +578,7 @@ Transform:
   m_GameObject: {fileID: 1054705958}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.4979, y: -4.5864, z: 0}
+  m_LocalPosition: {x: -0.57, y: -3.41, z: 0}
   m_LocalScale: {x: 6.6356626, y: 1.9727231, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -727,7 +729,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1140901370
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -832,7 +834,7 @@ Transform:
   m_GameObject: {fileID: 1140901369}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.46, y: -0.9, z: 0}
+  m_LocalPosition: {x: -2.38, y: -1.04, z: 0}
   m_LocalScale: {x: 1.5997511, y: 1.5979394, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1158,7 +1160,7 @@ Transform:
   m_GameObject: {fileID: 1767357828}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.42, y: -2.9, z: 0}
+  m_LocalPosition: {x: -0.56, y: -1.67, z: 0}
   m_LocalScale: {x: 1.5997511, y: 1.5979394, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

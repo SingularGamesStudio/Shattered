@@ -26,6 +26,69 @@ namespace GPU.Delaunay {
         private readonly int _kernelReduceBounds;
         private readonly int _kernelFinalizeBounds;
 
+        private readonly ComputeShader _fullRebuildShader;
+        private readonly bool _ownsFullRebuildShaderInstance;
+        private readonly int _frKernelBoundsReducePartials;
+        private readonly int _frKernelBoundsFinalize;
+        private readonly int _frKernelClearRebuildGrid;
+        private readonly int _frKernelClearTriangleHash;
+        private readonly int _frKernelClearEdgeHash;
+        private readonly int _frKernelClearMeshState;
+        private readonly int _frKernelSeedSitesToGrid;
+        private readonly int _frKernelAssignOwnersByCell;
+        private readonly int _frKernelInitVoronoiFromSeeds;
+        private readonly int _frKernelJumpFloodAtoB;
+        private readonly int _frKernelJumpFloodBtoA;
+        private readonly int _frKernelRemoveIslandsAtoB;
+        private readonly int _frKernelRemoveIslandsBtoA;
+        private readonly int _frKernelExtractTrianglesFromVoronoi;
+        private readonly int _frKernelCompactTrianglesFromHash;
+        private readonly int _frKernelClearTriangleRejectFlags;
+        private readonly int _frKernelClearEdgeRecords;
+        private readonly int _frKernelEmitTriangleEdgeRecords;
+        private readonly int _frKernelSortEdgeRecordsBitonic;
+        private readonly int _frKernelRejectTrianglesFromSortedEdgeRecords;
+        private readonly int _frKernelResetFilteredTriCounter;
+        private readonly int _frKernelCompactValidTrianglesToTemp;
+        private readonly int _frKernelCopyFilteredTrianglesBack;
+        private readonly int _frKernelFinalizeFilteredTriCount;
+        private readonly int _frKernelInitAllocatorsFromTriCount;
+        private readonly int _frKernelBuildHalfEdgesFromTriangles;
+        private readonly int _frKernelBuildDirectedEdgeHash;
+        private readonly int _frKernelResolveTwinsFromEdgeHash;
+        private readonly int _frKernelBuildVertexToEdgeAndBoundary;
+
+        private ComputeBuffer _gridSeedOwner;
+        private ComputeBuffer _voronoiA;
+        private ComputeBuffer _voronoiB;
+        private ComputeBuffer _triHashA;
+        private ComputeBuffer _triHashB;
+        private ComputeBuffer _triHashC;
+        private ComputeBuffer _triHashState;
+        private ComputeBuffer _triRaw;
+        private ComputeBuffer _siteSeenInTri;
+        private ComputeBuffer _missingSites;
+        private ComputeBuffer _edgeHashSrc;
+        private ComputeBuffer _edgeHashDst;
+        private ComputeBuffer _edgeHashHE;
+        private ComputeBuffer _edgeHashState;
+        private ComputeBuffer _triReject;
+        private ComputeBuffer _triTemp;
+        private ComputeBuffer _edgeRecHash;
+        private ComputeBuffer _edgeRecA;
+        private ComputeBuffer _edgeRecB;
+        private ComputeBuffer _edgeRecTri;
+        private ComputeBuffer _edgeRecOpp;
+        private ComputeBuffer _rebuildCounters;
+
+        private int _rebuildGridW;
+        private int _rebuildGridH;
+        private int _rebuildTriHashSize;
+        private int _rebuildEdgeHashSize;
+        private int _rebuildMaxEdgeRecords;
+
+        private int[] _ownerByVertexInit;
+
         //---------------------------------------------------------------------------
         // Buffers – triple buffered for rendering, single working buffers for topology ops
         //---------------------------------------------------------------------------
@@ -35,6 +98,7 @@ namespace GPU.Delaunay {
 
         private ComputeBuffer _triLocks;           // per‑triangle lock (0 = free)
         private ComputeBuffer _vToE;                // vertex → outgoing half‑edge
+        private ComputeBuffer _debug;               // debug buffer
         private ComputeBuffer _neighbors;           // flat neighbour list per real vertex
         private ComputeBuffer _neighborCounts;      // number of neighbours per real vertex
         private ComputeBuffer _flipCount;           // global flip counter (single uint)
@@ -59,7 +123,7 @@ namespace GPU.Delaunay {
         /// Creates a new DT instance using a copy of the given compute shader.
         /// </summary>
         /// <param name="shader">Compute shader containing all required kernels.</param>
-        public DT(ComputeShader shader) {
+        public DT(ComputeShader shader, ComputeShader fullRebuildShader = null) {
             if (!shader) throw new ArgumentNullException(nameof(shader));
 
             // Instantiate a copy so that multiple DT instances can run independently.
@@ -85,6 +149,71 @@ namespace GPU.Delaunay {
             _kernelBuildBoundaryNormals = _shader.FindKernel("BuildBoundaryNormals");
             _kernelReduceBounds = _shader.FindKernel("ReduceBounds");
             _kernelFinalizeBounds = _shader.FindKernel("FinalizeBounds");
+
+            if (fullRebuildShader != null) {
+                _fullRebuildShader = UnityEngine.Object.Instantiate(fullRebuildShader);
+                _ownsFullRebuildShaderInstance = true;
+
+                _frKernelBoundsReducePartials = _fullRebuildShader.FindKernel("BoundsReducePartials");
+                _frKernelBoundsFinalize = _fullRebuildShader.FindKernel("BoundsFinalize");
+                _frKernelClearRebuildGrid = _fullRebuildShader.FindKernel("ClearRebuildGrid");
+                _frKernelClearTriangleHash = _fullRebuildShader.FindKernel("ClearTriangleHash");
+                _frKernelClearEdgeHash = _fullRebuildShader.FindKernel("ClearEdgeHash");
+                _frKernelClearMeshState = _fullRebuildShader.FindKernel("ClearMeshState");
+                _frKernelSeedSitesToGrid = _fullRebuildShader.FindKernel("SeedSitesToGrid");
+                _frKernelAssignOwnersByCell = _fullRebuildShader.FindKernel("AssignOwnersByCell");
+                _frKernelInitVoronoiFromSeeds = _fullRebuildShader.FindKernel("InitVoronoiFromSeeds");
+                _frKernelJumpFloodAtoB = _fullRebuildShader.FindKernel("JumpFloodAtoB");
+                _frKernelJumpFloodBtoA = _fullRebuildShader.FindKernel("JumpFloodBtoA");
+                _frKernelRemoveIslandsAtoB = _fullRebuildShader.FindKernel("RemoveIslandsAtoB");
+                _frKernelRemoveIslandsBtoA = _fullRebuildShader.FindKernel("RemoveIslandsBtoA");
+                _frKernelExtractTrianglesFromVoronoi = _fullRebuildShader.FindKernel("ExtractTrianglesFromVoronoi");
+                _frKernelCompactTrianglesFromHash = _fullRebuildShader.FindKernel("CompactTrianglesFromHash");
+                _frKernelClearTriangleRejectFlags = _fullRebuildShader.FindKernel("ClearTriangleRejectFlags");
+                _frKernelClearEdgeRecords = _fullRebuildShader.FindKernel("ClearEdgeRecords");
+                _frKernelEmitTriangleEdgeRecords = _fullRebuildShader.FindKernel("EmitTriangleEdgeRecords");
+                _frKernelSortEdgeRecordsBitonic = _fullRebuildShader.FindKernel("SortEdgeRecordsBitonic");
+                _frKernelRejectTrianglesFromSortedEdgeRecords = _fullRebuildShader.FindKernel("RejectTrianglesFromSortedEdgeRecords");
+                _frKernelResetFilteredTriCounter = _fullRebuildShader.FindKernel("ResetFilteredTriCounter");
+                _frKernelCompactValidTrianglesToTemp = _fullRebuildShader.FindKernel("CompactValidTrianglesToTemp");
+                _frKernelCopyFilteredTrianglesBack = _fullRebuildShader.FindKernel("CopyFilteredTrianglesBack");
+                _frKernelFinalizeFilteredTriCount = _fullRebuildShader.FindKernel("FinalizeFilteredTriCount");
+                _frKernelInitAllocatorsFromTriCount = _fullRebuildShader.FindKernel("InitAllocatorsFromTriCount");
+                _frKernelBuildHalfEdgesFromTriangles = _fullRebuildShader.FindKernel("BuildHalfEdgesFromTriangles");
+                _frKernelBuildDirectedEdgeHash = _fullRebuildShader.FindKernel("BuildDirectedEdgeHash");
+                _frKernelResolveTwinsFromEdgeHash = _fullRebuildShader.FindKernel("ResolveTwinsFromEdgeHash");
+                _frKernelBuildVertexToEdgeAndBoundary = _fullRebuildShader.FindKernel("BuildVertexToEdgeAndBoundary");
+            } else {
+                _frKernelBoundsReducePartials = -1;
+                _frKernelBoundsFinalize = -1;
+                _frKernelClearRebuildGrid = -1;
+                _frKernelClearTriangleHash = -1;
+                _frKernelClearEdgeHash = -1;
+                _frKernelClearMeshState = -1;
+                _frKernelSeedSitesToGrid = -1;
+                _frKernelAssignOwnersByCell = -1;
+                _frKernelInitVoronoiFromSeeds = -1;
+                _frKernelJumpFloodAtoB = -1;
+                _frKernelJumpFloodBtoA = -1;
+                _frKernelRemoveIslandsAtoB = -1;
+                _frKernelRemoveIslandsBtoA = -1;
+                _frKernelExtractTrianglesFromVoronoi = -1;
+                _frKernelCompactTrianglesFromHash = -1;
+                _frKernelClearTriangleRejectFlags = -1;
+                _frKernelClearEdgeRecords = -1;
+                _frKernelEmitTriangleEdgeRecords = -1;
+                _frKernelSortEdgeRecordsBitonic = -1;
+                _frKernelRejectTrianglesFromSortedEdgeRecords = -1;
+                _frKernelResetFilteredTriCounter = -1;
+                _frKernelCompactValidTrianglesToTemp = -1;
+                _frKernelCopyFilteredTrianglesBack = -1;
+                _frKernelFinalizeFilteredTriCount = -1;
+                _frKernelInitAllocatorsFromTriCount = -1;
+                _frKernelBuildHalfEdgesFromTriangles = -1;
+                _frKernelBuildDirectedEdgeHash = -1;
+                _frKernelResolveTwinsFromEdgeHash = -1;
+                _frKernelBuildVertexToEdgeAndBoundary = -1;
+            }
         }
 
         public bool TryGetLatestWorldBounds(out float2 min, out float2 max) {

@@ -84,7 +84,7 @@ namespace GPU.Solver {
                 session.AsyncCb,
                 layer0NeighborSearch,
                 layer0Dt,
-                session.Request.ReadSlot,
+                (tickIndex == 0) ? session.Request.ReadSlot : session.Request.WriteSlot,
                 layer0ActiveCount,
                 layer0KernelH,
                 boundsMin,

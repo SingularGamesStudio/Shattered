@@ -17,6 +17,7 @@ namespace GPU.Delaunay {
         }
 
         readonly ComputeShader shader;
+        readonly ComputeShader fullRebuildShader;
         LayerData[] layers;
         int maxLayer = -1;
 
@@ -25,8 +26,9 @@ namespace GPU.Delaunay {
 
         readonly List<DTBuilder.Triangle> triangles = new List<DTBuilder.Triangle>(4096);
 
-        public DTHierarchy(ComputeShader shader) {
+        public DTHierarchy(ComputeShader shader, ComputeShader fullRebuildShader = null) {
             this.shader = shader ? shader : throw new ArgumentNullException(nameof(shader));
+            this.fullRebuildShader = fullRebuildShader;
         }
 
         public int MaxLayer => maxLayer;
@@ -321,7 +323,7 @@ namespace GPU.Delaunay {
                 }
 
                 var he = DTBuilder.BuildHalfEdges(dtPoints, triangles);
-                var dt = new DT(shader);
+                var dt = new DT(shader, fullRebuildShader);
                 dt.Init(dtPoints, activeCount, he, triangles.Count, Const.NeighborCount, owners);
 
                 if (!allowCrossBodyTopology && HasMultipleOwners(owners, activeCount))

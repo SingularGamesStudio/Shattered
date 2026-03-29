@@ -1,0 +1,31 @@
+#pragma kernel BoundsReducePartials
+#pragma kernel BoundsFinalize
+#pragma kernel ClearRebuildGrid
+#pragma kernel ClearTriangleHash
+#pragma kernel ClearEdgeHash
+#pragma kernel ClearMeshState
+#pragma kernel SeedSitesToGrid
+#pragma kernel AssignOwnersByCell
+#pragma kernel InitVoronoiFromSeeds
+#pragma kernel JumpFloodAtoB
+#pragma kernel JumpFloodBtoA
+#pragma kernel RemoveIslandsAtoB
+#pragma kernel RemoveIslandsBtoA
+#pragma kernel ExtractTrianglesFromVoronoi
+#pragma kernel CompactTrianglesFromHash
+#pragma kernel ClearTriangleRejectFlags
+#pragma kernel ClearEdgeRecords
+#pragma kernel EmitTriangleEdgeRecords
+#pragma kernel SortEdgeRecordsBitonic
+#pragma kernel RejectTrianglesFromSortedEdgeRecords
+#pragma kernel ResetFilteredTriCounter
+#pragma kernel CompactValidTrianglesToTemp
+#pragma kernel CopyFilteredTrianglesBack
+#pragma kernel FinalizeFilteredTriCount
+#pragma kernel InitAllocatorsFromTriCount
+#pragma kernel BuildHalfEdgesFromTriangles
+#pragma kernel BuildDirectedEdgeHash
+#pragma kernel ResolveTwinsFromEdgeHash
+#pragma kernel BuildVertexToEdgeAndBoundary
+
+#include "DT.FullRebuild.hlsl"

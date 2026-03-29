@@ -165,7 +165,8 @@ namespace GPU.Solver {
                 }
 
                 hierarchySync.RecordIntegrate(session);
-                hierarchySync.RecordPostIntegrateDtSync(session);
+                int dtReadSlotForTick = (tick == 0) ? session.Request.ReadSlot : session.Request.WriteSlot;
+                hierarchySync.RecordPostIntegrateDtSync(session, dtReadSlotForTick);
             }
 
             GraphicsFence fence = asyncCb.CreateGraphicsFence(

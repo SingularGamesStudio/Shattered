@@ -108,6 +108,18 @@ namespace GPU.Solver {
                     float normalizedLayerCellSize = normalizedLayerSupportRadius;
                     float normalizedLayerNeighborSupportRadius = normalizedLayerSupportRadius;
 
+                    if (layer == 0 && dtLayer.SupportsFullRebuild) {
+                        int kFrames = Mathf.Max(1, Const.DTLayer0FullRebuildEveryKFrames);
+                        if ((Time.frameCount % kFrames) == 0) {//TODO: not framecount
+                            dtLayer.EnqueueFullRebuild(
+                                session.AsyncCb,
+                                dtLayer.GetPositionsBuffer(session.Request.WriteSlot),
+                                session.Request.WriteSlot,
+                                rebuildAdjacencyAndTriMap: true);
+                            continue;
+                        }
+                    }
+
                     dtLayer.EnqueueBuild(
                         session.AsyncCb,
                         dtLayer.GetPositionsBuffer(session.Request.WriteSlot),

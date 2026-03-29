@@ -21,7 +21,7 @@ public static class BuildAndRunStandalone {
             scenes = scenes,
             locationPathName = Path.Combine(BuildDir, ExeName),
             target = BuildTarget.StandaloneWindows64,
-            options =  BuildOptions.AutoRunPlayer //| BuildOptions.Development | BuildOptions.AllowDebugging 
+            options =  BuildOptions.AutoRunPlayer | BuildOptions.Development | BuildOptions.AllowDebugging 
         };
 
         BuildReport report = BuildPipeline.BuildPlayer(opts);
