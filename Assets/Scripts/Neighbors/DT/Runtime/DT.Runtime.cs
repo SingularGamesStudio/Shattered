@@ -53,6 +53,7 @@ namespace GPU.Delaunay {
         private readonly int _frKernelCopyFilteredTrianglesBack;
         private readonly int _frKernelFinalizeFilteredTriCount;
         private readonly int _frKernelInitAllocatorsFromTriCount;
+        private readonly int _frKernelWriteIndirectArgsFromCounter;
         private readonly int _frKernelBuildHalfEdgesFromTriangles;
         private readonly int _frKernelBuildDirectedEdgeHash;
         private readonly int _frKernelResolveTwinsFromEdgeHash;
@@ -80,6 +81,7 @@ namespace GPU.Delaunay {
         private ComputeBuffer _edgeRecTri;
         private ComputeBuffer _edgeRecOpp;
         private ComputeBuffer _rebuildCounters;
+        private ComputeBuffer _frIndirectArgs;
 
         private int _rebuildGridW;
         private int _rebuildGridH;
@@ -179,6 +181,7 @@ namespace GPU.Delaunay {
                 _frKernelCopyFilteredTrianglesBack = _fullRebuildShader.FindKernel("CopyFilteredTrianglesBack");
                 _frKernelFinalizeFilteredTriCount = _fullRebuildShader.FindKernel("FinalizeFilteredTriCount");
                 _frKernelInitAllocatorsFromTriCount = _fullRebuildShader.FindKernel("InitAllocatorsFromTriCount");
+                _frKernelWriteIndirectArgsFromCounter = _fullRebuildShader.FindKernel("WriteIndirectArgsFromCounter");
                 _frKernelBuildHalfEdgesFromTriangles = _fullRebuildShader.FindKernel("BuildHalfEdgesFromTriangles");
                 _frKernelBuildDirectedEdgeHash = _fullRebuildShader.FindKernel("BuildDirectedEdgeHash");
                 _frKernelResolveTwinsFromEdgeHash = _fullRebuildShader.FindKernel("ResolveTwinsFromEdgeHash");
@@ -209,6 +212,7 @@ namespace GPU.Delaunay {
                 _frKernelCopyFilteredTrianglesBack = -1;
                 _frKernelFinalizeFilteredTriCount = -1;
                 _frKernelInitAllocatorsFromTriCount = -1;
+                _frKernelWriteIndirectArgsFromCounter = -1;
                 _frKernelBuildHalfEdgesFromTriangles = -1;
                 _frKernelBuildDirectedEdgeHash = -1;
                 _frKernelResolveTwinsFromEdgeHash = -1;

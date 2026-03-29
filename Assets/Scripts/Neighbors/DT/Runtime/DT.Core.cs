@@ -13,6 +13,32 @@ namespace GPU.Delaunay {
     /// </summary>
     public sealed partial class DT : INeighborSearch {
         private const string MarkerPrefix = "XPBI.DT.";
+        private const int IndirectArgStrideBytes = 12;
+        private const int FrArgClearTriangleRejectFlags = 0 * IndirectArgStrideBytes;
+        private const int FrArgEmitTriangleEdgeRecords = 1 * IndirectArgStrideBytes;
+        private const int FrArgRejectSortedEdgeRecords = 2 * IndirectArgStrideBytes;
+        private const int FrArgCompactValidTrianglesToTemp = 3 * IndirectArgStrideBytes;
+        private const int FrArgCopyFilteredTrianglesBack = 4 * IndirectArgStrideBytes;
+        private const int FrArgBuildHalfEdges = 5 * IndirectArgStrideBytes;
+        private const int FrArgBuildDirectedEdgeHash = 6 * IndirectArgStrideBytes;
+        private const int FrArgResolveTwins = 7 * IndirectArgStrideBytes;
+        private const int FrArgBuildVertexToEdgeBoundary = 8 * IndirectArgStrideBytes;
+        private const int FrArgBuildTriToHEAll = 9 * IndirectArgStrideBytes;
+        private const int FrArgClassifyInternalTriangles = 10 * IndirectArgStrideBytes;
+        private const int FrArgMarkBoundaryEdges = 11 * IndirectArgStrideBytes;
+        private const int FrArgBoundaryBuildVertexToEdge = 12 * IndirectArgStrideBytes;
+        private const int FrIndirectArgRecordCount = 13;
+
+        private const int CTR_TRI_COUNT = 0;
+        private const int CTR_HE_USED = 1;
+        private const int CTR_TRI_FILTERED = 5;
+
+        public int _maxHalfEdges;
+        public int _maxTriangles;
+
+        private static int GroupsFor(int count, int threads) {
+            return math.max(1, (count + threads - 1) / threads);
+        }
 
         //---------------------------------------------------------------------------
         // Shader and kernel IDs
@@ -112,10 +138,12 @@ namespace GPU.Delaunay {
                 throw new ArgumentException("Expected at least real points + 3 super points.", nameof(allPoints));
 
             _halfEdgeCount = initialHalfEdges.Length;
+            _maxHalfEdges = 2 * _halfEdgeCount;
             if (_halfEdgeCount == 0) throw new ArgumentException("Half-edge buffer is empty.", nameof(initialHalfEdges));
             if ((_halfEdgeCount % 3) != 0) throw new ArgumentException("Half-edge count must be a multiple of 3.", nameof(initialHalfEdges));
 
             _triCount = triangleCount;
+            _maxTriangles = triangleCount * 2;
             _neighborCount = neighborCount;
             _useSupportRadiusFilter = false;
             _supportRadius2 = 0f;
@@ -271,6 +299,17 @@ namespace GPU.Delaunay {
         public void EnqueueFullRebuild(
             CommandBuffer cb,
             ComputeBuffer positionsForMaintain,
+            float supportRadius,
+            int writeSlot,
+            bool rebuildAdjacencyAndTriMap = true) {
+            _useSupportRadiusFilter = supportRadius > 0f;
+            _supportRadius2 = _useSupportRadiusFilter ? supportRadius * supportRadius : 0f;
+            EnqueueFullRebuildIndirect(cb, positionsForMaintain, writeSlot, rebuildAdjacencyAndTriMap);
+        }
+
+        public void EnqueueFullRebuildIndirect(
+            CommandBuffer cb,
+            ComputeBuffer positionsForMaintain,
             int writeSlot,
             bool rebuildAdjacencyAndTriMap = true) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
@@ -280,7 +319,9 @@ namespace GPU.Delaunay {
                 throw new InvalidOperationException("DT full rebuild shader is not configured.");
 
             EnsureFullRebuildBuffers();
+            EnsureFullRebuildIndirectArgs();
             SetFullRebuildCommonParams(cb, positionsForMaintain, writeSlot);
+            BindFullRebuildIndirectArgs(cb);
 
             int partialGroups = math.max(1, (_realVertexCount + 255) / 256);
             int gridCells = math.max(1, _rebuildGridW * _rebuildGridH);
@@ -292,42 +333,75 @@ namespace GPU.Delaunay {
             Dispatch(cb, _fullRebuildShader, _frKernelBoundsFinalize, 1, 1, 1, MarkerPrefix + "FR.BoundsFinalize");
 
             Dispatch(cb, _fullRebuildShader, _frKernelClearRebuildGrid, gridGroups1D, 1, 1, MarkerPrefix + "FR.ClearRebuildGrid");
-            Dispatch(cb, _fullRebuildShader, _frKernelClearTriangleHash, (_rebuildTriHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearTriangleHash");
-            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, (_rebuildEdgeHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeHash");
-            Dispatch(cb, _fullRebuildShader, _frKernelClearMeshState, (math.max(math.max(_vertexCount, _halfEdgeCount), _triCount) + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearMeshState");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearTriangleHash, GroupsFor(_rebuildTriHashSize, 256), 1, 1, MarkerPrefix + "FR.ClearTriangleHash");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, GroupsFor(_rebuildEdgeHashSize, 256), 1, 1, MarkerPrefix + "FR.ClearEdgeHash");
 
-            Dispatch(cb, _fullRebuildShader, _frKernelSeedSitesToGrid, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "FR.SeedSitesToGrid");
-            Dispatch(cb, _fullRebuildShader, _frKernelAssignOwnersByCell, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "FR.AssignOwnersByCell");
-            Dispatch(cb, _fullRebuildShader, _frKernelInitVoronoiFromSeeds, gridGroups1D, 1, 1, MarkerPrefix + "FR.InitVoronoiFromSeeds");
+            int clearMeshCount = math.max(_vertexCount,math.max(_maxHalfEdges, _maxTriangles));
+            Dispatch(cb, _fullRebuildShader, _frKernelClearMeshState, GroupsFor(clearMeshCount, 256), 1, 1, MarkerPrefix + "FR.ClearMeshState");
+
+            // Keep static per-vertex object ownership for owner-isolated rebuild passes.
+            if (_ownerByVertexInit != null)
+                cb.SetBufferData(_ownerByVertex, _ownerByVertexInit);
+
+            var ownerSet = new HashSet<int>();
+            var activeOwners = new List<int>(8);
+            if (_ownerByVertexInit != null) {
+                int scan = math.min(_realVertexCount, _ownerByVertexInit.Length);
+                for (int i = 0; i < scan; i++) {
+                    int owner = _ownerByVertexInit[i];
+                    if (owner >= 0 && ownerSet.Add(owner))
+                        activeOwners.Add(owner);
+                }
+            }
+            if (activeOwners.Count == 0)
+                activeOwners.Add(-1);
 
             int jfaStep = 1;
             int maxDim = math.max(_rebuildGridW, _rebuildGridH);
             while (jfaStep < maxDim)
                 jfaStep <<= 1;
 
-            bool writeToB = true;
-            for (int step = jfaStep; step >= 1; step >>= 1) {
-                cb.SetComputeIntParam(_fullRebuildShader, "_NeighborCount", step);
-                if (writeToB)
-                    Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodAtoB");
-                else
-                    Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA");
-                writeToB = !writeToB;
+            for (int ownerIdx = 0; ownerIdx < activeOwners.Count; ownerIdx++) {
+                int owner = activeOwners[ownerIdx];
+                cb.SetComputeIntParam(_fullRebuildShader, "_ActiveOwner", owner);
+
+                Dispatch(cb, _fullRebuildShader, _frKernelClearRebuildGrid, gridGroups1D, 1, 1, MarkerPrefix + "FR.ClearRebuildGrid");
+                Dispatch(cb, _fullRebuildShader, _frKernelSeedSitesToGrid, GroupsFor(_vertexCount, 256), 1, 1, MarkerPrefix + "FR.SeedSitesToGrid");
+                Dispatch(cb, _fullRebuildShader, _frKernelInitVoronoiFromSeeds, gridGroups1D, 1, 1, MarkerPrefix + "FR.InitVoronoiFromSeeds");
+
+                int ownerJfaStep = jfaStep;
+                bool writeToB = true;
+                for (int step = ownerJfaStep; step >= 1; step >>= 1) {
+                    cb.SetComputeIntParam(_fullRebuildShader, "_NeighborCount", step);
+                    if (writeToB)
+                        Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodAtoB");
+                    else
+                        Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA");
+                    writeToB = !writeToB;
+                }
+
+                if (!writeToB)
+                    Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA.Finalize");
+
+                Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsAtoB");
+                Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsBtoA");
+                Dispatch(cb, _fullRebuildShader, _frKernelExtractTrianglesFromVoronoi, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.ExtractTrianglesFromVoronoi");
             }
+            Dispatch(cb, _fullRebuildShader, _frKernelCompactTrianglesFromHash, GroupsFor(_rebuildTriHashSize, 256), 1, 1, MarkerPrefix + "FR.CompactTrianglesFromHash");
 
-            // Ensure final JFA ownership resides in VoronoiA for extraction.
-            if (!writeToB)
-                Dispatch(cb, _fullRebuildShader, _frKernelJumpFloodBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.JumpFloodBtoA.Finalize");
+            // Full rebuild may emit cross-object candidates; restore static owners before
+            // filtering so mixed-owner triangles can be rejected deterministically.
+            if (_ownerByVertexInit != null)
+                cb.SetBufferData(_ownerByVertex, _ownerByVertexInit);
 
-            Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsAtoB, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsAtoB");
-            Dispatch(cb, _fullRebuildShader, _frKernelRemoveIslandsBtoA, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.RemoveIslandsBtoA");
+            WriteIndirectArgs(cb, FrArgClearTriangleRejectFlags, CTR_TRI_COUNT, 256, 1);
+            WriteIndirectArgs(cb, FrArgEmitTriangleEdgeRecords, CTR_TRI_COUNT, 256, 1);
+            WriteIndirectArgs(cb, FrArgRejectSortedEdgeRecords, CTR_TRI_COUNT, 256, 3);
+            WriteIndirectArgs(cb, FrArgCompactValidTrianglesToTemp, CTR_TRI_COUNT, 256, 1);
 
-            Dispatch(cb, _fullRebuildShader, _frKernelExtractTrianglesFromVoronoi, gridGroupsX, gridGroupsY, 1, MarkerPrefix + "FR.ExtractTrianglesFromVoronoi");
-            Dispatch(cb, _fullRebuildShader, _frKernelCompactTrianglesFromHash, (_rebuildTriHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.CompactTrianglesFromHash");
-
-            Dispatch(cb, _fullRebuildShader, _frKernelClearTriangleRejectFlags, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearTriangleRejectFlags");
-            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeRecords, (_rebuildMaxEdgeRecords + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeRecords");
-            Dispatch(cb, _fullRebuildShader, _frKernelEmitTriangleEdgeRecords, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.EmitTriangleEdgeRecords");
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelClearTriangleRejectFlags, FrArgClearTriangleRejectFlags);
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeRecords, GroupsFor(_rebuildMaxEdgeRecords, 256), 1, 1, MarkerPrefix + "FR.ClearEdgeRecords");
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelEmitTriangleEdgeRecords, FrArgEmitTriangleEdgeRecords);
 
             int sortCount = 1;
             while (sortCount < _rebuildMaxEdgeRecords)
@@ -342,17 +416,25 @@ namespace GPU.Delaunay {
                 }
             }
 
-            Dispatch(cb, _fullRebuildShader, _frKernelRejectTrianglesFromSortedEdgeRecords, (_rebuildMaxEdgeRecords + 255) / 256, 1, 1, MarkerPrefix + "FR.RejectTrianglesFromSortedEdgeRecords");
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelRejectTrianglesFromSortedEdgeRecords, FrArgRejectSortedEdgeRecords);
             Dispatch(cb, _fullRebuildShader, _frKernelResetFilteredTriCounter, 1, 1, 1, MarkerPrefix + "FR.ResetFilteredTriCounter");
-            Dispatch(cb, _fullRebuildShader, _frKernelCompactValidTrianglesToTemp, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.CompactValidTrianglesToTemp");
-            Dispatch(cb, _fullRebuildShader, _frKernelCopyFilteredTrianglesBack, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.CopyFilteredTrianglesBack");
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelCompactValidTrianglesToTemp, FrArgCompactValidTrianglesToTemp);
+
+            WriteIndirectArgs(cb, FrArgCopyFilteredTrianglesBack, CTR_TRI_FILTERED, 256, 1);
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelCopyFilteredTrianglesBack, FrArgCopyFilteredTrianglesBack);
             Dispatch(cb, _fullRebuildShader, _frKernelFinalizeFilteredTriCount, 1, 1, 1, MarkerPrefix + "FR.FinalizeFilteredTriCount");
 
-            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, (_rebuildEdgeHashSize + 255) / 256, 1, 1, MarkerPrefix + "FR.ClearEdgeHash.2");
-            Dispatch(cb, _fullRebuildShader, _frKernelBuildHalfEdgesFromTriangles, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildHalfEdgesFromTriangles");
-            Dispatch(cb, _fullRebuildShader, _frKernelBuildDirectedEdgeHash, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildDirectedEdgeHash");
-            Dispatch(cb, _fullRebuildShader, _frKernelResolveTwinsFromEdgeHash, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.ResolveTwinsFromEdgeHash");
-            Dispatch(cb, _fullRebuildShader, _frKernelBuildVertexToEdgeAndBoundary, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "FR.BuildVertexToEdgeAndBoundary");
+            Dispatch(cb, _fullRebuildShader, _frKernelClearEdgeHash, GroupsFor(_rebuildEdgeHashSize, 256), 1, 1, MarkerPrefix + "FR.ClearEdgeHash.2");
+
+            WriteIndirectArgs(cb, FrArgBuildHalfEdges, CTR_TRI_COUNT, 256, 1);
+            WriteIndirectArgs(cb, FrArgBuildDirectedEdgeHash, CTR_HE_USED, 256, 1);
+            WriteIndirectArgs(cb, FrArgResolveTwins, CTR_HE_USED, 256, 1);
+            WriteIndirectArgs(cb, FrArgBuildVertexToEdgeBoundary, CTR_HE_USED, 256, 1);
+
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelBuildHalfEdgesFromTriangles, FrArgBuildHalfEdges);
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelBuildDirectedEdgeHash, FrArgBuildDirectedEdgeHash);
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelResolveTwinsFromEdgeHash, FrArgResolveTwins);
+            DispatchIndirect(cb, _fullRebuildShader, _frKernelBuildVertexToEdgeAndBoundary, FrArgBuildVertexToEdgeBoundary);
 
             if (_ownerByVertexInit != null)
                 cb.SetBufferData(_ownerByVertex, _ownerByVertexInit);
@@ -360,20 +442,57 @@ namespace GPU.Delaunay {
             if (rebuildAdjacencyAndTriMap)
                 EnqueueRebuildVertexAdjacencyAndTriMap(cb, writeSlot);
 
-                // Clear dirty flags once for this maintenance batch.
+            // Clear dirty flags once for this maintenance batch.
             DispatchClearDirtyVertexFlags(cb);
 
             SetCommonParams(cb);
             PrepareBuildBuffers(cb, positionsForMaintain, writeSlot);
 
-            int boundaryGroups = math.max((_triCount + 255) / 256, math.max((_halfEdgeCount + 255) / 256, (_realVertexCount + 255) / 256));
-            Dispatch(cb, _shader, _kernelClearBoundaryData, boundaryGroups, 1, 1, MarkerPrefix + "ClearBoundaryData");
-            Dispatch(cb, _shader, _kernelBuildTriToHEAll, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BuildTriToHEAll");
-            Dispatch(cb, _shader, _kernelClassifyInternalTriangles, (_triCount + 255) / 256, 1, 1, MarkerPrefix + "ClassifyInternalTriangles");
-            Dispatch(cb, _shader, _kernelMarkBoundaryEdges, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "MarkBoundaryEdges");
-            Dispatch(cb, _shader, _kernelClearVertexToEdge, (_vertexCount + 255) / 256, 1, 1, MarkerPrefix + "BoundaryClearVertexToEdge");
-            Dispatch(cb, _shader, _kernelBuildVertexToEdge, (_halfEdgeCount + 255) / 256, 1, 1, MarkerPrefix + "BoundaryBuildVertexToEdge");
-            Dispatch(cb, _shader, _kernelBuildBoundaryNormals, (_realVertexCount + 255) / 256, 1, 1, MarkerPrefix + "BuildBoundaryNormals");
+            int boundaryClearGroups = math.max(GroupsFor(_realVertexCount, 256), math.max(GroupsFor(_maxHalfEdges, 256), GroupsFor(_maxTriangles, 256)));
+            Dispatch(cb, _shader, _kernelClearBoundaryData, boundaryClearGroups, 1, 1, MarkerPrefix + "ClearBoundaryData");
+
+            WriteIndirectArgs(cb, FrArgBuildTriToHEAll, CTR_HE_USED, 256, 1);
+            WriteIndirectArgs(cb, FrArgClassifyInternalTriangles, CTR_TRI_COUNT, 256, 1);
+            WriteIndirectArgs(cb, FrArgMarkBoundaryEdges, CTR_HE_USED, 256, 1);
+            WriteIndirectArgs(cb, FrArgBoundaryBuildVertexToEdge, CTR_HE_USED, 256, 1);
+
+            DispatchIndirect(cb, _shader, _kernelBuildTriToHEAll, FrArgBuildTriToHEAll);
+            DispatchIndirect(cb, _shader, _kernelClassifyInternalTriangles, FrArgClassifyInternalTriangles);
+            DispatchIndirect(cb, _shader, _kernelMarkBoundaryEdges, FrArgMarkBoundaryEdges);
+
+            Dispatch(cb, _shader, _kernelClearVertexToEdge, GroupsFor(_vertexCount, 256), 1, 1, MarkerPrefix + "BoundaryClearVertexToEdge");
+            DispatchIndirect(cb, _shader, _kernelBuildVertexToEdge, FrArgBoundaryBuildVertexToEdge);
+            Dispatch(cb, _shader, _kernelBuildBoundaryNormals, GroupsFor(_realVertexCount, 256), 1, 1, MarkerPrefix + "BuildBoundaryNormals");
+        }
+
+        private void EnsureFullRebuildIndirectArgs() {
+            int uintCount = FrIndirectArgRecordCount * 3;
+            if (_frIndirectArgs == null || !_frIndirectArgs.IsValid() || _frIndirectArgs.count != uintCount) {
+                _frIndirectArgs?.Dispose();
+                _frIndirectArgs = new ComputeBuffer(uintCount, sizeof(uint), ComputeBufferType.IndirectArguments);
+                _frIndirectArgs.SetData(new uint[uintCount]);
+            }
+        }
+
+        private void BindFullRebuildIndirectArgs(CommandBuffer cb) {
+            cb.SetComputeBufferParam(_fullRebuildShader, _frKernelWriteIndirectArgsFromCounter, "_IndirectDispatchArgs", _frIndirectArgs);
+        }
+
+        private void WriteIndirectArgs(
+            CommandBuffer cb,
+            int argsOffsetBytes,
+            int counterIndex,
+            int threadsPerGroup,
+            int multiplier = 1) {
+            cb.SetComputeIntParam(_fullRebuildShader, "_IndirectArgsOffsetWords", argsOffsetBytes / 4);
+            cb.SetComputeIntParam(_fullRebuildShader, "_IndirectCounterIndex", counterIndex);
+            cb.SetComputeIntParam(_fullRebuildShader, "_IndirectThreadsPerGroup", threadsPerGroup);
+            cb.SetComputeIntParam(_fullRebuildShader, "_IndirectCountMultiplier", multiplier);
+            Dispatch(cb, _fullRebuildShader, _frKernelWriteIndirectArgsFromCounter, 1, 1, 1, MarkerPrefix + "FR.WriteIndirectArgs");
+        }
+
+        private void DispatchIndirect(CommandBuffer cb, ComputeShader shader, int kernel, int argsOffsetBytes) {
+            cb.DispatchCompute(shader, kernel, _frIndirectArgs, (uint)argsOffsetBytes);
         }
 
         private void EnsureFullRebuildBuffers() {
@@ -541,6 +660,7 @@ namespace GPU.Delaunay {
                 _frKernelCopyFilteredTrianglesBack,
                 _frKernelFinalizeFilteredTriCount,
                 _frKernelInitAllocatorsFromTriCount,
+                _frKernelWriteIndirectArgsFromCounter,
                 _frKernelBuildHalfEdgesFromTriangles,
                 _frKernelBuildDirectedEdgeHash,
                 _frKernelResolveTwinsFromEdgeHash,
@@ -711,6 +831,8 @@ namespace GPU.Delaunay {
             _edgeRecOpp = null;
             _rebuildCounters?.Dispose();
             _rebuildCounters = null;
+            _frIndirectArgs?.Dispose();
+            _frIndirectArgs = null;
             _boundsPartials?.Dispose();
             _boundsPartials = null;
             _boundsResult?.Dispose();

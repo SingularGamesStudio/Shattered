@@ -23,6 +23,7 @@
 #pragma kernel CopyFilteredTrianglesBack
 #pragma kernel FinalizeFilteredTriCount
 #pragma kernel InitAllocatorsFromTriCount
+#pragma kernel WriteIndirectArgsFromCounter
 #pragma kernel BuildHalfEdgesFromTriangles
 #pragma kernel BuildDirectedEdgeHash
 #pragma kernel ResolveTwinsFromEdgeHash

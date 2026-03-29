@@ -80,6 +80,7 @@ RWStructuredBuffer<int>  _EdgeHashHE;
 RWStructuredBuffer<uint> _EdgeHashState;     // 0 empty, 1 writing, 2 occupied
 
 RWStructuredBuffer<uint> _RebuildCounters;   // generic counters
+RWStructuredBuffer<uint> _IndirectDispatchArgs;
 
 int _GridW;
 int _GridH;
@@ -89,8 +90,13 @@ int _MaxTriangles;
 int _MaxHalfEdges;
 int _MaxMissingVertices;
 int _InsertionWalkLimit;
+int _ActiveOwner;
 float _RebuildPadding;
 float _InsideEps;
+int _IndirectArgsOffsetWords;
+int _IndirectCounterIndex;
+int _IndirectThreadsPerGroup;
+int _IndirectCountMultiplier;
 
 // -------------------------
 // Counter layout
@@ -101,6 +107,31 @@ static const uint CTR_HE_USED        = 1u; // used halfedges
 static const uint CTR_MISSING_COUNT  = 2u; // number of missing sites
 static const uint CTR_TRI_USED       = 3u; // allocator for dynamic insertions
 static const uint CTR_INSERTED_COUNT = 4u; // number of successful missing-site insertions
+
+// -------------------------
+// Indirect dispatch args writer
+// One record = 3 uints: groupsX, groupsY, groupsZ
+// -------------------------
+
+[numthreads(1,1,1)]
+void WriteIndirectArgsFromCounter(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x != 0u) return;
+
+    uint count = _RebuildCounters[_IndirectCounterIndex];
+    count *= (uint)max(_IndirectCountMultiplier, 1);
+
+    uint tpg = (uint)max(_IndirectThreadsPerGroup, 1);
+    uint groups = (count + tpg - 1u) / tpg;
+
+    // Keep at least one group; dispatch targets already early-out on count.
+    groups = max(groups, 1u);
+
+    uint baseWord = (uint)_IndirectArgsOffsetWords;
+    _IndirectDispatchArgs[baseWord + 0u] = groups;
+    _IndirectDispatchArgs[baseWord + 1u] = 1u;
+    _IndirectDispatchArgs[baseWord + 2u] = 1u;
+}
 
 // -------------------------
 // Shared-edge conflict prune resources
@@ -572,8 +603,6 @@ static bool CanonicalCCWTriangle(int a, int b, int c, out uint3 tri)
         return false;
     if (!TriangleDistinct((uint)a, (uint)b, (uint)c))
         return false;
-    if (!TriangleEdgesValid((uint)a, (uint)b, (uint)c))
-        return false;
 
     float2 pa = _Positions[a];
     float2 pb = _Positions[b];
@@ -912,7 +941,14 @@ void ClearMeshState(uint3 id : SV_DispatchThreadID)
 void SeedSitesToGrid(uint3 id : SV_DispatchThreadID)
 {
     uint v = id.x;
-    if (v >= (uint)_VertexCount) return;
+    if (v >= (uint)_RealVertexCount) return;
+
+    if (_ActiveOwner >= 0)
+    {
+        int owner = _OwnerByVertex[v];
+        if (owner != _ActiveOwner)
+            return;
+    }
 
     int2 c = WorldToCell(_Positions[v]);
     int gi = GridIndex(c);
@@ -1454,10 +1490,10 @@ void CompactValidTrianglesToTemp(uint3 id : SV_DispatchThreadID)
     uint triCount = _RebuildCounters[CTR_TRI_COUNT];
     if (t >= triCount) return;
     
-    if (_TriReject[t] != 0u){
+    /*if (_TriReject[t] != 0u){
          InterlockedAdd(_Debug[0], 100u);
          return;
-    }
+    }*/
 
     uint outIdx;
     InterlockedAdd(_RebuildCounters[CTR_TRI_FILTERED], 1u, outIdx);
