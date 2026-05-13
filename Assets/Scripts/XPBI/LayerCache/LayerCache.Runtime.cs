@@ -197,6 +197,7 @@ namespace GPU.Solver {
 
             cb.SetComputeBufferParam(shader, kSaveVelPrefix, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kSaveVelPrefix, "_SavedVelPrefix", actualRuntime.SavedVelPrefix);
+            cb.SetComputeBufferParam(shader, kSaveVelPrefix, "_SavedVelPrefix2", actualRuntime.SavedVelPrefix2);
 
             cb.SetComputeBufferParam(shader, kClearVelDelta, "_VelDeltaBits", actualRuntime.VelDeltaBits);
 
@@ -228,6 +229,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_CoarseFixed", actualRuntime.CoarseFixed);
             cb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_Vel", vel);
             cb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_SavedVelPrefix", actualRuntime.SavedVelPrefix);
+            cb.SetComputeBufferParam(shader, kApplyRestrictedDeltaVToActiveAndPrefix, "_SavedVelPrefix2", actualRuntime.SavedVelPrefix);
 
             cb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_RestrictedDeltaVAvg", actualRuntime.RestrictedDeltaVAvg);
             cb.SetComputeBufferParam(shader, kRemoveRestrictedDeltaVFromActive, "_Vel", vel);

@@ -166,11 +166,11 @@ void RelaxCollisionAtomic(uint3 id : SV_DispatchThreadID)
 void Prolongate(uint3 id : SV_DispatchThreadID)
 {
 	uint li = id.x;
-	ProlongateDebugAdd(PRODBG_TOTAL_THREADS, 1u);
-	if (li >= _FineCount) { ProlongateDebugAdd(PRODBG_EARLY_FINE, 1u); return; }
+	//ProlongateDebugAdd(PRODBG_TOTAL_THREADS, 1u);
+	if (li >= _FineCount) { /*ProlongateDebugAdd(PRODBG_EARLY_FINE, 1u);*/ return; }
 	uint gi = GlobalIndexFromLocal(li);
-	if (gi == ~0u) { ProlongateDebugAdd(PRODBG_GI_INVALID, 1u); return; }
-	if (IsFixedVertex(gi)) { ProlongateDebugAdd(PRODBG_FIXED, 1u); return; }
+	if (gi == ~0u) { /*ProlongateDebugAdd(PRODBG_GI_INVALID, 1u);*/ return; }
+	if (IsFixedVertex(gi)) { /*ProlongateDebugAdd(PRODBG_FIXED, 1u);*/ return; }
 
 	uint parentCount = ParentReadCount();
 	uint sourceCount = 0u;
@@ -180,7 +180,7 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 
 	if (li < _ActiveCount)
 	{
-		ProlongateDebugAdd(PRODBG_LI_ACTIVE, 1u);
+		//ProlongateDebugAdd(PRODBG_LI_ACTIVE, 1u);
 		return;
 	}
 	else
@@ -188,59 +188,51 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 		sourceCount = parentCount;
 		float rawWeightSum = 0.0;
 		uint usedParentCount = 0u;
-		uint cnt = 0u;
 		[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
 		{
 			if (slot >= sourceCount) break;
 			
 			int p = ReadParentBySlot(gi, slot);
-			if(p >= int(_Base + _ActiveCount)) {continue;}
-			
-			if (p < int(_Base) || p >= int(_Base + _ActiveCount)) { ProlongateDebugAdd(PRODBG_PARENT_OUT_OF_RANGE, 1u); continue; }
-			cnt += 1u;
+			if(p==-1) continue;
+			int pli = LocalIndexFromGlobal((uint)p);
+			if (pli > _ActiveCount) continue;
+			//ProlongateDebugAdd(PRODBG_NO_WEIGHT, (uint)(p+1));			
 			float w = max(ReadParentWeightBySlot(gi, slot), 0.0);
-			if (w <= EPS) { ProlongateDebugAdd(PRODBG_PARENT_WEIGHT_ZERO, 1u); continue; }
+			if (w <= EPS) { /*ProlongateDebugAdd(PRODBG_PARENT_WEIGHT_ZERO, 1u);*/ continue; }
 			sourceGi[slot] = p;
 			sourceWeight[slot] = w;
 			rawWeightSum += w;
 			usedParentCount += 1u;
-			ProlongateDebugAdd(PRODBG_PARENT_USED, 1u);
+			//ProlongateDebugAdd(PRODBG_PARENT_USED, 1u);
 		}
-		if (cnt == 0u) { ProlongateDebugAdd(PRODBG_NO_WEIGHT, 1u); return; }
-		if (rawWeightSum <= EPS) { return; }
-		ProlongateDebugMax(PRODBG_PARENT_USED_MAX, (float)usedParentCount, 1.0);
+		if (rawWeightSum <= EPS) { /*ProlongateDebugAdd(PRODBG_NO_WEIGHT, 1u);*/ return; }
+		/*ProlongateDebugMax(PRODBG_PARENT_USED_MAX, (float)usedParentCount, 1.0);
 		ProlongateDebugAdd(PRODBG_PARENT_COUNT_SUM, sourceCount);
 		ProlongateDebugMax(PRODBG_PARENT_COUNT_MAX, (float)sourceCount, 1.0);
 		ProlongateDebugSum(PRODBG_RAW_WEIGHT_SUM, rawWeightSum, _ProlongateDebugScaleWeight);
-		ProlongateDebugMax(PRODBG_RAW_WEIGHT_MAX, rawWeightSum, _ProlongateDebugScaleWeight);
+		ProlongateDebugMax(PRODBG_RAW_WEIGHT_MAX, rawWeightSum, _ProlongateDebugScaleWeight);*/
 		[unroll] for (uint slot = 0u; slot < targetParentCount; slot++) { if (slot >= sourceCount) break; if (sourceGi[slot] < 0) continue; sourceWeight[slot] /= rawWeightSum; }
 	}
 
 	float2 blendedDeltaV = 0.0;
 	float weightSum = 0.0;
-	uint cnt = 0u;
 	[unroll] for (uint slot = 0u; slot < targetParentCount; slot++)
 	{
 		if (slot >= sourceCount) break;
 		int p = sourceGi[slot];
-		if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+		if (p == -1) continue;
 		float w = max(sourceWeight[slot], 0.0);
 		if (w <= EPS) continue;
 
 		uint parent = (uint)p;
-		float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
-		if (length(_Vel[parent])>0.00000001){
-		ProlongateDebugAdd(PRODBG_PARENT_RPLEN_ZERO, 1u);
-		}
-		ProlongateDebugSum(PRODBG_WEIGHT_SUM, length(_Vel[parent]), _ProlongateDebugScaleWeight);
-		ProlongateDebugMax(PRODBG_WEIGHT_MAX, length(_Vel[parent]), _ProlongateDebugScaleWeight);
-		if (length(parentDeltaV) <= EPS) continue;
-		cnt += 1u;
+		float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix2[parent];
+		
+		//if (length(parentDeltaV) <= EPS) continue;
 
 		float parentFixedCount = ReadFixedChildCount(parent);
 		if (abs(parentFixedCount - 1.0) <= 0.25)
 		{
-			ProlongateDebugAdd(PRODBG_PARENT_FIXED, 1u);
+			//ProlongateDebugAdd(PRODBG_PARENT_FIXED, 1u);
 			float2 anchor = ReadFixedChildAnchor(parent);
 			float2 rp = _Pos[parent] - anchor;
 			float rpLen = length(rp);
@@ -254,7 +246,7 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 				parentDeltaV -= radial * radialDV * (1.0 - radialKeep);
 				if (_UseAffineProlongation != 0u)
 				{
-					ProlongateDebugAdd(PRODBG_AFFINE_USED, 1u);
+					//ProlongateDebugAdd(PRODBG_AFFINE_USED, 1u);
 					float2 rc = _Pos[gi] - anchor;
 					float invRpSq = 1.0 / max(dot(rp, rp), EPS);
 					float omega = (rp.x * parentDeltaV.y - rp.y * parentDeltaV.x) * invRpSq;
@@ -266,7 +258,7 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 			}
 			else
 			{
-				
+				//ProlongateDebugAdd(PRODBG_PARENT_RPLEN_ZERO, 1u);
 			}
 		}
 
@@ -276,15 +268,14 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 
 	if (weightSum <= EPS) { ProlongateDebugAdd(PRODBG_WEIGHTSUM_ZERO, 1u); return; }
 	
-	
+	/*ProlongateDebugSum(PRODBG_WEIGHT_SUM, weightSum, _ProlongateDebugScaleWeight);
+	ProlongateDebugMax(PRODBG_WEIGHT_MAX, weightSum, _ProlongateDebugScaleWeight);
 	ProlongateDebugSum(PRODBG_BLEND_DV_SUM, length(blendedDeltaV), _ProlongateDebugScaleDv);
-	ProlongateDebugMax(PRODBG_BLEND_DV_MAX, length(blendedDeltaV), _ProlongateDebugScaleDv);
+	ProlongateDebugMax(PRODBG_BLEND_DV_MAX, length(blendedDeltaV), _ProlongateDebugScaleDv);*/
 	float2 prolongatedDeltaV = (blendedDeltaV / weightSum) * _ProlongationScale;
-	ProlongateDebugSum(PRODBG_PROLONG_DV_SUM, length(prolongatedDeltaV), _ProlongateDebugScaleDv);
+	/*ProlongateDebugSum(PRODBG_PROLONG_DV_SUM, length(prolongatedDeltaV), _ProlongateDebugScaleDv);
 	ProlongateDebugMax(PRODBG_PROLONG_DV_MAX, length(prolongatedDeltaV), _ProlongateDebugScaleDv);
-	//if(cnt != 0u) {
-		ProlongateDebugAdd(PRODBG_APPLIED, 1u);
-	//}
+	ProlongateDebugAdd(PRODBG_APPLIED, 1u);*/
 	_Vel[gi] += prolongatedDeltaV;
 }
 

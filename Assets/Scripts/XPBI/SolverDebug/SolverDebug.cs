@@ -83,7 +83,7 @@ namespace GPU.Solver {
                 });
             }
 
-            if (hasProlongateDebugData && prolongateDebug != null && prolongateDebugCpu != null) {
+            /*if (hasProlongateDebugData && prolongateDebug != null && prolongateDebugCpu != null) {
                 int required = Mathf.Min(prolongateDebug.count, prolongateDebugCpu.Length);
                 prolongateDebug.GetData(prolongateDebugCpu, 0, 0, required);
                 LogProlongateDebugFromData(prolongateDebugCpu, session.ProlongateDebugSamples);
@@ -93,7 +93,7 @@ namespace GPU.Solver {
                 int required = Mathf.Min(velDebug.count, velDebugCpu.Length);
                 velDebug.GetData(velDebugCpu, 0, 0, required);
                 LogVelDebugFromData(velDebugCpu, session.VelDebugSamples);
-            }
+            }*/
 
             if (SimulationParamSource.Current.uiAndReadback.convergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
                 Graphics.WaitOnAsyncGraphicsFence(fence);
@@ -205,7 +205,7 @@ namespace GPU.Solver {
                 float prolongDvAvg = dvCount > 0 ? prolongDvSum / dvCount : 0f;
                 float parentUsedAvg = weightCount > 0 ? (float)parentUsedSum / weightCount : 0f;
                 float parentCountAvg = weightCount > 0 ? (float)parentCountSum / weightCount : 0f;
-                Debug.Log(weightSum+" "+parentRpLenZero+" "+weightMaxU);
+                Debug.Log(prolongDvAvg+" "+weightAvg+" "+blendDvAvg);
                 /*Debug.Log(
                     $"Prolongate debug T{sample.Tick} L{sample.Layer} active={sample.ActiveCount} fine={sample.FineCount} " +
                     $"threads={total} applied={applied} early(li>=fine|gi|fixed|li<active|noWeight|wSum0)=" +

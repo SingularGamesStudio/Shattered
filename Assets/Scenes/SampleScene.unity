@@ -185,7 +185,7 @@ MonoBehaviour:
       maxVelocity: 2
       maxDisplacementPerTick: 0.012
     prolongation:
-      prolongationScale: 0.5
+      prolongationScale: 1
       restrictedDeltaVScale: 0.75
       useAffineProlongation: 1
       restrictResidualDeltaVScale: 0.35
@@ -240,10 +240,10 @@ MonoBehaviour:
       layer0FullRebuildEveryKFrames: 1
     uiAndReadback:
       showTpsOverlay: 1
-      convergenceDebugEnabled: 0
+      convergenceDebugEnabled: 1
       enableContinuousCpuReadback: 1
       cpuReadbackInterval: 0.02
-      prolongationConstraintDebugEnabled: 0
+      prolongationConstraintDebugEnabled: 1
   simulationPreset: {fileID: 0}
   applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}

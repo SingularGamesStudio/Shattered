@@ -43,7 +43,7 @@ public static class Const {
     public static float RestrictResidualDeltaVScale => SimulationParamSource.Current.prolongation.restrictResidualDeltaVScale;
     public static float PostProlongSmoothing => SimulationParamSource.Current.prolongation.postProlongSmoothing;
     public static int ParentKNearest => 2;
-    public static float ParentRelationMaxSupportScale => 2f;
+    public static float ParentRelationMaxSupportScale => 100f;
     public static float ParentWeightEpsilon => SimulationParamSource.Current.prolongation.parentWeightEpsilon;
 
     // XPBI particle regularization

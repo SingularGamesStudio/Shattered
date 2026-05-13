@@ -4,9 +4,47 @@
 #pragma kernel IntegratePositions
 #pragma kernel UpdateDtPositions
 #pragma kernel UpdateDtPositionsMapped
+#pragma kernel ClearOwnerSeeds
+#pragma kernel BuildOwnerSeeds
 #pragma kernel RebuildParentsAtLayer
 
 #include "../CommonShaders/Solver.Shared.hlsl"
+
+
+// ----------------------------------------------------------------------------
+// ClearOwnerSeeds: reset per-owner seed slots before seed build.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void ClearOwnerSeeds(uint3 id : SV_DispatchThreadID)
+{
+    uint owner = id.x;
+    if (owner >= _OwnerSeedCount)
+        return;
+
+    _OwnerSeedByBody[owner] = -1;
+    _OwnerSeedLayerByBody[owner] = -1;
+}
+
+// ----------------------------------------------------------------------------
+// BuildOwnerSeeds: pick a seed node per owner using highest node layer.
+// ----------------------------------------------------------------------------
+[numthreads(256, 1, 1)]
+void BuildOwnerSeeds(uint3 id : SV_DispatchThreadID)
+{
+    uint gi = id.x;
+    if (gi >= _TotalCount)
+        return;
+
+    int owner = _OwnerByNode[gi];
+    if (owner < 0 || owner >= (int)_OwnerSeedCount)
+        return;
+
+    int layer = _MaxLayerByNode[gi];
+    int prevLayer = -1;
+    InterlockedMax(_OwnerSeedLayerByBody[owner], layer, prevLayer);
+    if (layer > prevLayer)
+        _OwnerSeedByBody[owner] = (int)gi;
+}
 
 
 // ----------------------------------------------------------------------------
@@ -38,10 +76,14 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
     uint curLi = (cur >= 0) ? LocalIndexFromGlobal((uint)cur) : ~0u;
     if (curLi == ~0u || curLi >= _ParentCoarseCount)
     {
-        uint firstGi = GlobalIndexFromLocal(0u);
-        if (firstGi == ~0u)
+        int owner = (gi < _TotalCount) ? _OwnerByNode[gi] : -1;
+        int seed = (owner >= 0 && owner < (int)_OwnerSeedCount) ? _OwnerSeedByBody[owner] : -1;
+        if (seed < 0)
             return;
-        cur = int(firstGi);
+        cur = seed;
+        curLi = LocalIndexFromGlobal((uint)cur);
+        if (curLi == ~0u || curLi >= _ParentCoarseCount)
+            return;
     }
 
     float2 d0 = _Pos[cur] - q;

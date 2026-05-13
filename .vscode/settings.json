@@ -37,7 +37,6 @@
         "**/*.tga": true,
         "**/*.tif": true,
         "**/*.tiff": true,
-        "**/*.unity": true,
         "**/*.unityproj": true,
         "**/*.user": true,
         "**/*.userprefs": true,

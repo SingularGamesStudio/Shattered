@@ -73,6 +73,7 @@
 
     // Velocity delta accumulation
     RWStructuredBuffer<float2> _SavedVelPrefix;
+    RWStructuredBuffer<float2> _SavedVelPrefix2;
     RWStructuredBuffer<uint> _VelDeltaBits;
 
     // Neighbour lists
@@ -82,9 +83,14 @@
     StructuredBuffer<int> _DtCollisionOwnerByLocal;
     StructuredBuffer<int> _DtGlobalNodeMap;
     StructuredBuffer<int> _DtGlobalToLayerLocalMap;
+    StructuredBuffer<int> _OwnerByNode;
+    StructuredBuffer<int> _MaxLayerByNode;
+    RWStructuredBuffer<int> _OwnerSeedByBody;
+    RWStructuredBuffer<int> _OwnerSeedLayerByBody;
     uint _UseDtOwnerFilter;
     uint _UseDtGlobalNodeMap;
     uint _DtLocalBase;
+    uint _OwnerSeedCount;
 
     // Colouring order
     StructuredBuffer<uint> _ColorOrder;

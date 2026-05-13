@@ -200,6 +200,7 @@ void SaveVelPrefix(uint3 id : SV_DispatchThreadID)
 	uint gi = GlobalIndexFromLocal(li);
 	if (gi == ~0u) return;
 	_SavedVelPrefix[gi] = _Vel[gi];
+	_SavedVelPrefix2[gi] = _Vel[gi];
 }
 
 [numthreads(256, 1, 1)]

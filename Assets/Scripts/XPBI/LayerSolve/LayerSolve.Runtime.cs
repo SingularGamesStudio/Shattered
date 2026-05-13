@@ -32,6 +32,7 @@ namespace GPU.Solver {
         private ComputeBuffer collisionLambda;
         private ComputeBuffer collisionLambdaPrev;
         private ComputeBuffer savedVelPrefix;
+        private ComputeBuffer savedVelPrefix2;
         private ComputeBuffer velDeltaBits;
         private ComputeBuffer velPrev;
         private ComputeBuffer lambdaPrev;
@@ -125,6 +126,7 @@ namespace GPU.Solver {
         internal ComputeBuffer CollisionLambda => collisionLambda;
         internal int CollisionLambdaCapacity => collisionLambda != null ? collisionLambda.count : 0;
         internal ComputeBuffer SavedVelPrefix => savedVelPrefix;
+        internal ComputeBuffer SavedVelPrefix2 => savedVelPrefix2;
         internal ComputeBuffer VelDeltaBits => velDeltaBits;
         internal ComputeBuffer VelPrev => velPrev;
         internal ComputeBuffer LambdaPrev => lambdaPrev;
@@ -225,6 +227,7 @@ namespace GPU.Solver {
             collisionLambda = new ComputeBuffer(collisionLambdaCapacity, sizeof(float), ComputeBufferType.Structured);
             collisionLambdaPrev = new ComputeBuffer(collisionLambdaCapacity, sizeof(float), ComputeBufferType.Structured);
             savedVelPrefix = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
+            savedVelPrefix2 = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             velDeltaBits = new ComputeBuffer(newCapacity * 2, sizeof(uint), ComputeBufferType.Structured);
             velPrev = new ComputeBuffer(newCapacity, sizeof(float) * 2, ComputeBufferType.Structured);
             lambdaPrev = new ComputeBuffer(newCapacity, sizeof(float), ComputeBufferType.Structured);
@@ -255,6 +258,7 @@ namespace GPU.Solver {
             collisionLambda?.Dispose(); collisionLambda = null;
             collisionLambdaPrev?.Dispose(); collisionLambdaPrev = null;
             savedVelPrefix?.Dispose(); savedVelPrefix = null;
+            savedVelPrefix2?.Dispose(); savedVelPrefix2 = null;
             velDeltaBits?.Dispose(); velDeltaBits = null;
             velPrev?.Dispose(); velPrev = null;
             lambdaPrev?.Dispose(); lambdaPrev = null;
@@ -486,6 +490,7 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kProlongate, "_ParentIndices", parentIndices);
             cb.SetComputeBufferParam(shader, kProlongate, "_ParentWeights", parentWeights);
             cb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix", savedVelPrefix);
+            cb.SetComputeBufferParam(shader, kProlongate, "_SavedVelPrefix2", savedVelPrefix2);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);

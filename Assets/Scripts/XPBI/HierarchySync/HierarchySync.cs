@@ -27,6 +27,12 @@ namespace GPU.Solver {
             if (!session.UseHierarchical)
                 return;
 
+            if (solver.ownerSeedByBody != null && solver.ownerSeedLayerByBody != null && solver.ownerByNode != null && solver.maxLayerByNode != null) {
+                PrepareOwnerSeedBuildBuffers(session.AsyncCb);
+                Dispatch(session.AsyncCb, "XPBI.ClearOwnerSeeds", shader, kClearOwnerSeeds, XPBISolver.Groups256(solver.ownerSeedByBody.count), 1, 1);
+                Dispatch(session.AsyncCb, "XPBI.BuildOwnerSeeds", shader, kBuildOwnerSeeds, XPBISolver.Groups256(session.TotalCount), 1, 1);
+            }
+
             for (int layer = session.Request.GlobalDTHierarchy.MaxLayer; layer >= 1; layer--) {
                 if (!session.Request.GlobalDTHierarchy.TryGetLayerDt(layer, out DT dtLayer) || dtLayer == null)
                     continue;

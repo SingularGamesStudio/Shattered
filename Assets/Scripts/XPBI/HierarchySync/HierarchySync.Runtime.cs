@@ -10,6 +10,8 @@ namespace GPU.Solver {
         internal int kIntegratePositions;
         internal int kUpdateDtPositions;
         internal int kUpdateDtPositionsMapped;
+        internal int kClearOwnerSeeds;
+        internal int kBuildOwnerSeeds;
         internal int kRebuildParentsAtLayer;
 
         internal void CacheRuntimeKernels() {
@@ -17,7 +19,21 @@ namespace GPU.Solver {
             kIntegratePositions = shader.FindKernel("IntegratePositions");
             kUpdateDtPositions = shader.FindKernel("UpdateDtPositions");
             kUpdateDtPositionsMapped = shader.FindKernel("UpdateDtPositionsMapped");
+            kClearOwnerSeeds = shader.FindKernel("ClearOwnerSeeds");
+            kBuildOwnerSeeds = shader.FindKernel("BuildOwnerSeeds");
             kRebuildParentsAtLayer = shader.FindKernel("RebuildParentsAtLayer");
+        }
+
+        public void PrepareOwnerSeedBuildBuffers(CommandBuffer cb) {
+            cb.SetComputeIntParam(shader, "_OwnerSeedCount", solver.ownerSeedByBody != null ? solver.ownerSeedByBody.count : 0);
+
+            cb.SetComputeBufferParam(shader, kClearOwnerSeeds, "_OwnerSeedByBody", solver.ownerSeedByBody);
+            cb.SetComputeBufferParam(shader, kClearOwnerSeeds, "_OwnerSeedLayerByBody", solver.ownerSeedLayerByBody);
+
+            cb.SetComputeBufferParam(shader, kBuildOwnerSeeds, "_OwnerByNode", solver.ownerByNode);
+            cb.SetComputeBufferParam(shader, kBuildOwnerSeeds, "_MaxLayerByNode", solver.maxLayerByNode);
+            cb.SetComputeBufferParam(shader, kBuildOwnerSeeds, "_OwnerSeedByBody", solver.ownerSeedByBody);
+            cb.SetComputeBufferParam(shader, kBuildOwnerSeeds, "_OwnerSeedLayerByBody", solver.ownerSeedLayerByBody);
         }
 
         public struct ParentRebuildContext {
@@ -56,11 +72,14 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_ParentRangeEnd", baseIndex + fineCount);
             cb.SetComputeIntParam(shader, "_ParentCoarseCount", activeCount);
             cb.SetComputeFloatParam(shader, "_ParentRelationMaxDistance", math.max(0f, context.ParentRelationMaxDistance));
+            cb.SetComputeIntParam(shader, "_OwnerSeedCount", solver.ownerSeedByBody != null ? solver.ownerSeedByBody.count : 0);
 
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndex", parentIndex);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentIndices", parentIndices);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_ParentWeights", parentWeights);
+            cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_OwnerByNode", solver.ownerByNode);
+            cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_OwnerSeedByBody", solver.ownerSeedByBody);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighbors", neighborSearch.NeighborsBuffer);
             cb.SetComputeBufferParam(shader, kRebuildParentsAtLayer, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             solver.layerMappingCache.BindDtGlobalMappingParams(

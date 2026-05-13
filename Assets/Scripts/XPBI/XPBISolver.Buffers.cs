@@ -11,6 +11,10 @@ namespace GPU.Solver {
         internal ComputeBuffer parentIndex;
         internal ComputeBuffer parentIndices;
         internal ComputeBuffer parentWeights;
+        internal ComputeBuffer ownerByNode;
+        internal ComputeBuffer ownerSeedByBody;
+        internal ComputeBuffer ownerSeedLayerByBody;
+        internal ComputeBuffer maxLayerByNode;
         internal ComputeBuffer F;
         internal ComputeBuffer Fp;
 
@@ -24,6 +28,10 @@ namespace GPU.Solver {
         private int[] parentIndexCpu;
         private int[] parentIndicesCpu;
         private float[] parentWeightsCpu;
+        private int[] ownerByNodeCpu;
+        private int[] ownerSeedByBodyCpu;
+        private int[] ownerSeedLayerByBodyCpu;
+        private int[] maxLayerByNodeCpu;
         private float4[] FCpu;
         private float4[] FpCpu;
 
@@ -48,6 +56,26 @@ namespace GPU.Solver {
         internal void InitializeFromMeshless(System.Collections.Generic.List<MeshRange> ranges, int totalCount) {
             EnsureCapacity(totalCount);
 
+            int ownerCount = Mathf.Max(1, ranges != null ? ranges.Count : 0);
+            if (ownerSeedByBody == null || !ownerSeedByBody.IsValid() || ownerSeedByBody.count != ownerCount) {
+                ownerSeedByBody?.Dispose();
+                ownerSeedByBody = new ComputeBuffer(ownerCount, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (ownerSeedByBodyCpu == null || ownerSeedByBodyCpu.Length != ownerCount)
+                ownerSeedByBodyCpu = new int[ownerCount];
+
+            if (ownerSeedLayerByBody == null || !ownerSeedLayerByBody.IsValid() || ownerSeedLayerByBody.count != ownerCount) {
+                ownerSeedLayerByBody?.Dispose();
+                ownerSeedLayerByBody = new ComputeBuffer(ownerCount, sizeof(int), ComputeBufferType.Structured);
+            }
+            if (ownerSeedLayerByBodyCpu == null || ownerSeedLayerByBodyCpu.Length != ownerCount)
+                ownerSeedLayerByBodyCpu = new int[ownerCount];
+
+            for (int i = 0; i < ownerCount; i++) {
+                ownerSeedByBodyCpu[i] = -1;
+                ownerSeedLayerByBodyCpu[i] = -1;
+            }
+
             for (int rangeIdx = 0; rangeIdx < ranges.Count; rangeIdx++) {
                 MeshRange range = ranges[rangeIdx];
                 Meshless m = range.meshless;
@@ -69,6 +97,8 @@ namespace GPU.Solver {
                     }
                     FCpu[gi] = new float4(1f, 0f, 0f, 1f);
                     FpCpu[gi] = new float4(1f, 0f, 0f, 1f);
+                    ownerByNodeCpu[gi] = rangeIdx;
+                    maxLayerByNodeCpu[gi] = node.maxLayer;
                 }
             }
 
@@ -80,6 +110,10 @@ namespace GPU.Solver {
             parentIndex.SetData(parentIndexCpu, 0, 0, totalCount);
             parentIndices.SetData(parentIndicesCpu, 0, 0, totalCount * Const.ParentKNearest);
             parentWeights.SetData(parentWeightsCpu, 0, 0, totalCount * Const.ParentKNearest);
+            ownerByNode.SetData(ownerByNodeCpu, 0, 0, totalCount);
+            maxLayerByNode.SetData(maxLayerByNodeCpu, 0, 0, totalCount);
+            ownerSeedByBody.SetData(ownerSeedByBodyCpu, 0, 0, ownerCount);
+            ownerSeedLayerByBody.SetData(ownerSeedLayerByBodyCpu, 0, 0, ownerCount);
             F.SetData(FCpu, 0, 0, totalCount);
             Fp.SetData(FpCpu, 0, 0, totalCount);
 
@@ -112,6 +146,8 @@ namespace GPU.Solver {
             parentIndex = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             parentIndices = new ComputeBuffer(capacity * Const.ParentKNearest, sizeof(int), ComputeBufferType.Structured);
             parentWeights = new ComputeBuffer(capacity * Const.ParentKNearest, sizeof(float), ComputeBufferType.Structured);
+            ownerByNode = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
+            maxLayerByNode = new ComputeBuffer(capacity, sizeof(int), ComputeBufferType.Structured);
             F = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
             Fp = new ComputeBuffer(capacity, sizeof(float) * 4, ComputeBufferType.Structured);
 
@@ -123,6 +159,8 @@ namespace GPU.Solver {
             parentIndexCpu = new int[capacity];
             parentIndicesCpu = new int[capacity * Const.ParentKNearest];
             parentWeightsCpu = new float[capacity * Const.ParentKNearest];
+            ownerByNodeCpu = new int[capacity];
+            maxLayerByNodeCpu = new int[capacity];
             FCpu = new float4[capacity];
             FpCpu = new float4[capacity];
 
@@ -206,6 +244,10 @@ namespace GPU.Solver {
             parentIndex?.Dispose(); parentIndex = null;
             parentIndices?.Dispose(); parentIndices = null;
             parentWeights?.Dispose(); parentWeights = null;
+            ownerByNode?.Dispose(); ownerByNode = null;
+            ownerSeedByBody?.Dispose(); ownerSeedByBody = null;
+            ownerSeedLayerByBody?.Dispose(); ownerSeedLayerByBody = null;
+            maxLayerByNode?.Dispose(); maxLayerByNode = null;
             F?.Dispose(); F = null;
             Fp?.Dispose(); Fp = null;
 
