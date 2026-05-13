@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using ProlongationConstraintProbe = GPU.Solver.XPBISolver.ProlongationConstraintProbe;
+using ProlongateDebugSample = GPU.Solver.XPBISolver.ProlongateDebugSample;
+using VelDebugSample = GPU.Solver.XPBISolver.VelDebugSample;
 using SolveSession = GPU.Solver.XPBISolver.SolveSession;
 
 namespace GPU.Solver {
@@ -25,11 +27,27 @@ namespace GPU.Solver {
             if (session.EnableProlongationConstraintProbeDebug && session.MaxProlongationProbeSamples > 0)
                 EnsureProlongationConstraintDebugCapacity(session.MaxProlongationProbeSamples);
 
+            if (session.EnableProlongateDebug && session.MaxProlongateDebugEntries > 0)
+                EnsureProlongateDebugCapacity(session.MaxProlongateDebugEntries);
+
+            if (session.EnableVelDebug && session.MaxVelDebugEntries > 0)
+                EnsureVelDebugCapacity(session.MaxVelDebugEntries);
+
             session.ColoringUpdatedByLayer = SimulationParamSource.Current.uiAndReadback.convergenceDebugEnabled ? new bool[session.ConvergenceDebugLayerCount] : null;
             session.ProlongationConstraintProbes = session.MaxProlongationProbeSamples > 0
                 ? new List<ProlongationConstraintProbe>(Mathf.Max(1, session.MaxProlongationProbeSamples / 2))
                 : null;
             session.ProlongationProbeCursor = 0;
+
+            session.ProlongateDebugSamples = session.MaxProlongateDebugEntries > 0
+                ? new List<ProlongateDebugSample>(Mathf.Max(1, session.MaxProlongateDebugEntries / 2))
+                : null;
+            session.ProlongateDebugCursor = 0;
+
+            session.VelDebugSamples = session.MaxVelDebugEntries > 0
+                ? new List<VelDebugSample>(Mathf.Max(1, session.MaxVelDebugEntries / 2))
+                : null;
+            session.VelDebugCursor = 0;
         }
 
         /// <summary>
@@ -41,7 +59,17 @@ namespace GPU.Solver {
                 session.ProlongationConstraintProbes != null &&
                 session.ProlongationConstraintProbes.Count > 0;
 
-            if (hasProlongationProbeData)
+            bool hasProlongateDebugData =
+                session.EnableProlongateDebug &&
+                session.ProlongateDebugSamples != null &&
+                session.ProlongateDebugSamples.Count > 0;
+
+            bool hasVelDebugData =
+                session.EnableVelDebug &&
+                session.VelDebugSamples != null &&
+                session.VelDebugSamples.Count > 0;
+
+            if (hasProlongationProbeData || hasProlongateDebugData || hasVelDebugData)
                 Graphics.WaitOnAsyncGraphicsFence(fence);
 
             if (hasProlongationProbeData && prolongationConstraintDebug != null) {
@@ -53,6 +81,18 @@ namespace GPU.Solver {
                     var data = req.GetData<uint>();
                     LogProlongationConstraintStatsFromData(data.ToArray(), capturedProbes);
                 });
+            }
+
+            if (hasProlongateDebugData && prolongateDebug != null && prolongateDebugCpu != null) {
+                int required = Mathf.Min(prolongateDebug.count, prolongateDebugCpu.Length);
+                prolongateDebug.GetData(prolongateDebugCpu, 0, 0, required);
+                LogProlongateDebugFromData(prolongateDebugCpu, session.ProlongateDebugSamples);
+            }
+
+            if (hasVelDebugData && velDebug != null && velDebugCpu != null) {
+                int required = Mathf.Min(velDebug.count, velDebugCpu.Length);
+                velDebug.GetData(velDebugCpu, 0, 0, required);
+                LogVelDebugFromData(velDebugCpu, session.VelDebugSamples);
             }
 
             if (SimulationParamSource.Current.uiAndReadback.convergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
@@ -109,6 +149,113 @@ namespace GPU.Solver {
 
                 Debug.LogError(
                     $"Prolongation constraint error L{probe.Layer} T{probe.Tick}: pre(avg|max)={pre.avgAbsC:G6}|{pre.maxAbsC:G6} post(avg|max)={post.avgAbsC:G6}|{post.maxAbsC:G6} deltaAvg={deltaAvg:G6} counts={pre.count}->{post.count} markers={pre.marker}->{post.marker}");
+            }
+        }
+
+        internal void LogProlongateDebugFromData(uint[] data, IReadOnlyList<ProlongateDebugSample> samples) {
+            if (data == null || samples == null || samples.Count == 0)
+                return;
+
+            for (int i = 0; i < samples.Count; i++) {
+                var sample = samples[i];
+                int baseU = sample.Entry * ProlongateDebugStride;
+                if (baseU < 0 || baseU + ProlongateDebugStride > data.Length)
+                    continue;
+
+                uint total = data[baseU + 0];
+                uint earlyFine = data[baseU + 1];
+                uint giInvalid = data[baseU + 2];
+                uint fixedVertex = data[baseU + 3];
+                uint liActive = data[baseU + 4];
+                uint noWeight = data[baseU + 5];
+                uint weightZero = data[baseU + 6];
+                uint applied = data[baseU + 7];
+                uint parentOutOfRange = data[baseU + 8];
+                uint parentWeightZero = data[baseU + 9];
+                uint parentUsedSum = data[baseU + 10];
+                uint parentFixed = data[baseU + 11];
+                uint parentRpLenZero = data[baseU + 12];
+                uint affineUsed = data[baseU + 13];
+                uint rawWeightSumU = data[baseU + 14];
+                uint rawWeightMaxU = data[baseU + 15];
+                uint weightSumU = data[baseU + 16];
+                uint weightMaxU = data[baseU + 17];
+                uint blendDvSumU = data[baseU + 18];
+                uint blendDvMaxU = data[baseU + 19];
+                uint prolongDvSumU = data[baseU + 20];
+                uint prolongDvMaxU = data[baseU + 21];
+                uint parentUsedMax = data[baseU + 22];
+                uint parentCountSum = data[baseU + 23];
+                uint parentCountMax = data[baseU + 24];
+
+                int weightCountInt = (int)total - (int)earlyFine - (int)giInvalid - (int)fixedVertex - (int)liActive - (int)noWeight;
+                int dvCountInt = (int)applied;
+                uint weightCount = (uint)Mathf.Max(0, weightCountInt);
+                uint dvCount = (uint)Mathf.Max(0, dvCountInt);
+                float invWeightScale = 1f / ProlongateDebugScaleWeight;
+                float invDvScale = 1f / ProlongateDebugScaleDv;
+                float rawWeightSum = rawWeightSumU * invWeightScale;
+                float weightSum = weightSumU * invWeightScale;
+                float blendDvSum = blendDvSumU * invDvScale;
+                float prolongDvSum = prolongDvSumU * invDvScale;
+
+                float rawWeightAvg = weightCount > 0 ? rawWeightSum / weightCount : 0f;
+                float weightAvg = dvCount > 0 ? weightSum / dvCount : 0f;
+                float blendDvAvg = dvCount > 0 ? blendDvSum / dvCount : 0f;
+                float prolongDvAvg = dvCount > 0 ? prolongDvSum / dvCount : 0f;
+                float parentUsedAvg = weightCount > 0 ? (float)parentUsedSum / weightCount : 0f;
+                float parentCountAvg = weightCount > 0 ? (float)parentCountSum / weightCount : 0f;
+                Debug.Log(weightSum+" "+parentRpLenZero+" "+weightMaxU);
+                /*Debug.Log(
+                    $"Prolongate debug T{sample.Tick} L{sample.Layer} active={sample.ActiveCount} fine={sample.FineCount} " +
+                    $"threads={total} applied={applied} early(li>=fine|gi|fixed|li<active|noWeight|wSum0)=" +
+                    $"{earlyFine}|{giInvalid}|{fixedVertex}|{liActive}|{noWeight}|{weightZero} " +
+                    $"parents(avg|max used/count)={parentUsedAvg:G3}|{parentUsedMax}/{parentCountAvg:G3}|{parentCountMax} " +
+                    $"rawW(avg|max)={rawWeightAvg:G6}|{rawWeightMaxU * invWeightScale:G6} " +
+                    $"wSum(avg|max)={weightAvg:G6}|{weightMaxU * invWeightScale:G6} " +
+                    $"blendDv(avg|max)={blendDvAvg:G6}|{blendDvMaxU * invDvScale:G6} " +
+                    $"prolongDv(avg|max)={prolongDvAvg:G6}|{prolongDvMaxU * invDvScale:G6} " +
+                    $"parentOut={parentOutOfRange} parentW0={parentWeightZero} fixedParent={parentFixed} rp0={parentRpLenZero} affine={affineUsed}");*/
+            }
+        }
+
+        internal void LogVelDebugFromData(uint[] data, IReadOnlyList<VelDebugSample> samples) {
+            if (data == null || samples == null || samples.Count == 0)
+                return;
+
+            for (int i = 0; i < samples.Count; i++) {
+                var sample = samples[i];
+                int baseU = sample.Entry * VelDebugStride;
+                if (baseU < 0 || baseU + VelDebugStride > data.Length)
+                    continue;
+
+                uint sumVelU = data[baseU + 0];
+                uint maxVelU = data[baseU + 1];
+                uint sumSavedU = data[baseU + 2];
+                uint maxSavedU = data[baseU + 3];
+                uint count = data[baseU + 4];
+                uint velZero = data[baseU + 5];
+                uint savedZero = data[baseU + 6];
+
+                float invScale = 1f / VelDebugScale;
+                float sumVel = sumVelU * invScale;
+                float sumSaved = sumSavedU * invScale;
+                float avgVel = count > 0 ? sumVel / count : 0f;
+                float avgSaved = count > 0 ? sumSaved / count : 0f;
+                float maxVel = maxVelU * invScale;
+                float maxSaved = maxSavedU * invScale;
+
+                string stage = sample.Stage switch {
+                    (int)VelDebugStage.AfterRelax => "AfterRelax",
+                    (int)VelDebugStage.AfterCopyVelToPrev => "AfterCopyVelToPrev",
+                    (int)VelDebugStage.AfterApplyXsph => "AfterApplyXsph",
+                    _ => "Unknown",
+                };
+
+                Debug.Log(
+                    $"VelDebug T{sample.Tick} L{sample.Layer} {stage} active={sample.ActiveCount} " +
+                    $"avgVel={avgVel:G6} maxVel={maxVel:G6} avgSaved={avgSaved:G6} maxSaved={maxSaved:G6} " +
+                    $"zeroVel={velZero} zeroSaved={savedZero}");
             }
         }
 

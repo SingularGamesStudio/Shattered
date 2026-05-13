@@ -711,7 +711,6 @@ namespace GPU.Delaunay {
 
             int targetW = (int)math.ceil(ext.x / cellSize);
             int targetH = (int)math.ceil(ext.y / cellSize);
-            Debug.Log("_rebuildGridW: " + _rebuildGridW + ", _rebuildGridH: " + _rebuildGridH + ", targetW: " + targetW + ", targetH: " + targetH);
             _rebuildGridW = math.clamp(targetW, RebuildMinGridSide, RebuildMaxGridSide);
             _rebuildGridH = math.clamp(targetH, RebuildMinGridSide, RebuildMaxGridSide);
         }

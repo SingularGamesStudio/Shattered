@@ -237,6 +237,7 @@ namespace GPU.Solver {
                 UseHierarchical = useHierarchical,
                 UseOverrideLayer0NeighborSearch = useOverrideLayer0NeighborSearch,
                 EnableProlongationConstraintProbeDebug = Const.ProlongationConstraintDebugEnabled,
+                EnableProlongateDebug = Const.ProlongationConstraintDebugEnabled,
                 FixedObjectSignature = ComputeFixedObjectSignature(),
                 ConvergenceDebugMaxLayer = convergenceDebugMaxLayer,
                 ConvergenceDebugLayerCount = convergenceDebugLayerCount,
@@ -245,6 +246,10 @@ namespace GPU.Solver {
 
             session.MaxProlongationProbeSamples = session.EnableProlongationConstraintProbeDebug && session.UseHierarchical
                 ? Mathf.Max(0, request.TickCount * Mathf.Max(0, maxSolveLayer) * 2)
+                : 0;
+
+            session.MaxProlongateDebugEntries = session.EnableProlongateDebug && session.UseHierarchical
+                ? Mathf.Max(0, request.TickCount * Mathf.Max(0, maxSolveLayer))
                 : 0;
 
             return true;

@@ -205,6 +205,14 @@
     float _ConvergenceDebugScaleC;
     float _ConvergenceDebugScaleDLambda;
 
+    RWStructuredBuffer<uint> _ProlongateDebug;
+    uint _ProlongateDebugEnable;
+    uint _ProlongateDebugOffset;
+    uint _ProlongateDebugClearOffset;
+    uint _ProlongateDebugClearCount;
+    float _ProlongateDebugScaleWeight;
+    float _ProlongateDebugScaleDv;
+
 
 
     static float WendlandSupportRadius(float h)

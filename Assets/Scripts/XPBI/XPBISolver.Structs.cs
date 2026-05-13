@@ -48,6 +48,38 @@ namespace GPU.Solver {
             }
         }
 
+        internal readonly struct ProlongateDebugSample {
+            public readonly int Tick;
+            public readonly int Layer;
+            public readonly int Entry;
+            public readonly int ActiveCount;
+            public readonly int FineCount;
+
+            public ProlongateDebugSample(int tick, int layer, int entry, int activeCount, int fineCount) {
+                Tick = tick;
+                Layer = layer;
+                Entry = entry;
+                ActiveCount = activeCount;
+                FineCount = fineCount;
+            }
+        }
+
+        internal readonly struct VelDebugSample {
+            public readonly int Tick;
+            public readonly int Layer;
+            public readonly int Entry;
+            public readonly int ActiveCount;
+            public readonly int Stage;
+
+            public VelDebugSample(int tick, int layer, int entry, int activeCount, int stage) {
+                Tick = tick;
+                Layer = layer;
+                Entry = entry;
+                ActiveCount = activeCount;
+                Stage = stage;
+            }
+        }
+
         /// <summary>
         /// Immutable input for one solve submission.
         /// </summary>
@@ -100,14 +132,22 @@ namespace GPU.Solver {
             public bool UseHierarchical;
             public bool UseOverrideLayer0NeighborSearch;
             public bool EnableProlongationConstraintProbeDebug;
+            public bool EnableProlongateDebug;
+            public bool EnableVelDebug;
             public int FixedObjectSignature;
             public int ConvergenceDebugMaxLayer;
             public int ConvergenceDebugLayerCount;
             public int ConvergenceDebugMaxIterations;
             public int MaxProlongationProbeSamples;
+            public int MaxProlongateDebugEntries;
+            public int MaxVelDebugEntries;
             public bool[] ColoringUpdatedByLayer;
             public List<ProlongationConstraintProbe> ProlongationConstraintProbes;
             public int ProlongationProbeCursor;
+            public List<ProlongateDebugSample> ProlongateDebugSamples;
+            public int ProlongateDebugCursor;
+            public List<VelDebugSample> VelDebugSamples;
+            public int VelDebugCursor;
         }
 
         /// <summary>

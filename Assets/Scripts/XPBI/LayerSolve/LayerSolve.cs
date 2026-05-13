@@ -2,6 +2,7 @@ using GPU.Delaunay;
 using GPU.Neighbors;
 using LayerContext = GPU.Solver.XPBISolver.LayerContext;
 using ProlongationConstraintProbe = GPU.Solver.XPBISolver.ProlongationConstraintProbe;
+using ProlongateDebugSample = GPU.Solver.XPBISolver.ProlongateDebugSample;
 using SolveSession = GPU.Solver.XPBISolver.SolveSession;
 using TickContext = GPU.Solver.XPBISolver.TickContext;
 
@@ -212,7 +213,23 @@ namespace GPU.Solver {
             }
 
             if (layer > 0 && fineCount > activeCount) {
-                Dispatch(session.AsyncCb, "XPBI.Prolongate", shader, runtime.KProlongate, XPBISolver.Groups256(fineCount), 1, 1);
+                bool enableProlongateDebug =
+                    session.EnableProlongateDebug &&
+                    solver.solverDebug.ProlongateDebug != null &&
+                    session.ProlongateDebugSamples != null &&
+                    session.ProlongateDebugCursor < solver.solverDebug.ProlongateDebugEntries;
+
+                if (enableProlongateDebug) {
+                    int entryIndex = session.ProlongateDebugCursor++;
+                    runtime.SetProlongateDebugParams(session.AsyncCb, true, entryIndex);
+                    Dispatch(session.AsyncCb, "XPBI.ClearProlongateDebug", shader, runtime.KClearProlongateDebug, XPBISolver.Groups256(SolverDebug.ProlongateDebugStride), 1, 1);
+                    Dispatch(session.AsyncCb, "XPBI.Prolongate", shader, runtime.KProlongate, XPBISolver.Groups256(fineCount), 1, 1);
+                    session.ProlongateDebugSamples.Add(new ProlongateDebugSample(tickContext.TickIndex, layer, entryIndex, activeCount, fineCount));
+                }
+                else {
+                    runtime.SetProlongateDebugParams(session.AsyncCb, false, 0);
+                    Dispatch(session.AsyncCb, "XPBI.Prolongate", shader, runtime.KProlongate, XPBISolver.Groups256(fineCount), 1, 1);
+                }
                 if (Const.PostProlongSmoothing > 0f)
                     Dispatch(session.AsyncCb, "XPBI.SmoothProlongatedFineVel", shader, runtime.KSmoothProlongatedFineVel, XPBISolver.Groups256(fineCount), 1, 1);
             }

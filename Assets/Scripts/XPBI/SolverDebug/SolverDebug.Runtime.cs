@@ -7,12 +7,21 @@ namespace GPU.Solver {
         private const int ConvergenceDebugIterBufSize = 8;
         private const float ConvergenceDebugScaleC = 1_000_000f;
         private const float ConvergenceDebugScaleDLambda = 1_000_000f;
+        internal const int ProlongateDebugStride = 32;
+        internal const float ProlongateDebugScaleWeight = 10_000f;
+        internal const float ProlongateDebugScaleDv = 10_000f;
+        internal const int VelDebugStride = 8;
+        internal const float VelDebugScale = 10_000f;
 
         internal ComputeBuffer convergenceDebug;
         internal ComputeBuffer convergenceDebugFallback;
         internal ComputeBuffer prolongationConstraintDebug;
+        internal ComputeBuffer prolongateDebug;
+        internal ComputeBuffer velDebug;
         private uint[] convergenceDebugCpu;
         private uint[] prolongationConstraintDebugCpu;
+        private uint[] prolongateDebugCpu;
+        private uint[] velDebugCpu;
         private bool[] coloringUpdatedByLayerForDebugLog;
         private int convergenceDebugStepCursor;
         private string convergenceDebugCsvPath;
@@ -21,16 +30,22 @@ namespace GPU.Solver {
         private int convergenceDebugLayers;
         private int convergenceDebugTicks;
         internal int prolongationConstraintDebugEntries;
+        internal int prolongateDebugEntries;
+        internal int velDebugEntries;
 
         internal int kClearConvergenceDebugStats;
 
         internal ComputeBuffer ConvergenceDebug => convergenceDebug;
         internal ComputeBuffer ConvergenceDebugFallback => convergenceDebugFallback;
         internal ComputeBuffer ProlongationConstraintDebug => prolongationConstraintDebug;
+        internal ComputeBuffer ProlongateDebug => prolongateDebug;
+        internal ComputeBuffer VelDebug => velDebug;
         internal int ConvergenceDebugRequiredUInts => convergenceDebugRequiredUInts;
         internal int ConvergenceDebugMaxIter => convergenceDebugMaxIter;
         internal int ConvergenceDebugLayers => convergenceDebugLayers;
         internal int ProlongationConstraintDebugEntries => prolongationConstraintDebugEntries;
+        internal int ProlongateDebugEntries => prolongateDebugEntries;
+        internal int VelDebugEntries => velDebugEntries;
         internal int ClearConvergenceDebugStatsKernel => kClearConvergenceDebugStats;
 
         private static void Dispatch(CommandBuffer cb, string marker, ComputeShader shader, int kernel, int groupsX, int groupsY, int groupsZ) {
@@ -94,13 +109,19 @@ namespace GPU.Solver {
             convergenceDebug?.Dispose(); convergenceDebug = null;
             convergenceDebugFallback?.Dispose(); convergenceDebugFallback = null;
             prolongationConstraintDebug?.Dispose(); prolongationConstraintDebug = null;
+            prolongateDebug?.Dispose(); prolongateDebug = null;
+            velDebug?.Dispose(); velDebug = null;
             convergenceDebugCpu = null;
             prolongationConstraintDebugCpu = null;
+            prolongateDebugCpu = null;
+            velDebugCpu = null;
             convergenceDebugRequiredUInts = 0;
             convergenceDebugMaxIter = 0;
             convergenceDebugLayers = 0;
             convergenceDebugTicks = 0;
             prolongationConstraintDebugEntries = 0;
+            prolongateDebugEntries = 0;
+            velDebugEntries = 0;
             coloringUpdatedByLayerForDebugLog = null;
             convergenceDebugStepCursor = 0;
             convergenceDebugCsvPath = null;
@@ -147,6 +168,50 @@ namespace GPU.Solver {
             prolongationConstraintDebug = new ComputeBuffer(requiredUInts, sizeof(uint), ComputeBufferType.Structured);
             prolongationConstraintDebugCpu = new uint[requiredUInts];
             prolongationConstraintDebugEntries = safeEntries;
+        }
+
+        internal void EnsureProlongateDebugCapacity(int entryCount) {
+            int safeEntries = math.max(1, entryCount);
+            int requiredUInts = safeEntries * ProlongateDebugStride;
+
+            if (prolongateDebug != null &&
+                prolongateDebug.IsValid() &&
+                prolongateDebugEntries == safeEntries &&
+                prolongateDebug.count == requiredUInts &&
+                prolongateDebugCpu != null &&
+                prolongateDebugCpu.Length == requiredUInts)
+                return;
+
+            prolongateDebug?.Dispose();
+
+            prolongateDebug = new ComputeBuffer(requiredUInts, sizeof(uint), ComputeBufferType.Structured);
+            prolongateDebugCpu = new uint[requiredUInts];
+            prolongateDebugEntries = safeEntries;
+        }
+
+        internal void EnsureVelDebugCapacity(int entryCount) {
+            int safeEntries = math.max(1, entryCount);
+            int requiredUInts = safeEntries * VelDebugStride;
+
+            if (velDebug != null &&
+                velDebug.IsValid() &&
+                velDebugEntries == safeEntries &&
+                velDebug.count == requiredUInts &&
+                velDebugCpu != null &&
+                velDebugCpu.Length == requiredUInts)
+                return;
+
+            velDebug?.Dispose();
+
+            velDebug = new ComputeBuffer(requiredUInts, sizeof(uint), ComputeBufferType.Structured);
+            velDebugCpu = new uint[requiredUInts];
+            velDebugEntries = safeEntries;
+        }
+
+        internal enum VelDebugStage {
+            AfterRelax = 0,
+            AfterCopyVelToPrev = 1,
+            AfterApplyXsph = 2,
         }
 
         internal void CacheRuntimeKernels() {

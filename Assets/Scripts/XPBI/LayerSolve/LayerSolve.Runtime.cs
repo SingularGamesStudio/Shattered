@@ -54,6 +54,7 @@ namespace GPU.Solver {
         internal int kRelaxCollisionAtomic;
         internal int kProlongate;
         internal int kCommitDeformation;
+        internal int kClearProlongateDebug;
         internal int kSmoothProlongatedFineVel;
         internal int kCopyVelToPrev;
         internal int kApplyXsph;
@@ -199,6 +200,7 @@ namespace GPU.Solver {
         internal int KRelaxCollisionAtomic => kRelaxCollisionAtomic;
         internal int KProlongate => kProlongate;
         internal int KCommitDeformation => kCommitDeformation;
+        internal int KClearProlongateDebug => kClearProlongateDebug;
         internal int KSmoothProlongatedFineVel => kSmoothProlongatedFineVel;
         internal int KCopyVelToPrev => kCopyVelToPrev;
         internal int KApplyXsph => kApplyXsph;
@@ -277,10 +279,24 @@ namespace GPU.Solver {
             kRelaxCollisionAtomic = shader.FindKernel("RelaxCollisionAtomic");
             kProlongate = shader.FindKernel("Prolongate");
             kCommitDeformation = shader.FindKernel("CommitDeformation");
+            kClearProlongateDebug = shader.FindKernel("ClearProlongateDebug");
             kSmoothProlongatedFineVel = shader.FindKernel("SmoothProlongatedFineVel");
             kCopyVelToPrev = shader.FindKernel("CopyVelToPrev");
             kApplyXsph = shader.FindKernel("ApplyXsph");
             kApplyPositionCorrection = shader.FindKernel("ApplyPositionCorrection");
+        }
+
+        internal void SetProlongateDebugParams(CommandBuffer cb, bool enabled, int entryIndex) {
+            cb.SetComputeIntParam(shader, "_ProlongateDebugEnable", enabled ? 1 : 0);
+            if (!enabled)
+                return;
+
+            int offset = entryIndex * SolverDebug.ProlongateDebugStride;
+            cb.SetComputeIntParam(shader, "_ProlongateDebugOffset", offset);
+            cb.SetComputeIntParam(shader, "_ProlongateDebugClearOffset", offset);
+            cb.SetComputeIntParam(shader, "_ProlongateDebugClearCount", SolverDebug.ProlongateDebugStride);
+            cb.SetComputeFloatParam(shader, "_ProlongateDebugScaleWeight", SolverDebug.ProlongateDebugScaleWeight);
+            cb.SetComputeFloatParam(shader, "_ProlongateDebugScaleDv", SolverDebug.ProlongateDebugScaleDv);
         }
 
         internal void BindLayerColoringBuffers(CommandBuffer cb, NeighborColoring layerColoring) {
@@ -345,6 +361,8 @@ namespace GPU.Solver {
             cb.SetComputeIntParam(shader, "_CollisionEventCapacity", solver.collisionEvent.CollisionEventsBuffer != null ? solver.collisionEvent.CollisionEventsBuffer.count : 0);
             cb.SetComputeIntParam(shader, "_CoarseContactCapacity", solver.collisionEvent.CoarseContactsBuffer != null ? solver.collisionEvent.CoarseContactsBuffer.count : 0);
             cb.SetComputeIntParam(shader, "_CollisionLambdaCount", collisionLambda != null ? collisionLambda.count : 0);
+
+            cb.SetComputeIntParam(shader, "_ProlongateDebugEnable", 0);
 
             ComputeBuffer convergenceDebugBinding = solver.solverDebug.ConvergenceDebug ?? solver.solverDebug.ProlongationConstraintDebug ?? solver.solverDebug.ConvergenceDebugFallback;
             cb.SetComputeBufferParam(shader, kRelaxColored, "_ConvergenceDebug", convergenceDebugBinding);
@@ -472,6 +490,10 @@ namespace GPU.Solver {
             cb.SetComputeBufferParam(shader, kProlongate, "_DtNeighborCounts", neighborSearch.NeighborCountsBuffer);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtOwnerByLocal", dtOwnerByLocal ?? defaultDtOwnerByLocal);
             cb.SetComputeBufferParam(shader, kProlongate, "_DtCollisionOwnerByLocal", dtCollisionOwnerByLocal ?? dtOwnerByLocal ?? defaultDtCollisionOwnerByLocal);
+
+            ComputeBuffer prolongateDebugBinding = solver.solverDebug.ProlongateDebug ?? solver.solverDebug.ConvergenceDebugFallback;
+            cb.SetComputeBufferParam(shader, kProlongate, "_ProlongateDebug", prolongateDebugBinding);
+            cb.SetComputeBufferParam(shader, kClearProlongateDebug, "_ProlongateDebug", prolongateDebugBinding);
 
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Pos", pos);
             cb.SetComputeBufferParam(shader, kCommitDeformation, "_Vel", vel);
