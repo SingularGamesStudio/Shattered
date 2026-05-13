@@ -116,7 +116,9 @@ namespace GPU.Solver {
                                 dtLayer.GetPositionsBuffer(session.Request.WriteSlot),
                                 normalizedLayerNeighborSupportRadius,
                                 session.Request.WriteSlot,
-                                rebuildAdjacencyAndTriMap: true);
+                                rebuildAdjacencyAndTriMap: true,
+                                session.Request.GlobalDTHierarchy.NormCenter,
+                                session.Request.GlobalDTHierarchy.NormInvHalfExtent);
                             continue;
                         }
                     }

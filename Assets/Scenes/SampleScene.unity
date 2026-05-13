@@ -702,7 +702,7 @@ MonoBehaviour:
   curvatureDt: 0.2
   debugShowAccum: 0
   debugShowSdf: 0
-  showWireframe: 0
+  showWireframe: 1
   drawCoarseLayers: 1
   cullOverstretchedWireEdges: 0
   wireframeCycleKey: 119

@@ -301,17 +301,21 @@ namespace GPU.Delaunay {
             ComputeBuffer positionsForMaintain,
             float supportRadius,
             int writeSlot,
-            bool rebuildAdjacencyAndTriMap = true) {
+            bool rebuildAdjacencyAndTriMap = true,
+            float2 normCenter = default(float2),
+            float normInvHalfExtent = 0.0f) {
             _useSupportRadiusFilter = supportRadius > 0f;
             _supportRadius2 = _useSupportRadiusFilter ? supportRadius * supportRadius : 0f;
-            EnqueueFullRebuildIndirect(cb, positionsForMaintain, writeSlot, rebuildAdjacencyAndTriMap);
+            EnqueueFullRebuildIndirect(cb, positionsForMaintain, writeSlot, rebuildAdjacencyAndTriMap, normCenter, normInvHalfExtent);
         }
 
         public void EnqueueFullRebuildIndirect(
             CommandBuffer cb,
             ComputeBuffer positionsForMaintain,
             int writeSlot,
-            bool rebuildAdjacencyAndTriMap = true) {
+            bool rebuildAdjacencyAndTriMap = true,
+            float2 normCenter = default(float2),
+            float normInvHalfExtent = 0.0f) {
             if (cb == null) throw new ArgumentNullException(nameof(cb));
             if (positionsForMaintain == null) throw new ArgumentNullException(nameof(positionsForMaintain));
             if (writeSlot < 0 || writeSlot > 2) throw new ArgumentOutOfRangeException(nameof(writeSlot));
@@ -320,7 +324,7 @@ namespace GPU.Delaunay {
 
             EnsureFullRebuildBuffers();
             EnsureFullRebuildIndirectArgs();
-            SetFullRebuildCommonParams(cb, positionsForMaintain, writeSlot);
+            SetFullRebuildCommonParams(cb, positionsForMaintain, writeSlot, normCenter, normInvHalfExtent);
             BindFullRebuildIndirectArgs(cb);
 
             int partialGroups = math.max(1, (_realVertexCount + 255) / 256);
@@ -502,6 +506,7 @@ namespace GPU.Delaunay {
             int side = (int)math.ceil(math.sqrt(math.max(1, _realVertexCount)) * 2f);
             _rebuildGridW = math.max(8, side);
             _rebuildGridH = _rebuildGridW;
+            UpdateRebuildGridFromPointDensity(Camera.main, 0f);
             _rebuildTriHashSize = math.max(64, _triCount * 4);
             _rebuildEdgeHashSize = math.max(64, _halfEdgeCount * 4);
             int edgeRecordMin = math.max(3, _triCount * 3);
@@ -601,13 +606,127 @@ namespace GPU.Delaunay {
                 _edgeRecOpp = new ComputeBuffer(_rebuildMaxEdgeRecords, sizeof(int), ComputeBufferType.Structured);
             }
 
-            if (_rebuildCounters == null || _rebuildCounters.count != 6) {
+            if (_rebuildCounters == null || _rebuildCounters.count != 7) {
                 _rebuildCounters?.Dispose();
-                _rebuildCounters = new ComputeBuffer(6, sizeof(uint), ComputeBufferType.Structured);
+                _rebuildCounters = new ComputeBuffer(7, sizeof(uint), ComputeBufferType.Structured);
             }
         }
 
-        private void SetFullRebuildCommonParams(CommandBuffer cb, ComputeBuffer positionsForMaintain, int writeSlot) {
+        void SetNormalizedCameraBoundsOverride(
+            CommandBuffer cb,
+            ComputeShader shader,
+            Camera cam,
+            float2 normCenter,
+            float normInvHalfExtent,
+            float simulationPlaneZ = 0f)
+        {
+            if (cb == null || shader == null || cam == null)
+            {
+                if (cb != null && shader != null)
+                    cb.SetComputeIntParam(shader, "_UseRebuildBoundsOverride", 0);
+                return;
+            }
+
+            // Important: ViewportToWorldPoint.z is camera-space distance, not world z.
+            float planeDist = cam.transform.InverseTransformPoint(
+                new Vector3(0f, 0f, simulationPlaneZ)).z;
+
+            // For a normal 2D setup this should be positive; if not, just disable override.
+            if (planeDist <= 0f)
+            {
+                cb.SetComputeIntParam(shader, "_UseRebuildBoundsOverride", 0);
+                return;
+            }
+
+            Vector3 w00 = cam.ViewportToWorldPoint(new Vector3(0f, 0f, planeDist));
+            Vector3 w10 = cam.ViewportToWorldPoint(new Vector3(1f, 0f, planeDist));
+            Vector3 w01 = cam.ViewportToWorldPoint(new Vector3(0f, 1f, planeDist));
+            Vector3 w11 = cam.ViewportToWorldPoint(new Vector3(1f, 1f, planeDist));
+
+            float2 mnWorld = new float2(
+                Mathf.Min(Mathf.Min(w00.x, w10.x), Mathf.Min(w01.x, w11.x)),
+                Mathf.Min(Mathf.Min(w00.y, w10.y), Mathf.Min(w01.y, w11.y))
+            );
+
+            float2 mxWorld = new float2(
+                Mathf.Max(Mathf.Max(w00.x, w10.x), Mathf.Max(w01.x, w11.x)),
+                Mathf.Max(Mathf.Max(w00.y, w10.y), Mathf.Max(w01.y, w11.y))
+            );
+
+            // Convert world camera box into the SAME normalized space as DT points.
+            float2 mnNorm = (mnWorld - normCenter) * normInvHalfExtent;
+            float2 mxNorm = (mxWorld - normCenter) * normInvHalfExtent;
+
+            cb.SetComputeIntParam(shader, "_UseRebuildBoundsOverride", 1);
+            cb.SetComputeVectorParam(shader, "_RebuildBoundsOverrideMin", new Vector4(mnNorm.x, mnNorm.y, 0f, 0f));
+            cb.SetComputeVectorParam(shader, "_RebuildBoundsOverrideMax", new Vector4(mxNorm.x, mxNorm.y, 0f, 0f));
+        }
+
+        const float RebuildCellsPerNominalSpacing = 2.0f;
+
+        const int RebuildMinGridSide = 64;
+        const int RebuildMaxGridSide = 2048;
+
+        static bool TryGetCameraWorldXYBounds(Camera cam, float simulationPlaneZ, out float2 mnWorld, out float2 mxWorld)
+        {
+            mnWorld = 0f;
+            mxWorld = 0f;
+
+            if (cam == null)
+                return false;
+
+            float planeDist = cam.transform.InverseTransformPoint(new Vector3(0f, 0f, simulationPlaneZ)).z;
+            if (planeDist <= 0f)
+                return false;
+
+            Vector3 w00 = cam.ViewportToWorldPoint(new Vector3(0f, 0f, planeDist));
+            Vector3 w10 = cam.ViewportToWorldPoint(new Vector3(1f, 0f, planeDist));
+            Vector3 w01 = cam.ViewportToWorldPoint(new Vector3(0f, 1f, planeDist));
+            Vector3 w11 = cam.ViewportToWorldPoint(new Vector3(1f, 1f, planeDist));
+
+            mnWorld = new float2(
+                Mathf.Min(Mathf.Min(w00.x, w10.x), Mathf.Min(w01.x, w11.x)),
+                Mathf.Min(Mathf.Min(w00.y, w10.y), Mathf.Min(w01.y, w11.y))
+            );
+
+            mxWorld = new float2(
+                Mathf.Max(Mathf.Max(w00.x, w10.x), Mathf.Max(w01.x, w11.x)),
+                Mathf.Max(Mathf.Max(w00.y, w10.y), Mathf.Max(w01.y, w11.y))
+            );
+
+            return mxWorld.x > mnWorld.x && mxWorld.y > mnWorld.y;
+        }
+
+        void UpdateRebuildGridFromPointDensity(Camera cam, float simulationPlaneZ = 0f)
+        {
+            if (!TryGetCameraWorldXYBounds(cam, simulationPlaneZ, out float2 mnWorld, out float2 mxWorld))
+                return;
+
+            float2 ext = math.max(mxWorld - mnWorld, new float2(1e-4f, 1e-4f));
+
+            float nominalSpacing = 1f / math.sqrt(math.max(1e-6f, Const.Layer0PointDensity));
+
+            float cellSize = nominalSpacing / RebuildCellsPerNominalSpacing;
+            cellSize = math.max(cellSize, 1e-6f);
+
+            int targetW = (int)math.ceil(ext.x / cellSize);
+            int targetH = (int)math.ceil(ext.y / cellSize);
+            Debug.Log("_rebuildGridW: " + _rebuildGridW + ", _rebuildGridH: " + _rebuildGridH + ", targetW: " + targetW + ", targetH: " + targetH);
+            _rebuildGridW = math.clamp(targetW, RebuildMinGridSide, RebuildMaxGridSide);
+            _rebuildGridH = math.clamp(targetH, RebuildMinGridSide, RebuildMaxGridSide);
+        }
+
+        private void SetFullRebuildCommonParams(CommandBuffer cb, ComputeBuffer positionsForMaintain, int writeSlot, float2 normCenter, float normInvHalfExtent) {
+            Camera cam = Camera.main;
+            SetNormalizedCameraBoundsOverride(
+                cb,
+                _fullRebuildShader,
+                cam,
+                normCenter,
+                normInvHalfExtent,
+                0f
+            );
+
             cb.SetComputeIntParam(_fullRebuildShader, "_VertexCount", _vertexCount);
             cb.SetComputeIntParam(_fullRebuildShader, "_RealVertexCount", _realVertexCount);
             cb.SetComputeIntParam(_fullRebuildShader, "_HalfEdgeCount", _halfEdgeCount);

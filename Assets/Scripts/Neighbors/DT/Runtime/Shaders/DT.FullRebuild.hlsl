@@ -107,6 +107,8 @@ static const uint CTR_HE_USED        = 1u; // used halfedges
 static const uint CTR_MISSING_COUNT  = 2u; // number of missing sites
 static const uint CTR_TRI_USED       = 3u; // allocator for dynamic insertions
 static const uint CTR_INSERTED_COUNT = 4u; // number of successful missing-site insertions
+static const uint CTR_TRI_FILTERED = 5u;
+static const uint CTR_DEBUG          = 6u; // debug counter
 
 // -------------------------
 // Indirect dispatch args writer
@@ -150,7 +152,7 @@ int _MaxEdgeRecords;
 int _SortK;
 int _SortJ;
 
-static const uint CTR_TRI_FILTERED = 5u;
+
 
 // -------------------------
 // Geometry helpers
@@ -510,8 +512,15 @@ static float4 GetRebuildBoundsRaw()
     return _BoundsResult[0];
 }
 
+int    _UseRebuildBoundsOverride;
+float2 _RebuildBoundsOverrideMin;
+float2 _RebuildBoundsOverrideMax;
+
 static float2 GetRebuildMin()
 {
+    if (_UseRebuildBoundsOverride != 0)
+        return min(_RebuildBoundsOverrideMin, _RebuildBoundsOverrideMax);
+
     float4 b = GetRebuildBoundsRaw();
     float2 mn = b.xy;
     float2 mx = b.zw;
@@ -521,6 +530,9 @@ static float2 GetRebuildMin()
 
 static float2 GetRebuildMax()
 {
+    if (_UseRebuildBoundsOverride != 0)
+        return max(_RebuildBoundsOverrideMin, _RebuildBoundsOverrideMax);
+
     float4 b = GetRebuildBoundsRaw();
     float2 mn = b.xy;
     float2 mx = b.zw;
@@ -537,14 +549,29 @@ static float2 GetCellCenterWorld(int2 c)
     return mn + uv * size;
 }
 
-static int2 WorldToCell(float2 p)
+static bool WorldToCellChecked(float2 p, out int2 c)
 {
     float2 mn = GetRebuildMin();
     float2 mx = GetRebuildMax();
     float2 size = max(mx - mn, float2(1e-4, 1e-4));
-    float2 uv = saturate((p - mn) / size);
-    int2 c = int2(uv * float2(_GridW, _GridH));
+
+    float2 uv = (p - mn) / size;
+
+    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0)
+    {
+        c = int2(0, 0);
+        return false;
+    }
+
+    c = int2(uv * float2(_GridW, _GridH));
     c = clamp(c, int2(0, 0), int2(_GridW - 1, _GridH - 1));
+    return true;
+}
+
+static int2 WorldToCell(float2 p)
+{
+    int2 c;
+    WorldToCellChecked(p, c);
     return c;
 }
 
@@ -930,6 +957,8 @@ void ClearMeshState(uint3 id : SV_DispatchThreadID)
         _RebuildCounters[CTR_MISSING_COUNT] = 0u;
         _RebuildCounters[CTR_TRI_USED] = 0u;
         _RebuildCounters[CTR_INSERTED_COUNT] = 0u;
+        _RebuildCounters[CTR_TRI_FILTERED] = 0u;
+        _RebuildCounters[CTR_DEBUG] = 0u;
     }
 }
 
@@ -950,7 +979,10 @@ void SeedSitesToGrid(uint3 id : SV_DispatchThreadID)
             return;
     }
 
-    int2 c = WorldToCell(_Positions[v]);
+    int2 c;
+    if (!WorldToCellChecked(_Positions[v], c))
+        return;
+
     int gi = GridIndex(c);
 
     int oldVal;
@@ -963,7 +995,13 @@ void AssignOwnersByCell(uint3 id : SV_DispatchThreadID)
     uint v = id.x;
     if (v >= (uint)_VertexCount) return;
 
-    int2 c = WorldToCell(_Positions[v]);
+    int2 c;
+    if (!WorldToCellChecked(_Positions[v], c))
+    {
+        _OwnerByVertex[v] = -1;
+        return;
+    }
+
     int gi = GridIndex(c);
     _OwnerByVertex[v] = _GridSeedOwner[gi];
 }
@@ -976,7 +1014,10 @@ void InitVoronoiFromSeeds(uint3 id : SV_DispatchThreadID)
     if (i >= n) return;
 
     int s = _GridSeedOwner[i];
-    if (s == 0x7fffffff) s = -1;
+    if (s == 0x7fffffff) {
+        s = -1;
+        InterlockedAdd(_RebuildCounters[CTR_DEBUG], 1u);
+    }
 
     _VoronoiA[i] = s;
     _VoronoiB[i] = s;
