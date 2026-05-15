@@ -69,10 +69,10 @@ public sealed class SimulationParams {
 
     [Serializable]
     public sealed class IterationParams {
-        [Min(1)] public int jrIterationsLMax = 2;
-        [Min(1)] public int jrIterationsLMid = 4;
-        [Min(1)] public int gsIterationsL0 = 4;
-        [Min(1)] public int jrIterationsL0 = 16;
+        public int jrIterationsLMax = 2;
+        public int jrIterationsLMid = 4;
+        public int gsIterationsL0 = 4;
+        public int jrIterationsL0 = 16;
         [Range(0f, 1f)] public float jrOmegaV = 0.3f;
         [Range(0f, 1f)] public float jrOmegaL = 0.3f;
     }

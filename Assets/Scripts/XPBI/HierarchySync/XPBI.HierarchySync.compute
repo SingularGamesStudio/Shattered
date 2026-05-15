@@ -57,7 +57,7 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
     if (liFine >= _ParentRangeEnd)
         return;
 
-    uint gi = (_UseDtGlobalNodeMap != 0u) ? GlobalIndexFromLocal(liFine) : (_Base + liFine);
+    uint gi = GlobalIndexFromLocal(liFine);
     if (gi == ~0u)
         return;
 
@@ -72,7 +72,8 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
         _ParentWeights[parentBase + clearIdx] = 0.0;
     }
 
-    int cur = _ParentIndex[gi];
+    _ParentIndex[gi] = -1;
+    int cur = -1;
     uint curLi = (cur >= 0) ? LocalIndexFromGlobal((uint)cur) : ~0u;
     if (curLi == ~0u || curLi >= _ParentCoarseCount)
     {
@@ -323,11 +324,9 @@ void RebuildParentsAtLayer(uint3 id : SV_DispatchThreadID)
 [numthreads(256, 1, 1)]
 void ClampVelocities(uint3 id : SV_DispatchThreadID)
 {
-    uint li = id.x;
-    if (li >= _TotalCount)
+    uint gi = id.x;
+    if (gi >= _TotalCount)
         return;
-
-    uint gi = _Base + li;
     if (IsFixedVertex(gi))
         return;
 
@@ -353,11 +352,10 @@ void ClampVelocities(uint3 id : SV_DispatchThreadID)
 [numthreads(256, 1, 1)]
 void IntegratePositions(uint3 id : SV_DispatchThreadID)
 {
-    uint li = id.x;
-    if (li >= _TotalCount)
+    uint gi = id.x;
+    if (gi >= _TotalCount)
         return;
 
-    uint gi = _Base + li;
     if (IsFixedVertex(gi))
         return;
 
@@ -392,7 +390,7 @@ void UpdateDtPositions(uint3 id : SV_DispatchThreadID)
     if (li >= _ActiveCount)
         return;
 
-    uint gi = _Base + li;
+    uint gi = GlobalIndexFromLocal(li);
     _DtPositions[li] = (_Pos[gi] - _DtNormCenter) * _DtNormInvHalfExtent;
 }
 

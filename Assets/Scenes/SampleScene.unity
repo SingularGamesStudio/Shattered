@@ -185,9 +185,9 @@ MonoBehaviour:
       maxVelocity: 2
       maxDisplacementPerTick: 0.012
     prolongation:
-      prolongationScale: 1
+      prolongationScale: 0.766
       restrictedDeltaVScale: 0.75
-      useAffineProlongation: 1
+      useAffineProlongation: 0
       restrictResidualDeltaVScale: 0.35
       postProlongSmoothing: 0.2
       parentWeightEpsilon: 0.001

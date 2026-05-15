@@ -225,7 +225,7 @@ void Prolongate(uint3 id : SV_DispatchThreadID)
 		if (w <= EPS) continue;
 
 		uint parent = (uint)p;
-		float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix2[parent];
+		float2 parentDeltaV = _Vel[parent] - _SavedVelPrefix[parent];
 		
 		//if (length(parentDeltaV) <= EPS) continue;
 

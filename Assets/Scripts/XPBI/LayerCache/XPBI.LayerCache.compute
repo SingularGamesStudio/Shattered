@@ -252,12 +252,13 @@ void RestrictGameplayDeltaVFromEvents(uint3 id : SV_DispatchThreadID)
 	if (ei >= _ForceEventCount) return;
 	XPBI_ForceEvent e = _ForceEvents[ei];
 	uint gi = e.node;
-	if (gi < _Base || gi >= _Base + _FineCount) return;
 	if (IsFixedVertex(gi)) return;
 
 	float2 leafDeltaV = e.force * _Dt;
 	uint liOwner = LocalIndexFromGlobal(gi);
-	if (liOwner != ~0u && liOwner < _ActiveCount)
+	if (liOwner == ~0u || liOwner >= _FineCount) return;
+
+	if (liOwner < _ActiveCount)
 	{
 		AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 0u, leafDeltaV.x);
 		AtomicAddFloatBits(_RestrictedDeltaVBits, gi * 2u + 1u, leafDeltaV.y);
@@ -308,7 +309,8 @@ void RestrictFineVelocityResidualToActive(uint3 id : SV_DispatchThreadID)
 	{
 		if (slot >= parentCount) break;
 		int p = ReadParentBySlot(gi, slot);
-		if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+		uint pLi = LocalIndexFromGlobal((uint)p);
+		if (pLi == ~0u || pLi >= _ActiveCount) continue;
 		weightSum += max(ReadParentWeightBySlot(gi, slot), 0.0);
 	}
 	if (weightSum <= EPS) return;
@@ -317,7 +319,8 @@ void RestrictFineVelocityResidualToActive(uint3 id : SV_DispatchThreadID)
 	{
 		if (slot >= parentCount) break;
 		int p = ReadParentBySlot(gi, slot);
-		if (p < int(_Base) || p >= int(_Base + _ActiveCount)) continue;
+		uint pLi = LocalIndexFromGlobal((uint)p);
+		if (pLi == ~0u || pLi >= _ActiveCount) continue;
 		uint ownerGi = (uint)p;
 		float w = max(ReadParentWeightBySlot(gi, slot), 0.0) / weightSum;
 		if (w <= EPS) continue;

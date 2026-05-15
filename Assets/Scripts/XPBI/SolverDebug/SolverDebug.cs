@@ -87,12 +87,6 @@ namespace GPU.Solver {
                 int required = Mathf.Min(prolongateDebug.count, prolongateDebugCpu.Length);
                 prolongateDebug.GetData(prolongateDebugCpu, 0, 0, required);
                 LogProlongateDebugFromData(prolongateDebugCpu, session.ProlongateDebugSamples);
-            }
-
-            if (hasVelDebugData && velDebug != null && velDebugCpu != null) {
-                int required = Mathf.Min(velDebug.count, velDebugCpu.Length);
-                velDebug.GetData(velDebugCpu, 0, 0, required);
-                LogVelDebugFromData(velDebugCpu, session.VelDebugSamples);
             }*/
 
             if (SimulationParamSource.Current.uiAndReadback.convergenceDebugEnabled && convergenceDebug != null && convergenceDebugRequiredUInts > 0) {
@@ -219,46 +213,6 @@ namespace GPU.Solver {
             }
         }
 
-        internal void LogVelDebugFromData(uint[] data, IReadOnlyList<VelDebugSample> samples) {
-            if (data == null || samples == null || samples.Count == 0)
-                return;
-
-            for (int i = 0; i < samples.Count; i++) {
-                var sample = samples[i];
-                int baseU = sample.Entry * VelDebugStride;
-                if (baseU < 0 || baseU + VelDebugStride > data.Length)
-                    continue;
-
-                uint sumVelU = data[baseU + 0];
-                uint maxVelU = data[baseU + 1];
-                uint sumSavedU = data[baseU + 2];
-                uint maxSavedU = data[baseU + 3];
-                uint count = data[baseU + 4];
-                uint velZero = data[baseU + 5];
-                uint savedZero = data[baseU + 6];
-
-                float invScale = 1f / VelDebugScale;
-                float sumVel = sumVelU * invScale;
-                float sumSaved = sumSavedU * invScale;
-                float avgVel = count > 0 ? sumVel / count : 0f;
-                float avgSaved = count > 0 ? sumSaved / count : 0f;
-                float maxVel = maxVelU * invScale;
-                float maxSaved = maxSavedU * invScale;
-
-                string stage = sample.Stage switch {
-                    (int)VelDebugStage.AfterRelax => "AfterRelax",
-                    (int)VelDebugStage.AfterCopyVelToPrev => "AfterCopyVelToPrev",
-                    (int)VelDebugStage.AfterApplyXsph => "AfterApplyXsph",
-                    _ => "Unknown",
-                };
-
-                Debug.Log(
-                    $"VelDebug T{sample.Tick} L{sample.Layer} {stage} active={sample.ActiveCount} " +
-                    $"avgVel={avgVel:G6} maxVel={maxVel:G6} avgSaved={avgSaved:G6} maxSaved={maxSaved:G6} " +
-                    $"zeroVel={velZero} zeroSaved={savedZero}");
-            }
-        }
-
         internal void LogConvergenceStatsFromData(uint[] data, int maxSolveLayer, int maxIter, int tickCount, int baseStep) {
             if (data == null || data.Length == 0)
                 return;
@@ -316,13 +270,15 @@ namespace GPU.Solver {
             if (totalIterations <= 0)
                 return;
 
-            if (string.IsNullOrEmpty(convergenceDebugCsvPath))
+            if (string.IsNullOrEmpty(convergenceDebugCsvPath)){
                 convergenceDebugCsvPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "convergence_stats.csv"));
+                using var writer0 = new StreamWriter(convergenceDebugCsvPath, append: false);
+                writer0.WriteLine("step,in_step_iteration,marker,count,avg_abs_c,max_abs_c,avg_abs_dlambda,max_abs_dlambda");
+                writer0.Flush();
+                writer0.Close();
+            }
 
-            bool writeHeader = !File.Exists(convergenceDebugCsvPath) || new FileInfo(convergenceDebugCsvPath).Length == 0;
             using var writer = new StreamWriter(convergenceDebugCsvPath, append: true);
-            if (writeHeader)
-                writer.WriteLine("step,in_step_iteration,marker,count,avg_abs_c,max_abs_c,avg_abs_dlambda,max_abs_dlambda");
 
             for (int tick = 0; tick < tickCount; tick++) {
                 int step = baseStep + tick;

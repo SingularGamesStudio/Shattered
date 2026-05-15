@@ -340,7 +340,7 @@
         }
         else
         {
-            result = gi - _Base;
+            result = gi;
         }
         return result;
     }
@@ -356,7 +356,7 @@
         }
         else
         {
-            result = _Base + li;
+            result = li;
         }
         return result;
     }
