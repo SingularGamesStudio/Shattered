@@ -152,7 +152,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   simulationParams:
     pointCloud:
-      layer0PointDensity: 128
+      layer0PointDensity: 256
       layerDownsampleRatio: 0.133
       minVerticesPerLayer: 10
       maxAutoLayers: 6
@@ -162,7 +162,7 @@ MonoBehaviour:
       targetTPS: 500
       targetFPS: 30
       simulationSpeed: 1
-      maxTicksPerBatch: 16
+      maxTicksPerBatch: 32
     interaction:
       manual: 0
       holdThreshold: 0.2
@@ -170,34 +170,37 @@ MonoBehaviour:
       neighborSearchMode: 0
     solverCore:
       gravity: -9.81
-      compliance: 0.1
+      compliance: 0.03
     neighbors:
       layerKernelHFromPoissonRadius: 2
       wendlandSupport: 2
     iterations:
       jrIterationsLMax: 2
-      jrIterationsLMid: 4
-      gsIterationsL0: 4
-      jrIterationsL0: 16
+      jrIterationsLMid: 2
+      gsIterationsL0: 2
+      jrIterationsL0: 8
       jrOmegaV: 0.3
       jrOmegaL: 0.3
+      targetConvergenceIterate: 0
+      targetConvergenceC: 0.001
+      maxConvergenceIterations: 32
     stability:
       maxVelocity: 2
       maxDisplacementPerTick: 0.012
     prolongation:
-      prolongationScale: 0.766
+      prolongationScale: 1
       restrictedDeltaVScale: 0.75
       useAffineProlongation: 0
       restrictResidualDeltaVScale: 0.35
       postProlongSmoothing: 0.2
       parentWeightEpsilon: 0.001
     particleRegularization:
-      xsphC: 0.2
+      xsphC: 0
       enablePositionCorrection: 0
       positionCorrectionIterations: 1
-      positionCorrectionGapRatio: 0.25
-      positionCorrectionCompliance: 0.01
-      positionCorrectionMaxFraction: 0.25
+      positionCorrectionGapRatio: 0.4
+      positionCorrectionCompliance: 0.1
+      positionCorrectionMaxFraction: 0.05
     collision:
       collisionSupportScale: 0.3
       collisionSkinScale: 0
@@ -216,8 +219,8 @@ MonoBehaviour:
       collisionSdfFallbackDepthScale: 2.5
       collisionSdfEdgeRefineIterations: 6
     volume:
-      volumeComplianceComp: 1
-      volumeComplianceExp: 0.01
+      volumeComplianceComp: 0.01
+      volumeComplianceExp: 0
       volumeJLow: 0.98
       volumeJHigh: 1.02
       volumeJMin: 0.05
@@ -237,13 +240,13 @@ MonoBehaviour:
       initColoringConflictRounds: 24
       dtFixIterations: 2
       dtLegalizeIterations: 2
-      layer0FullRebuildEveryKFrames: 1
+      layer0FullRebuildEveryKFrames: 100000
     uiAndReadback:
       showTpsOverlay: 1
-      convergenceDebugEnabled: 1
-      enableContinuousCpuReadback: 1
+      convergenceDebugEnabled: 0
+      enableContinuousCpuReadback: 0
       cpuReadbackInterval: 0.02
-      prolongationConstraintDebugEnabled: 1
+      prolongationConstraintDebugEnabled: 0
   simulationPreset: {fileID: 0}
   applyPresetOnAwake: 1
   layerCacheShader: {fileID: 7200000, guid: 173f97c20b500944db656da1ac523ab1, type: 3}
@@ -344,7 +347,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &120616559
 Transform:
   m_ObjectHideFlags: 0
@@ -376,7 +379,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -389,7 +392,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 120616561}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -472,7 +475,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &130370688
 Transform:
   m_ObjectHideFlags: 0
@@ -504,7 +507,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -517,7 +520,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 130370690}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -729,7 +732,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &519454979
 Transform:
   m_ObjectHideFlags: 0
@@ -761,7 +764,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -774,7 +777,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 519454981}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -857,7 +860,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1054705959
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -985,7 +988,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1096136047
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1113,7 +1116,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1140901370
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1130,7 +1133,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -1143,7 +1146,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 1140901371}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -1251,8 +1254,8 @@ Transform:
   m_GameObject: {fileID: 1296735239}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -0.95, y: 3.43, z: 0}
-  m_LocalScale: {x: 0.92547065, y: 0.93774, z: 1}
+  m_LocalPosition: {x: -1.9916, y: 4.4304, z: 0}
+  m_LocalScale: {x: 3.008705, y: 2.9385958, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1578690803}
@@ -1273,7 +1276,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -1286,7 +1289,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 1296735242}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -1379,8 +1382,8 @@ Transform:
   m_GameObject: {fileID: 1358323580}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -0.22, y: 2.04, z: 0}
-  m_LocalScale: {x: 0.92547065, y: 0.93774, z: 1}
+  m_LocalPosition: {x: 0.99, y: 4.48, z: 0}
+  m_LocalScale: {x: 2.961722, y: 2.9974108, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1578690803}
@@ -1401,7 +1404,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -1414,7 +1417,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 1358323583}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0
@@ -1496,7 +1499,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1458040636
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1559,13 +1562,14 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1578690803}
+  - component: {fileID: 1578690804}
   m_Layer: 0
   m_Name: GameObject (1)
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1578690803
 Transform:
   m_ObjectHideFlags: 0
@@ -1588,6 +1592,25 @@ Transform:
   - {fileID: 1296735240}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1578690804
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1578690802}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 956b7f2bba38ad44299f2831e551c7e5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SpriteMeshGroupTool
+  includeInactiveChildren: 1
+  regenerateExistingOnGenerate: 1
+  materialTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
+  overwriteMaterialOnExisting: 1
+  applyCollisionOwnerOverride: 1
+  collisionOwnerOverride: {fileID: 0}
+  fallbackToThisTransform: 1
 --- !u!1 &1678946267
 GameObject:
   m_ObjectHideFlags: 0
@@ -1605,7 +1628,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1678946268
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1733,7 +1756,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1705700933
 Transform:
   m_ObjectHideFlags: 0
@@ -1765,7 +1788,7 @@ MonoBehaviour:
   layerEndIndex: 
   layerRadii: []
   layerKernelH: []
-  baseMaterialDef: {fileID: 11400000, guid: 7b63e1e2c68caf7428af8cacced25a73, type: 2}
+  baseMaterialDef: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   fixedObject: 0
   collisionOwnerOverride: {fileID: 0}
   size:
@@ -1778,7 +1801,7 @@ MonoBehaviour:
   generatedLayerCount: 0
   layerNodeCounts: 
   spriteRenderer: {fileID: 1705700935}
-  physicsTemplate: {fileID: 0}
+  physicsTemplate: {fileID: 11400000, guid: 6f61abe53c5308048a7a49964b0c3a0b, type: 2}
   generateOnAwakeIfMissing: 1
   useSpriteRendererTint: 1
   ignoreSpriteTextureForRendering: 0

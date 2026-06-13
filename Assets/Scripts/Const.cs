@@ -23,6 +23,9 @@ public static class Const {
     public static int JRIterationsL0 => SimulationParamSource.Current.iterations.jrIterationsL0;
     public static float JROmegaV => SimulationParamSource.Current.iterations.jrOmegaV;
     public static float JROmegaL => SimulationParamSource.Current.iterations.jrOmegaL;
+    public static bool TargetConvergenceIterate => SimulationParamSource.Current.iterations.targetConvergenceIterate;
+    public static float TargetConvergenceC => SimulationParamSource.Current.iterations.targetConvergenceC;
+    public static int MaxConvergenceIterations => SimulationParamSource.Current.iterations.maxConvergenceIterations;
     public static int PersistentCoarseMaxNodes = 256;
 
     // DT maintenance
@@ -91,5 +94,6 @@ public static class Const {
 
     // Optional deep-debug probe; when enabled it forces per-batch fence waits + readback.
     public static bool ProlongationConstraintDebugEnabled => SimulationParamSource.Current.uiAndReadback.prolongationConstraintDebugEnabled;
+    public static bool DebugCSVReset = false;
 
 }

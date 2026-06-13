@@ -175,18 +175,18 @@ MonoBehaviour:
       layerKernelHFromPoissonRadius: 2
       wendlandSupport: 2
     iterations:
-      jrIterationsLMax: 2
-      jrIterationsLMid: 4
+      jrIterationsLMax: 0
+      jrIterationsLMid: 0
       gsIterationsL0: 20
       jrIterationsL0: 0
       jrOmegaV: 0.3
       jrOmegaL: 0.3
     stability:
       maxVelocity: 2
-      maxDisplacementPerTick: 0.012
+      maxDisplacementPerTick: 0.12
     prolongation:
-      prolongationScale: 0.8
-      restrictedDeltaVScale: 0.75
+      prolongationScale: 1
+      restrictedDeltaVScale: 0.3
       useAffineProlongation: 0
       restrictResidualDeltaVScale: 0.35
       postProlongSmoothing: 0.2
@@ -473,7 +473,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &524270774
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -728,7 +728,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1458040636
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -797,7 +797,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1578690803
 Transform:
   m_ObjectHideFlags: 0

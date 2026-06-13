@@ -223,7 +223,7 @@ namespace GPU.Solver {
             int convergenceDebugMaxLayer = useHierarchical ? maxSolveLayer : 0;
             int convergenceDebugLayerCount = convergenceDebugMaxLayer + 1;
             int convergenceDebugMaxIterations = Mathf.Max(
-                Const.GSIterationsL0 + Const.JRIterationsL0,
+                Const.TargetConvergenceIterate ? Const.MaxConvergenceIterations : Const.GSIterationsL0 + Const.JRIterationsL0,
                 1 + Mathf.Max(Const.JRIterationsLMax, Const.JRIterationsLMid));
 
             session = new SolveSession {

@@ -75,6 +75,9 @@ public sealed class SimulationParams {
         public int jrIterationsL0 = 16;
         [Range(0f, 1f)] public float jrOmegaV = 0.3f;
         [Range(0f, 1f)] public float jrOmegaL = 0.3f;
+        public bool targetConvergenceIterate = false;
+        public float targetConvergenceC = 0.001f;
+        public int maxConvergenceIterations = 32;
     }
 
     [Serializable]

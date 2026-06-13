@@ -121,6 +121,12 @@ namespace GPU.Solver {
             int jrIterations = GetJRIterationsForLayer(layer, session.MaxSolveLayer);
             int gsIterations = layer == 0 ? Const.GSIterationsL0 : 1;
 
+            bool targetConv = Const.TargetConvergenceIterate && layer == 0;
+            if (targetConv) {
+                gsIterations = Const.MaxConvergenceIterations;
+                jrIterations = 0;
+            }
+
             NeighborColoring layerColoring = null;
             if (gsIterations > 0) {
                 layerColoring = solver.coloring.RebuildForLayer(session.AsyncCb, session, layerContext, session.FixedObjectSignature);
@@ -133,11 +139,16 @@ namespace GPU.Solver {
 
             int debugIterations = gsIterations + jrIterations;
             bool debugEnabled = solver.solverDebug.ConvergenceDebug != null;
+            if (targetConv && !debugEnabled) {
+                UnityEngine.Debug.LogWarning("[TargetConvergence] Target convergence relies on ConvergenceDebug being enabled. Please enable Convergence Debug Enabled in UI and Readback Params.");
+                targetConv = false; 
+            }
             bool usePersistentCoarseGs =
                 gsIterations > 0 &&
                 layerColoring != null &&
                 activeCount <= Const.PersistentCoarseMaxNodes &&
-                !debugEnabled;
+                !debugEnabled &&
+                !targetConv;
 
             if (debugEnabled && debugIterations > 0) {
                 solver.solverDebug.ClearDebugBuffer(session.AsyncCb, layer, debugIterations, tickContext.TickIndex);
@@ -180,6 +191,18 @@ namespace GPU.Solver {
                         Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.SavePrevAndClear.GS", shader, runtime.KJRSavePrevAndClear, XPBISolver.Groups256(saveClearCount), 1, 1);
                         Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.AtomicSolve.GS", shader, runtime.KRelaxCollisionAtomic, XPBISolver.Groups256(activeCount), 1, 1);
                         Dispatch(session.AsyncCb, "XPBI.CollisionJacobi.Apply.GS", shader, runtime.KJRApply, XPBISolver.Groups256(activeCount), 1, 1);
+
+                        if (targetConv && debugEnabled) {
+                            var stat = solver.solverDebug.ReadConvergenceErrorStatSync(session.AsyncCb, layer, iter, tickContext.TickIndex);
+                            UnityEngine.Debug.Log($"[TargetConvergence] L{layer} Iter {iter}: avgC = {stat.avgAbsC:G6}");
+                            if (stat.count > 0 && stat.avgAbsC <= Const.TargetConvergenceC) {
+                                UnityEngine.Debug.Log($"[TargetConvergence] Converged to {stat.avgAbsC:G6} <= {Const.TargetConvergenceC} in {iter + 1} iterations.");
+                                break;
+                            }
+                            if (iter == gsIterations - 1) {
+                                UnityEngine.Debug.LogWarning($"[TargetConvergence] Failed to converge. Final avgC = {stat.avgAbsC:G6} after {gsIterations} iterations.");
+                            }
+                        }
                     }
                 }
             }

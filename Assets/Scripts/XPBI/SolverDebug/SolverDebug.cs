@@ -113,6 +113,33 @@ namespace GPU.Solver {
             coloringUpdatedByLayerForDebugLog = null;
         }
 
+        internal (float avgAbsC, float maxAbsC, uint count, uint marker) ReadConvergenceErrorStatSync(CommandBuffer cb, int layer, int iter, int tickIndex) {
+            if (convergenceDebug == null) return (0f, 0f, 0u, 0u);
+            Graphics.ExecuteCommandBufferAsync(cb, ComputeQueueType.Urgent);
+            cb.Clear();
+            
+            int entryIndex = ((tickIndex * ConvergenceDebugLayers) + layer) * convergenceDebugMaxIter + iter;
+            int maxValid = (convergenceDebug.count / SolverDebug.ConvergenceDebugIterBufSize) - 1;
+            if (entryIndex < 0 || entryIndex > maxValid) return (0f, 0f, 0u, 0u);
+
+            int baseU = entryIndex * SolverDebug.ConvergenceDebugIterBufSize;
+            
+            var req = AsyncGPUReadback.Request(convergenceDebug, SolverDebug.ConvergenceDebugIterBufSize * 4, baseU * 4);
+            req.WaitForCompletion();
+            
+            if (req.hasError) return (0f, 0f, 0u, 0u);
+            var data = req.GetData<uint>();
+            
+            uint sumAbsC = data[0];
+            uint maxAbsC = data[1];
+            uint cnt = data[4];
+            uint marker = 7 < data.Length ? data[7] : 0u;
+            float invScaleC = 1f / ConvergenceDebugScaleC;
+            float avgAbsC = cnt > 0 ? (sumAbsC * invScaleC) / cnt : 0f;
+            float mxAbsC = maxAbsC * invScaleC;
+            return (avgAbsC, mxAbsC, cnt, marker);
+        }
+
         private (float avgAbsC, float maxAbsC, uint count, uint marker) ReadConstraintErrorStat(uint[] data, int entryIndex) {
             if (data == null || entryIndex < 0)
                 return (0f, 0f, 0u, 0u);
@@ -272,10 +299,13 @@ namespace GPU.Solver {
 
             if (string.IsNullOrEmpty(convergenceDebugCsvPath)){
                 convergenceDebugCsvPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "convergence_stats.csv"));
+            }
+            if(!Const.DebugCSVReset) {
                 using var writer0 = new StreamWriter(convergenceDebugCsvPath, append: false);
                 writer0.WriteLine("step,in_step_iteration,marker,count,avg_abs_c,max_abs_c,avg_abs_dlambda,max_abs_dlambda");
                 writer0.Flush();
                 writer0.Close();
+                Const.DebugCSVReset = true;
             }
 
             using var writer = new StreamWriter(convergenceDebugCsvPath, append: true);

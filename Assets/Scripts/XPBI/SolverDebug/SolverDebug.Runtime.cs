@@ -4,9 +4,9 @@ using UnityEngine.Rendering;
 
 namespace GPU.Solver {
     internal sealed partial class SolverDebug {
-        private const int ConvergenceDebugIterBufSize = 8;
-        private const float ConvergenceDebugScaleC = 1_000_000f;
-        private const float ConvergenceDebugScaleDLambda = 1_000_000f;
+        internal const int ConvergenceDebugIterBufSize = 8;
+        internal const float ConvergenceDebugScaleC = 1_000_000f;
+        internal const float ConvergenceDebugScaleDLambda = 1_000_000f;
         internal const int ProlongateDebugStride = 32;
         internal const float ProlongateDebugScaleWeight = 10_000f;
         internal const float ProlongateDebugScaleDv = 10_000f;
