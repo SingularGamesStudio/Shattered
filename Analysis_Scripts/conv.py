@@ -433,14 +433,14 @@ def main():
             zorder=3,
         )
 
-        if np.isfinite(rec_val):
+        '''if np.isfinite(rec_val):
             ax.scatter(
                 [rec_iter],
                 [rec_val],
                 color=color,
                 s=36,
                 zorder=4,
-            )
+            )'''
 
         summary_rows.append(
             {
@@ -456,7 +456,7 @@ def main():
     ax.set_title(args.title)
     ax.set_xlabel("Число итераций")
     ax.set_ylabel("Среднее значение функции ограничения")
-    ax.set_yscale("log")
+    #ax.set_yscale("log")
     ax.set_xlim(1, args.max_iteration)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.grid(True, which="both", alpha=0.25)

@@ -96,11 +96,11 @@ public sealed class PrimitiveTestSceneBuilder : MonoBehaviour {
             pulse.worldCenter = hangCenter;
             pulse.radius = Mathf.Max(0.8f, hangSize.x * 0.5f);
             pulse.direction = new Vector2(1f, 0.15f);
-            pulse.strength = 22f;
+            pulse.strength = 200f;
             pulse.startDelay = 0.8f;
             pulse.duration = 0.06f;
             pulse.repeat = true;
-            pulse.repeatInterval = 3f;
+            pulse.repeatInterval = 2f;
         }
     }
 

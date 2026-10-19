@@ -162,7 +162,7 @@ MonoBehaviour:
       targetTPS: 500
       targetFPS: 30
       simulationSpeed: 1
-      maxTicksPerBatch: 32
+      maxTicksPerBatch: 16
     interaction:
       manual: 0
       holdThreshold: 0.2
@@ -170,7 +170,7 @@ MonoBehaviour:
       neighborSearchMode: 0
     solverCore:
       gravity: -9.81
-      compliance: 0.03
+      compliance: 0.1
     neighbors:
       layerKernelHFromPoissonRadius: 2
       wendlandSupport: 2
@@ -195,7 +195,7 @@ MonoBehaviour:
       postProlongSmoothing: 0.2
       parentWeightEpsilon: 0.001
     particleRegularization:
-      xsphC: 0
+      xsphC: 0.2
       enablePositionCorrection: 0
       positionCorrectionIterations: 1
       positionCorrectionGapRatio: 0.4
@@ -220,7 +220,7 @@ MonoBehaviour:
       collisionSdfEdgeRefineIterations: 6
     volume:
       volumeComplianceComp: 0.01
-      volumeComplianceExp: 0
+      volumeComplianceExp: 1
       volumeJLow: 0.98
       volumeJHigh: 1.02
       volumeJMin: 0.05
@@ -240,7 +240,7 @@ MonoBehaviour:
       initColoringConflictRounds: 24
       dtFixIterations: 2
       dtLegalizeIterations: 2
-      layer0FullRebuildEveryKFrames: 100000
+      layer0FullRebuildEveryKFrames: 1
     uiAndReadback:
       showTpsOverlay: 1
       convergenceDebugEnabled: 0
@@ -709,7 +709,7 @@ MonoBehaviour:
   drawCoarseLayers: 1
   cullOverstretchedWireEdges: 0
   wireframeCycleKey: 119
-  wireWidthPixels: 0.74
+  wireWidthPixels: 1.3
   drawLayer0Fill: 1
   preserveArea: 0
   preserveAreaGain: 0.6
@@ -1518,7 +1518,7 @@ MonoBehaviour:
   hangSize: {x: 3.4, y: 2.2}
   hangFixedCornerWidthFraction: 0.12
   hangFixedCornerHeightFraction: 0.18
-  addBigForcePulse: 0
+  addBigForcePulse: 1
   windCenter: {x: 0, y: 0}
   windSize: {x: 2.8, y: 2}
   cantileverCount: 5
